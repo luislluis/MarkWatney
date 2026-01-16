@@ -30,6 +30,9 @@ http_session.headers.update({
 })
 http_session.trust_env = False  # Ignore proxy environment variables
 
+# Track price-to-beat per window (captured at window start)
+_window_open_prices = {}  # {window_id: btc_price}
+
 
 def get_current_window():
     """Calculate current 15-minute window slug and start time"""
@@ -52,52 +55,41 @@ def get_market_data(slug):
     return None
 
 
-def parse_price_to_beat(market):
+def get_price_to_beat(window_id):
     """
-    Extract price-to-beat from market title or description.
-    Example title: "Will BTC be above $42,500.00 at 3:15 PM UTC?"
+    Get the price-to-beat for a window.
+
+    The price-to-beat is the BTC price at window start. We capture it
+    on first call for each window and cache it.
     """
-    if not market:
-        return None
+    global _window_open_prices
 
-    # Try title first, then description
-    title = market.get('title', '')
-    description = market.get('description', '')
+    # If we already have it cached, return it
+    if window_id in _window_open_prices:
+        return _window_open_prices[window_id]
 
-    # Also check nested markets array for more specific data
-    markets_arr = market.get('markets', [])
-    if markets_arr:
-        inner_market = markets_arr[0]
-        if not title:
-            title = inner_market.get('question', '')
-        if not description:
-            description = inner_market.get('description', '')
+    # Otherwise, we need to capture current BTC price
+    # Note: This only works correctly if called at/near window start
+    btc_price = get_btc_price()
+    if btc_price:
+        _window_open_prices[window_id] = btc_price
+        print(f"[PRICE-TO-BEAT] Captured open price for {window_id}: ${btc_price:,.2f}")
 
-    # Debug: print what we're searching
-    print(f"[DEBUG] Title: {title[:100]}..." if len(title) > 100 else f"[DEBUG] Title: {title}")
+        # Clean up old windows (keep only last 5)
+        if len(_window_open_prices) > 5:
+            oldest_key = min(_window_open_prices.keys())
+            del _window_open_prices[oldest_key]
 
-    # Try to extract price with regex - matches $XX,XXX.XX or $XX,XXX
-    text_to_search = f"{title} {description}"
-    patterns = [
-        r'\$([0-9,]+(?:\.[0-9]+)?)',  # $42,500.00 or $42,500
-        r'above\s+([0-9,]+(?:\.[0-9]+)?)',  # above 42,500
-        r'below\s+([0-9,]+(?:\.[0-9]+)?)',  # below 42,500
-        r'(\d{2,3}[,.]?\d{3}(?:\.\d+)?)',  # 94,500 or 94500.00 (no $ sign)
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text_to_search, re.IGNORECASE)
-        if match:
-            price_str = match.group(1).replace(',', '')
-            try:
-                price = float(price_str)
-                # Sanity check - BTC price should be > 10000
-                if price > 10000:
-                    return price
-            except ValueError:
-                continue
+        return btc_price
 
     return None
+
+
+def set_price_to_beat(window_id, price):
+    """Manually set the price-to-beat for a window (e.g., from external source)"""
+    global _window_open_prices
+    _window_open_prices[window_id] = price
+    print(f"[PRICE-TO-BEAT] Set open price for {window_id}: ${price:,.2f}")
 
 
 def get_token_ids(market):
@@ -212,10 +204,13 @@ def fetch_all_api_data():
     market = get_market_data(slug)
 
     # Get all data points
-    price_to_beat = parse_price_to_beat(market)
     up_ask, down_ask = get_share_prices(market)
     btc_price = get_btc_price()
     time_remaining = get_time_remaining(market)
+
+    # Price-to-beat: captured BTC price at window start
+    # Note: First call for a window will capture current price as the "open"
+    price_to_beat = get_price_to_beat(slug)
 
     return {
         'window_id': slug,
@@ -246,17 +241,17 @@ if __name__ == '__main__':
     print("Testing data_fetcher.py...")
     print("-" * 50)
 
-    slug, _ = get_current_window()
-
-    # Show raw API response for debugging
-    dump_raw_api_response(slug)
-
-    print("\n" + "-" * 50)
     data = fetch_all_api_data()
 
-    print(f"Window ID: {data['window_id']}")
-    print(f"Price-to-Beat: ${data['price_to_beat']:,.2f}" if data['price_to_beat'] else "Price-to-Beat: N/A")
+    print(f"\nWindow ID: {data['window_id']}")
+    print(f"Price-to-Beat: ${data['price_to_beat']:,.2f}" if data['price_to_beat'] else "Price-to-Beat: N/A (will be captured at window start)")
     print(f"UP Ask: {data['up_ask']*100:.1f}c" if data['up_ask'] else "UP Ask: N/A")
     print(f"DOWN Ask: {data['down_ask']*100:.1f}c" if data['down_ask'] else "DOWN Ask: N/A")
     print(f"BTC Price: ${data['btc_price']:,.2f}" if data['btc_price'] else "BTC Price: N/A")
     print(f"Time Remaining: {data['time_remaining']:.0f}s" if data['time_remaining'] else "Time Remaining: N/A")
+
+    # Show comparison if price-to-beat captured
+    if data['price_to_beat'] and data['btc_price']:
+        diff = data['btc_price'] - data['price_to_beat']
+        direction = "UP" if diff >= 0 else "DOWN"
+        print(f"\nCurrent vs Open: ${diff:+,.2f} ({direction})")
