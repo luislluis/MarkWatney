@@ -223,9 +223,13 @@ def check_claimable_positions(include_already_processed=False):
     claimable = []
 
     for pos in positions:
-        # The API provides 'redeemable' field directly - no need to check resolution separately
+        # Must be redeemable AND have actual value (currentValue > 0 means winning position)
         if not pos.get('redeemable'):
             continue
+
+        current_value = float(pos.get('currentValue', 0))
+        if current_value <= 0:
+            continue  # Losing position - nothing to claim
 
         condition_id = pos.get('conditionId') or pos.get('condition_id')
         if not condition_id:
@@ -236,15 +240,12 @@ def check_claimable_positions(include_already_processed=False):
         if not include_already_processed and pos_key in redeemed_positions:
             continue
 
-        size = float(pos.get('size', 0))
-        claimable_amount = size  # Winning shares worth $1 each
-
         claimable.append({
             'condition_id': condition_id,
             'market': pos.get('title', pos.get('slug', 'Unknown')),
             'outcome': pos.get('outcome'),
-            'shares': size,
-            'claimable_usdc': claimable_amount,
+            'shares': float(pos.get('size', 0)),
+            'claimable_usdc': current_value,  # Use actual value from API
             'pos_key': pos_key
         })
 
