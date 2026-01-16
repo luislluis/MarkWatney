@@ -17,6 +17,56 @@ ssh root@174.138.5.183
 
 ---
 
+## Versioning
+
+**IMPORTANT**: Always update the version when making changes to the bot.
+
+### Version Location
+The bot version is defined at the top of `trading_bot_smart.py`:
+```python
+BOT_VERSION = {
+    "version": "v1.2",
+    "codename": "Silent Thunder",
+    "date": "2026-01-16",
+    "changes": "Fix: PAIRING_MODE race condition causing duplicate orders"
+}
+```
+
+### How to Update Version
+1. Increment the version number (v1.2 → v1.3)
+2. Pick a new codename (two words: `[Adjective] [Animal/Object]`)
+3. Update the date
+4. Describe the changes
+5. Update `BOT_REGISTRY.md` with the new version
+
+### Verify Running Version
+On server:
+```bash
+head -30 ~/polymarket_bot/trading_bot_smart.py | grep -A4 "BOT_VERSION"
+```
+
+Or check the log startup message:
+```bash
+grep "POLYBOT" ~/polybot/bot.log | tail -1
+```
+
+### Deploy New Version
+```bash
+# From Mac - push to server
+scp ~/polymarket_bot/trading_bot_smart.py root@174.138.5.183:~/polymarket_bot/
+
+# On server - restart
+ssh root@174.138.5.183
+pkill -f trading_bot_smart.py
+cd ~/polymarket_bot && export GOOGLE_SHEETS_SPREADSHEET_ID=1fxGKxKxj2RAL0hwtqjaOWdmnwqg6RcKseYYP-cCKp74 && export GOOGLE_SHEETS_CREDENTIALS_FILE=~/.google_sheets_credentials.json && nohup python3 trading_bot_smart.py > /dev/null 2>&1 &
+tail -20 ~/polybot/bot.log
+```
+
+### Version History
+See `BOT_REGISTRY.md` for full version history with codenames and changes.
+
+---
+
 ## File Structure
 
 ### Core Bot Files (Project Root)
