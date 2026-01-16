@@ -55,17 +55,44 @@ def get_market_data(slug):
     return None
 
 
-def fetch_open_price_from_page(slug):
+# Cache for page data to avoid fetching too often
+_page_cache = {'slug': None, 'data': None, 'timestamp': 0}
+PAGE_CACHE_TTL = 2  # seconds
+
+
+def fetch_prices_from_page(slug):
     """
-    Fetch the openPrice from Polymarket page's __NEXT_DATA__.
-    The page embeds openPrice for each market window.
+    Fetch openPrice and currentPrice from Polymarket page's __NEXT_DATA__.
+    Returns (open_price, current_price) tuple.
     """
+    global _page_cache
+    import re
+    import json
+
+    # Check cache
+    now = time.time()
+    if _page_cache['slug'] == slug and (now - _page_cache['timestamp']) < PAGE_CACHE_TTL:
+        return _page_cache['data']
+
+    open_price = None
+    current_price = None
+
     try:
         url = f"https://polymarket.com/event/{slug}"
         resp = http_session.get(url, timeout=10)
         if resp.status_code == 200:
-            import re
-            import json
+            # Try to find currentPrice (real-time BTC price from Chainlink streams)
+            current_matches = re.findall(r'"currentPrice":([0-9.]+)', resp.text)
+            if current_matches:
+                # Get the last (most recent) currentPrice
+                for price_str in reversed(current_matches):
+                    try:
+                        price = float(price_str)
+                        if 10000 < price < 500000:
+                            current_price = price
+                            break
+                    except ValueError:
+                        continue
 
             # Try to find __NEXT_DATA__ JSON and parse it properly
             next_data_match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', resp.text, re.DOTALL)
@@ -78,37 +105,54 @@ def fetch_open_price_from_page(slug):
                         data = query.get('state', {}).get('data', {})
                         # Check if this is the market data (could be dict or list)
                         if isinstance(data, dict):
-                            if data.get('slug') == slug and 'openPrice' in data:
-                                return float(data['openPrice'])
+                            if data.get('slug') == slug:
+                                if 'openPrice' in data:
+                                    open_price = float(data['openPrice'])
+                                if 'currentPrice' in data and not current_price:
+                                    current_price = float(data['currentPrice'])
                         elif isinstance(data, list):
                             for item in data:
-                                if isinstance(item, dict) and item.get('slug') == slug and 'openPrice' in item:
-                                    return float(item['openPrice'])
+                                if isinstance(item, dict) and item.get('slug') == slug:
+                                    if 'openPrice' in item:
+                                        open_price = float(item['openPrice'])
+                                    if 'currentPrice' in item and not current_price:
+                                        current_price = float(item['currentPrice'])
                 except json.JSONDecodeError:
                     pass
 
             # Fallback: Find openPrice near the slug in the raw text
-            # Look for pattern: "slug":"btc-updown-15m-XXXX"..."openPrice":YYYY
-            pattern = rf'"slug":"{re.escape(slug)}"[^{{}}]*?"openPrice":([0-9.]+)'
-            match = re.search(pattern, resp.text)
-            if match:
-                return float(match.group(1))
+            if not open_price:
+                pattern = rf'"slug":"{re.escape(slug)}"[^{{}}]*?"openPrice":([0-9.]+)'
+                match = re.search(pattern, resp.text)
+                if match:
+                    open_price = float(match.group(1))
 
-            # Last resort: find any openPrice and hope it's the right one
-            matches = re.findall(r'"openPrice":([0-9.]+)', resp.text)
-            if matches:
-                # Return the LAST match (most recent window on page)
-                for price_str in reversed(matches):
-                    try:
-                        price = float(price_str)
-                        if 10000 < price < 500000:
-                            return price
-                    except ValueError:
-                        continue
+            # Last resort for openPrice
+            if not open_price:
+                matches = re.findall(r'"openPrice":([0-9.]+)', resp.text)
+                if matches:
+                    for price_str in reversed(matches):
+                        try:
+                            price = float(price_str)
+                            if 10000 < price < 500000:
+                                open_price = price
+                                break
+                        except ValueError:
+                            continue
 
     except Exception as e:
-        print(f"[OPEN_PRICE] Error fetching from page: {e}")
-    return None
+        print(f"[PAGE] Error fetching prices: {e}")
+
+    # Update cache
+    _page_cache = {'slug': slug, 'data': (open_price, current_price), 'timestamp': now}
+
+    return open_price, current_price
+
+
+def fetch_open_price_from_page(slug):
+    """Fetch just the openPrice (backward compatibility)"""
+    open_price, _ = fetch_prices_from_page(slug)
+    return open_price
 
 
 def get_price_to_beat(window_id):
@@ -263,14 +307,21 @@ def fetch_all_api_data():
     slug, window_start = get_current_window()
     market = get_market_data(slug)
 
-    # Get all data points
+    # Get share prices from order books
     up_ask, down_ask = get_share_prices(market)
-    btc_price = get_btc_price()
     time_remaining = get_time_remaining(market)
 
-    # Price-to-beat: captured BTC price at window start
-    # Note: First call for a window will capture current price as the "open"
-    price_to_beat = get_price_to_beat(slug)
+    # Get prices from Polymarket page (most accurate source)
+    open_price, current_price = fetch_prices_from_page(slug)
+
+    # Use page prices if available, otherwise fallback
+    price_to_beat = open_price
+    if not price_to_beat:
+        price_to_beat = get_price_to_beat(slug)
+
+    btc_price = current_price
+    if not btc_price:
+        btc_price = get_btc_price()  # Fallback to Chainlink/Coinbase
 
     return {
         'window_id': slug,
