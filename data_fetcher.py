@@ -311,17 +311,17 @@ def fetch_all_api_data():
     up_ask, down_ask = get_share_prices(market)
     time_remaining = get_time_remaining(market)
 
-    # Get prices from Polymarket page (most accurate source)
-    open_price, current_price = fetch_prices_from_page(slug)
+    # Get openPrice from Polymarket page (it's fixed per window, so caching is fine)
+    open_price, _ = fetch_prices_from_page(slug)
 
-    # Use page prices if available, otherwise fallback
+    # Use page openPrice if available, otherwise fallback
     price_to_beat = open_price
     if not price_to_beat:
         price_to_beat = get_price_to_beat(slug)
 
-    btc_price = current_price
-    if not btc_price:
-        btc_price = get_btc_price()  # Fallback to Chainlink/Coinbase
+    # For real-time BTC price, use Chainlink (page data is static)
+    # Chainlink updates frequently enough for our needs
+    btc_price = get_btc_price()
 
     return {
         'window_id': slug,
