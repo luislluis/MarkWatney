@@ -55,12 +55,39 @@ def get_market_data(slug):
     return None
 
 
+def fetch_open_price_from_page(slug):
+    """
+    Fetch the openPrice from Polymarket page's __NEXT_DATA__.
+    The page embeds openPrice for each market window.
+    """
+    try:
+        url = f"https://polymarket.com/event/{slug}"
+        resp = http_session.get(url, timeout=10)
+        if resp.status_code == 200:
+            # Search for openPrice in the HTML
+            import re
+            # Find openPrice values - they're embedded in __NEXT_DATA__ JSON
+            matches = re.findall(r'"openPrice":([0-9.]+)', resp.text)
+            if matches:
+                # The page may have multiple openPrice values for different windows
+                # We want the one closest to a reasonable BTC price
+                for price_str in matches:
+                    try:
+                        price = float(price_str)
+                        # Sanity check - BTC price should be between 10k and 500k
+                        if 10000 < price < 500000:
+                            return price
+                    except ValueError:
+                        continue
+    except Exception as e:
+        print(f"[OPEN_PRICE] Error fetching from page: {e}")
+    return None
+
+
 def get_price_to_beat(window_id):
     """
-    Get the price-to-beat for a window.
-
-    The price-to-beat is the BTC price at window start. We capture it
-    on first call for each window and cache it.
+    Get the price-to-beat (opening price) for a window.
+    First tries to fetch from Polymarket page, then falls back to cache.
     """
     global _window_open_prices
 
@@ -68,18 +95,24 @@ def get_price_to_beat(window_id):
     if window_id in _window_open_prices:
         return _window_open_prices[window_id]
 
-    # Otherwise, we need to capture current BTC price
-    # Note: This only works correctly if called at/near window start
-    btc_price = get_btc_price()
-    if btc_price:
-        _window_open_prices[window_id] = btc_price
-        print(f"[PRICE-TO-BEAT] Captured open price for {window_id}: ${btc_price:,.2f}")
+    # Try to fetch from Polymarket page
+    open_price = fetch_open_price_from_page(window_id)
+    if open_price:
+        _window_open_prices[window_id] = open_price
+        print(f"[PRICE-TO-BEAT] Fetched from page for {window_id}: ${open_price:,.2f}")
 
         # Clean up old windows (keep only last 5)
         if len(_window_open_prices) > 5:
             oldest_key = min(_window_open_prices.keys())
             del _window_open_prices[oldest_key]
 
+        return open_price
+
+    # Fallback: capture current BTC price (only accurate at window start)
+    btc_price = get_btc_price()
+    if btc_price:
+        _window_open_prices[window_id] = btc_price
+        print(f"[PRICE-TO-BEAT] Fallback to current BTC for {window_id}: ${btc_price:,.2f}")
         return btc_price
 
     return None
