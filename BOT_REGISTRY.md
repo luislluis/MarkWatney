@@ -1,14 +1,21 @@
 # Polybot Version Registry
 
-## Current Version: v1.2 "Silent Thunder"
+## Current Version: v1.3 "Neon Falcon"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.2 | 2026-01-16 00:30 PST | Silent Thunder | Fix: PAIRING_MODE race condition causing duplicate orders | Active |
+| v1.3 | 2026-01-16 01:00 PST | Neon Falcon | Fix: Cancel race condition - track pending hedge order IDs | Active |
+| v1.2 | 2026-01-16 00:30 PST | Silent Thunder | Fix: PAIRING_MODE race condition causing duplicate orders | Archived |
 | v1.1 | 2026-01-15 21:58 PST | Quantum Badger | Auto-redeem: direct CTF contract redemption through Gnosis Safe | Archived |
 | v1.0 | 2026-01-15 20:50 PST | Iron Phoenix | Baseline - includes PAIRING_MODE hedge escalation + 99c capture hedge protection | Archived |
 
 ## Version History Details
+
+### v1.3 - Neon Falcon (2026-01-16)
+- **Bug fix**: Cancel race condition causing duplicate hedge orders
+- Track pending_hedge_order_id in window_state
+- Before placing new hedge, check if previous order was filled (despite cancel)
+- Prevents duplicates like 10 UP / 5 DOWN when hedging
 
 ### v1.2 - Silent Thunder (2026-01-16)
 - **Bug fix**: Race condition in PAIRING_MODE causing duplicate orders

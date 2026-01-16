@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.2",
-    "codename": "Silent Thunder",
+    "version": "v1.3",
+    "codename": "Neon Falcon",
     "date": "2026-01-16",
-    "changes": "Fix: PAIRING_MODE race condition causing duplicate orders"
+    "changes": "Fix: Cancel race condition - track pending hedge orders to prevent duplicates"
 }
 
 import os
@@ -368,6 +368,8 @@ def reset_window_state(slug):
         "started_mid_window": False,         # True if bot started mid-window (skip trading)
         "pairing_start_time": None,          # When PAIRING_MODE was entered
         "best_distance_seen": None,          # Best (lowest) distance from profit target (in cents)
+        "pending_hedge_order_id": None,      # Track pending hedge order to prevent duplicates
+        "pending_hedge_side": None,          # Which side the pending hedge is for (UP/DOWN)
     }
 
 def get_imbalance():
@@ -1815,6 +1817,8 @@ def run_pairing_mode(books, ttc):
     imb = get_arb_imbalance()
     if imb == 0:
         print(f"[{ts()}] PAIRING_MODE: Order filled during cancel - now balanced!")
+        window_state['pending_hedge_order_id'] = None
+        window_state['pending_hedge_side'] = None
         window_state['state'] = STATE_DONE
         _send_pair_outcome_notification()
         return
@@ -1872,16 +1876,38 @@ def run_pairing_mode(books, ttc):
 
         print(f"[{ts()}] HEDGE_CALC: entry={existing_price*100:.0f}c target={profit_target*100:.0f}c tolerance={tolerance_cents:.0f}c max_hedge={max_hedge*100:.0f}c elapsed={seconds_since_fill:.0f}s best_seen={best_distance:.0f}c")
 
+        # CHECK: Was previous hedge order filled? (Cancel race condition fix)
+        if window_state.get('pending_hedge_order_id'):
+            prev_order_id = window_state['pending_hedge_order_id']
+            order_status = get_order_status(prev_order_id)
+
+            if order_status and order_status.get('is_filled'):
+                # Previous order was filled even though we tried to cancel!
+                print(f"[{ts()}] HEDGE_ALREADY_FILLED: Previous order was matched despite cancel")
+                window_state['pending_hedge_order_id'] = None
+                window_state['pending_hedge_side'] = None
+                # Re-sync position and return - don't place duplicate
+                wait_and_sync_position()
+                return
+
         if target >= MIN_PRICE and target < best_ask and target <= HEDGE_PRICE_CAP:
             # Use place_and_verify_order for deduplication (Bug Fix #4)
             success, order_id, status_msg = place_and_verify_order(missing_token, target, missing_shares)
             if success:
+                # Track this order ID to prevent duplicates (Cancel race condition fix)
+                window_state['pending_hedge_order_id'] = order_id
+                window_state['pending_hedge_side'] = missing_side
+
                 # Use wait_and_sync_position for proper settlement (Bug Fix #3)
                 wait_and_sync_position()
 
                 # Check if we're now flat
                 imb = get_imbalance()
                 if imb == 0:
+                    # Clear tracking - position is balanced
+                    window_state['pending_hedge_order_id'] = None
+                    window_state['pending_hedge_side'] = None
+
                     # SCALE-UP: Buy extra on filled side to re-balance
                     if extra_needed > 0:
                         print(f"[{ts()}] ⚠️  SCALE-UP: Buying {extra_needed} extra {filled_side} @ {filled_price*100:.0f}c")
@@ -1899,6 +1925,8 @@ def run_pairing_mode(books, ttc):
 
     imb = get_imbalance()
     if imb == 0:
+        window_state['pending_hedge_order_id'] = None
+        window_state['pending_hedge_side'] = None
         _send_pair_outcome_notification()
         window_state['state'] = STATE_DONE
         return
@@ -1927,6 +1955,8 @@ def run_pairing_mode(books, ttc):
 
     imb = get_imbalance()
     if imb == 0:
+        window_state['pending_hedge_order_id'] = None
+        window_state['pending_hedge_side'] = None
         _send_pair_outcome_notification()
         window_state['state'] = STATE_DONE
         return
