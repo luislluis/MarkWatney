@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.0",
-    "codename": "Iron Phoenix",
-    "date": "2026-01-15",
-    "changes": "Baseline - PAIRING hedge escalation + 99c capture hedge protection"
+    "version": "v1.2",
+    "codename": "Silent Thunder",
+    "date": "2026-01-16",
+    "changes": "Fix: PAIRING_MODE race condition causing duplicate orders"
 }
 
 import os
