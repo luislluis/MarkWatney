@@ -64,21 +64,48 @@ def fetch_open_price_from_page(slug):
         url = f"https://polymarket.com/event/{slug}"
         resp = http_session.get(url, timeout=10)
         if resp.status_code == 200:
-            # Search for openPrice in the HTML
             import re
-            # Find openPrice values - they're embedded in __NEXT_DATA__ JSON
+            import json
+
+            # Try to find __NEXT_DATA__ JSON and parse it properly
+            next_data_match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', resp.text, re.DOTALL)
+            if next_data_match:
+                try:
+                    next_data = json.loads(next_data_match.group(1))
+                    # Navigate to find the market data for this specific slug
+                    queries = next_data.get('props', {}).get('pageProps', {}).get('dehydratedState', {}).get('queries', [])
+                    for query in queries:
+                        data = query.get('state', {}).get('data', {})
+                        # Check if this is the market data (could be dict or list)
+                        if isinstance(data, dict):
+                            if data.get('slug') == slug and 'openPrice' in data:
+                                return float(data['openPrice'])
+                        elif isinstance(data, list):
+                            for item in data:
+                                if isinstance(item, dict) and item.get('slug') == slug and 'openPrice' in item:
+                                    return float(item['openPrice'])
+                except json.JSONDecodeError:
+                    pass
+
+            # Fallback: Find openPrice near the slug in the raw text
+            # Look for pattern: "slug":"btc-updown-15m-XXXX"..."openPrice":YYYY
+            pattern = rf'"slug":"{re.escape(slug)}"[^{{}}]*?"openPrice":([0-9.]+)'
+            match = re.search(pattern, resp.text)
+            if match:
+                return float(match.group(1))
+
+            # Last resort: find any openPrice and hope it's the right one
             matches = re.findall(r'"openPrice":([0-9.]+)', resp.text)
             if matches:
-                # The page may have multiple openPrice values for different windows
-                # We want the one closest to a reasonable BTC price
-                for price_str in matches:
+                # Return the LAST match (most recent window on page)
+                for price_str in reversed(matches):
                     try:
                         price = float(price_str)
-                        # Sanity check - BTC price should be between 10k and 500k
                         if 10000 < price < 500000:
                             return price
                     except ValueError:
                         continue
+
     except Exception as e:
         print(f"[OPEN_PRICE] Error fetching from page: {e}")
     return None
