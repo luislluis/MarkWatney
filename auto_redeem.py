@@ -2,25 +2,28 @@
 """
 Auto-Redeem Module for Polymarket
 =================================
-Detects resolved positions and either:
-1. Notifies user to claim manually (default)
-2. Auto-redeems if Builder API credentials are configured
+Detects resolved positions and redeems them directly via CTF contract.
 
 Usage:
-    # As standalone
+    # Test detection only (no transactions)
+    python auto_redeem.py --test
+
+    # Run continuous monitoring with auto-redeem
     python auto_redeem.py
 
     # Integrated in bot
-    from auto_redeem import check_claimable_positions
+    from auto_redeem import check_claimable_positions, redeem_position
 """
 
 import os
+import sys
 import time
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load from home directory
+load_dotenv(os.path.expanduser("~/.env"))
 
 # Configuration
 POLYGON_RPC = os.getenv("POLYGON_RPC", "https://polygon-rpc.com")
@@ -28,18 +31,102 @@ PRIVATE_KEY = os.getenv("PK") or os.getenv("PRIVATE_KEY") or os.getenv("POLYMARK
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Builder API credentials (optional - for auto-redeem)
-BUILDER_API_KEY = os.getenv("BUILDER_API_KEY")
-BUILDER_SECRET = os.getenv("BUILDER_SECRET")
-BUILDER_PASSPHRASE = os.getenv("BUILDER_PASS_PHRASE")
-
 # Contract addresses (Polygon)
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
-CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
 USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 
-# Track already-notified positions to avoid spam
-notified_positions = set()
+# Safe/Proxy wallet (where positions are held)
+PROXY_WALLET = os.getenv("WALLET_ADDRESS")
+
+# CTF Contract ABI (minimal - just redeemPositions)
+CTF_ABI = [
+    {
+        "inputs": [
+            {"name": "collateralToken", "type": "address"},
+            {"name": "parentCollectionId", "type": "bytes32"},
+            {"name": "conditionId", "type": "bytes32"},
+            {"name": "indexSets", "type": "uint256[]"}
+        ],
+        "name": "redeemPositions",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    }
+]
+
+# Gnosis Safe ABI (for execTransaction)
+SAFE_ABI = [
+    {
+        "inputs": [
+            {"name": "to", "type": "address"},
+            {"name": "value", "type": "uint256"},
+            {"name": "data", "type": "bytes"},
+            {"name": "operation", "type": "uint8"},
+            {"name": "safeTxGas", "type": "uint256"},
+            {"name": "baseGas", "type": "uint256"},
+            {"name": "gasPrice", "type": "uint256"},
+            {"name": "gasToken", "type": "address"},
+            {"name": "refundReceiver", "type": "address"},
+            {"name": "signatures", "type": "bytes"}
+        ],
+        "name": "execTransaction",
+        "outputs": [{"name": "success", "type": "bool"}],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "nonce",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getOwners",
+        "outputs": [{"name": "", "type": "address[]"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"name": "to", "type": "address"},
+            {"name": "value", "type": "uint256"},
+            {"name": "data", "type": "bytes"},
+            {"name": "operation", "type": "uint8"},
+            {"name": "safeTxGas", "type": "uint256"},
+            {"name": "baseGas", "type": "uint256"},
+            {"name": "gasPrice", "type": "uint256"},
+            {"name": "gasToken", "type": "address"},
+            {"name": "refundReceiver", "type": "address"},
+            {"name": "_nonce", "type": "uint256"}
+        ],
+        "name": "getTransactionHash",
+        "outputs": [{"name": "", "type": "bytes32"}],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+
+# Track already-processed positions to avoid duplicate redemptions
+redeemed_positions = set()
+
+# Web3 setup (lazy loaded)
+_w3 = None
+
+def get_web3():
+    """Get or create Web3 instance"""
+    global _w3
+    if _w3 is None:
+        try:
+            from web3 import Web3
+            _w3 = Web3(Web3.HTTPProvider(POLYGON_RPC))
+            if not _w3.is_connected():
+                print(f"[REDEEM] Warning: Web3 not connected to {POLYGON_RPC}")
+        except ImportError:
+            print("[REDEEM] Error: web3 not installed. Run: pip install web3")
+            return None
+    return _w3
 
 
 def send_telegram(message):
@@ -69,7 +156,7 @@ def get_wallet_address():
         account = Account.from_key(PRIVATE_KEY)
         return account.address
     except ImportError:
-        print("[REDEEM] Warning: eth_account not installed, can't derive address")
+        print("[REDEEM] Warning: eth_account not installed")
         return None
     except Exception as e:
         print(f"[REDEEM] Error deriving address: {e}")
@@ -82,11 +169,10 @@ def get_user_positions(wallet_address):
         return []
 
     try:
-        # Use the data API to get positions
         url = f"https://data-api.polymarket.com/positions"
         params = {
             "user": wallet_address.lower(),
-            "sizeThreshold": 0.01  # Minimum position size
+            "sizeThreshold": 0.01
         }
         resp = requests.get(url, params=params, timeout=10)
         if resp.status_code == 200:
@@ -104,7 +190,6 @@ def get_market_resolution(condition_id):
         resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
-            # Check tokens for winner
             tokens = data.get('tokens', [])
             for token in tokens:
                 if token.get('winner') == True:
@@ -113,7 +198,6 @@ def get_market_resolution(condition_id):
                         'winner': token.get('outcome'),
                         'token_id': token.get('token_id')
                     }
-            # Market not resolved yet
             return {'resolved': False}
     except Exception as e:
         print(f"[REDEEM] Error checking resolution: {e}")
@@ -121,14 +205,15 @@ def get_market_resolution(condition_id):
     return {'resolved': False}
 
 
-def check_claimable_positions():
+def check_claimable_positions(include_already_processed=False):
     """
     Check for resolved positions that can be claimed.
     Returns list of claimable positions with details.
     """
-    wallet = get_wallet_address()
+    # Use proxy wallet (where positions are held), not EOA
+    wallet = PROXY_WALLET
     if not wallet:
-        print("[REDEEM] No wallet address available")
+        print("[REDEEM] No WALLET_ADDRESS (proxy) configured")
         return []
 
     positions = get_user_positions(wallet)
@@ -139,9 +224,9 @@ def check_claimable_positions():
         if not condition_id:
             continue
 
-        # Check if already notified
+        # Check if already processed (unless we want to include them)
         pos_key = f"{condition_id}_{pos.get('outcome')}"
-        if pos_key in notified_positions:
+        if not include_already_processed and pos_key in redeemed_positions:
             continue
 
         # Check resolution
@@ -155,8 +240,7 @@ def check_claimable_positions():
 
         if user_outcome == winning_outcome:
             size = float(pos.get('size', 0))
-            # Winning shares worth $1 each
-            claimable_amount = size
+            claimable_amount = size  # Winning shares worth $1 each
 
             claimable.append({
                 'condition_id': condition_id,
@@ -164,12 +248,167 @@ def check_claimable_positions():
                 'outcome': user_outcome,
                 'shares': size,
                 'claimable_usdc': claimable_amount,
-                'token_id': resolution.get('token_id')
+                'token_id': resolution.get('token_id'),
+                'pos_key': pos_key
             })
 
-            notified_positions.add(pos_key)
-
     return claimable
+
+
+def redeem_position(condition_id):
+    """
+    Redeem a resolved position through the Safe/proxy wallet.
+
+    Flow:
+    1. Encode the CTF redeemPositions call
+    2. Sign a Safe transaction with our EOA
+    3. Execute via Safe's execTransaction
+
+    Returns: (success: bool, tx_hash: str or None)
+    """
+    if not PRIVATE_KEY:
+        print("[REDEEM] No private key configured")
+        return False, None
+
+    if not PROXY_WALLET:
+        print("[REDEEM] No WALLET_ADDRESS (proxy) configured")
+        return False, None
+
+    w3 = get_web3()
+    if not w3:
+        return False, None
+
+    try:
+        from eth_account import Account
+        from eth_account.messages import defunct_hash_message
+
+        account = Account.from_key(PRIVATE_KEY)
+
+        # Contract instances
+        ctf = w3.eth.contract(
+            address=w3.to_checksum_address(CTF_ADDRESS),
+            abi=CTF_ABI
+        )
+        safe = w3.eth.contract(
+            address=w3.to_checksum_address(PROXY_WALLET),
+            abi=SAFE_ABI
+        )
+
+        # Prepare condition_id as bytes32
+        if condition_id.startswith('0x'):
+            cond_bytes = bytes.fromhex(condition_id[2:])
+        else:
+            cond_bytes = bytes.fromhex(condition_id)
+
+        if len(cond_bytes) < 32:
+            cond_bytes = cond_bytes.rjust(32, b'\x00')
+
+        # Step 1: Encode the CTF redeemPositions call
+        redeem_data = ctf.encode_abi(
+            'redeemPositions',
+            [
+                w3.to_checksum_address(USDC_ADDRESS),  # collateralToken
+                bytes(32),                              # parentCollectionId (zero)
+                cond_bytes,                             # conditionId
+                [1, 2]                                  # indexSets for binary market
+            ]
+        )
+
+        print(f"[REDEEM] Encoded redeem call for condition: {condition_id[:20]}...")
+
+        # Step 2: Get Safe nonce and prepare transaction hash
+        safe_nonce = safe.functions.nonce().call()
+        print(f"[REDEEM] Safe nonce: {safe_nonce}")
+
+        # Safe transaction parameters
+        to_addr = w3.to_checksum_address(CTF_ADDRESS)
+        value = 0
+        data = bytes.fromhex(redeem_data[2:])  # Remove 0x prefix
+        operation = 0  # Call (not delegatecall)
+        safe_tx_gas = 0
+        base_gas = 0
+        gas_price_param = 0
+        gas_token = "0x0000000000000000000000000000000000000000"
+        refund_receiver = "0x0000000000000000000000000000000000000000"
+
+        # Get transaction hash from Safe contract
+        tx_hash_to_sign = safe.functions.getTransactionHash(
+            to_addr,
+            value,
+            data,
+            operation,
+            safe_tx_gas,
+            base_gas,
+            gas_price_param,
+            gas_token,
+            refund_receiver,
+            safe_nonce
+        ).call()
+
+        print(f"[REDEEM] Safe tx hash to sign: {tx_hash_to_sign.hex()}")
+
+        # Step 3: Sign the transaction hash with EOA
+        # For Safe, we sign the raw hash (not EIP-191 prefixed)
+        signature = account.unsafe_sign_hash(tx_hash_to_sign)
+
+        # Format signature for Safe: r + s + v (v adjusted for Safe)
+        # Safe expects v to be 27 or 28 for EOA signatures
+        v = signature.v
+        if v < 27:
+            v += 27
+
+        sig_bytes = (
+            signature.r.to_bytes(32, 'big') +
+            signature.s.to_bytes(32, 'big') +
+            bytes([v])
+        )
+
+        print(f"[REDEEM] Signature created, executing Safe transaction...")
+
+        # Step 4: Execute via Safe's execTransaction
+        exec_tx = safe.functions.execTransaction(
+            to_addr,
+            value,
+            data,
+            operation,
+            safe_tx_gas,
+            base_gas,
+            gas_price_param,
+            gas_token,
+            refund_receiver,
+            sig_bytes
+        ).build_transaction({
+            'from': account.address,
+            'nonce': w3.eth.get_transaction_count(account.address),
+            'gas': 500000,
+            'gasPrice': int(w3.eth.gas_price * 1.2),  # 20% above current to ensure inclusion
+            'chainId': 137
+        })
+
+        # Sign and send
+        signed_tx = account.sign_transaction(exec_tx)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+
+        print(f"[REDEEM] Transaction sent: {tx_hash.hex()}")
+        print(f"[REDEEM] View on Polygonscan: https://polygonscan.com/tx/{tx_hash.hex()}")
+        print(f"[REDEEM] Waiting for confirmation...")
+
+        # Wait for confirmation
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+
+        if receipt['status'] == 1:
+            print(f"[REDEEM] SUCCESS! TX: {tx_hash.hex()}")
+            print(f"[REDEEM] Gas used: {receipt['gasUsed']}")
+            return True, tx_hash.hex()
+        else:
+            print(f"[REDEEM] Transaction FAILED: {tx_hash.hex()}")
+            return False, tx_hash.hex()
+
+    except Exception as e:
+        print(f"[REDEEM] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False, None
 
 
 def notify_claimable(positions):
@@ -186,97 +425,149 @@ def notify_claimable(positions):
         message += f"  Claim: ${p['claimable_usdc']:.2f}\n\n"
 
     message += f"<b>Total: ${total:.2f}</b>\n\n"
-    message += "Go to polymarket.com to claim!"
+    message += "Attempting auto-redeem..."
 
     send_telegram(message)
     print(f"[REDEEM] Notified about ${total:.2f} claimable")
 
 
-def has_builder_credentials():
-    """Check if Builder API credentials are configured"""
-    return all([BUILDER_API_KEY, BUILDER_SECRET, BUILDER_PASSPHRASE])
-
-
-def auto_redeem_position(condition_id, index_sets):
-    """
-    Auto-redeem a position using Builder API.
-    Requires: pip install polymarket-trade-executor[relayer]
-    """
-    if not has_builder_credentials():
-        print("[REDEEM] Builder credentials not configured - manual claim required")
-        return False
-
-    try:
-        from polymarket_trade_executor import TradeExecutor
-
-        executor = TradeExecutor(
-            host="https://clob.polymarket.com",
-            private_key=PRIVATE_KEY,
-            builder_api_key=BUILDER_API_KEY,
-            builder_secret=BUILDER_SECRET,
-            builder_passphrase=BUILDER_PASSPHRASE
-        )
-
-        # Execute redeem
-        # Note: This is a placeholder - actual implementation may vary
-        # based on the polymarket-trade-executor API
-        result = executor.redeem(condition_id=condition_id, index_sets=index_sets)
-        print(f"[REDEEM] Auto-redeemed: {result}")
-        return True
-
-    except ImportError:
-        print("[REDEEM] polymarket-trade-executor not installed")
-        print("[REDEEM] Install with: pip install polymarket-trade-executor[relayer]")
-        return False
-    except Exception as e:
-        print(f"[REDEEM] Auto-redeem failed: {e}")
-        return False
-
-
-def check_and_claim():
-    """Main function: check for claimable positions and process them"""
+def check_and_claim(dry_run=False):
+    """Main function: check for claimable positions and redeem them"""
     claimable = check_claimable_positions()
 
     if not claimable:
         return []
 
     print(f"[REDEEM] Found {len(claimable)} claimable position(s)")
+    notify_claimable(claimable)
 
-    if has_builder_credentials():
-        # Try auto-redeem
-        for pos in claimable:
-            success = auto_redeem_position(
-                pos['condition_id'],
-                [1, 2]  # Standard index sets for binary markets
+    if dry_run:
+        print("[REDEEM] DRY RUN - Not executing transactions")
+        return claimable
+
+    for pos in claimable:
+        print(f"\n[REDEEM] Processing: {pos['market']}")
+        print(f"[REDEEM] Shares: {pos['shares']:.2f}, Value: ${pos['claimable_usdc']:.2f}")
+        print(f"[REDEEM] Condition ID: {pos['condition_id']}")
+
+        success, tx_hash = redeem_position(pos['condition_id'])
+
+        if success:
+            redeemed_positions.add(pos['pos_key'])
+            send_telegram(
+                f"✅ <b>REDEEMED</b>\n"
+                f"Market: {pos['market']}\n"
+                f"Amount: ${pos['claimable_usdc']:.2f}\n"
+                f"TX: <a href='https://polygonscan.com/tx/{tx_hash}'>{tx_hash[:16]}...</a>"
             )
-            if success:
-                send_telegram(f"✅ Auto-redeemed ${pos['claimable_usdc']:.2f} from {pos['market']}")
-    else:
-        # Just notify
-        notify_claimable(claimable)
+        else:
+            send_telegram(
+                f"⚠️ <b>REDEEM FAILED</b>\n"
+                f"Market: {pos['market']}\n"
+                f"Amount: ${pos['claimable_usdc']:.2f}\n"
+                f"Manual claim may be required"
+            )
 
     return claimable
 
 
+def test_redeem_detection():
+    """Test: Find claimable positions without actually redeeming"""
+    print("=" * 60)
+    print("REDEEM TEST - Detection Only (No Transactions)")
+    print("=" * 60)
+
+    eoa_wallet = get_wallet_address()
+    proxy_wallet = PROXY_WALLET
+
+    print(f"EOA (signer): {eoa_wallet}")
+    print(f"Proxy (positions): {proxy_wallet}")
+
+    if not eoa_wallet:
+        print("ERROR: Could not derive EOA address")
+        print("Check that PRIVATE_KEY is set in ~/.env")
+        return
+
+    if not proxy_wallet:
+        print("ERROR: No WALLET_ADDRESS (proxy) configured")
+        return
+
+    # Check Web3 connection
+    w3 = get_web3()
+    if w3:
+        print(f"Web3 connected: {w3.is_connected()}")
+        if w3.is_connected():
+            eoa_balance = w3.eth.get_balance(eoa_wallet)
+            proxy_balance = w3.eth.get_balance(proxy_wallet)
+            print(f"EOA MATIC balance: {w3.from_wei(eoa_balance, 'ether'):.4f}")
+            print(f"Proxy MATIC balance: {w3.from_wei(proxy_balance, 'ether'):.4f}")
+
+            # Check if proxy is Safe and EOA is owner
+            try:
+                safe = w3.eth.contract(address=w3.to_checksum_address(proxy_wallet), abi=SAFE_ABI)
+                owners = safe.functions.getOwners().call()
+                is_owner = any(o.lower() == eoa_wallet.lower() for o in owners)
+                print(f"Safe ownership verified: {is_owner}")
+            except:
+                print("Could not verify Safe ownership")
+    else:
+        print("Web3: Not available (install with: pip install web3)")
+
+    print("\nFetching positions...")
+    positions = get_user_positions(proxy_wallet)
+    print(f"Total positions found: {len(positions)}")
+
+    print("\nChecking for claimable (resolved + winning)...")
+    claimable = check_claimable_positions(include_already_processed=True)
+
+    if not claimable:
+        print("\nNo claimable positions found.")
+        print("(Either no resolved markets, or you didn't win)")
+        return
+
+    print(f"\n{'='*60}")
+    print(f"FOUND {len(claimable)} CLAIMABLE POSITION(S):")
+    print(f"{'='*60}\n")
+
+    total = 0
+    for i, pos in enumerate(claimable, 1):
+        print(f"{i}. {pos['market']}")
+        print(f"   Outcome: {pos['outcome']}")
+        print(f"   Shares: {pos['shares']:.2f}")
+        print(f"   Value: ${pos['claimable_usdc']:.2f}")
+        print(f"   Condition ID: {pos['condition_id']}")
+        print()
+        total += pos['claimable_usdc']
+
+    print(f"{'='*60}")
+    print(f"TOTAL CLAIMABLE: ${total:.2f}")
+    print(f"{'='*60}")
+    print("\nTo redeem, run: python auto_redeem.py")
+
+
 def run_loop(interval=60):
-    """Run continuous checking loop"""
+    """Run continuous checking loop with auto-redeem"""
     print("=" * 60)
     print("AUTO-REDEEM MONITOR")
     print("=" * 60)
     print(f"Wallet: {get_wallet_address()}")
-    print(f"Builder API: {'Configured' if has_builder_credentials() else 'Not configured (notify only)'}")
     print(f"Check interval: {interval}s")
+    print(f"Mode: Direct CTF Contract Redemption")
     print("=" * 60)
 
     while True:
         try:
-            check_and_claim()
+            check_and_claim(dry_run=False)
         except Exception as e:
             print(f"[REDEEM] Error: {e}")
+            import traceback
+            traceback.print_exc()
 
         time.sleep(interval)
 
 
 if __name__ == "__main__":
-    # Run standalone
-    run_loop(interval=60)
+    if "--test" in sys.argv:
+        test_redeem_detection()
+    else:
+        run_loop(interval=60)
