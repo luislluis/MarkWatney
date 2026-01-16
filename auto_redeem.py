@@ -209,6 +209,9 @@ def check_claimable_positions(include_already_processed=False):
     """
     Check for resolved positions that can be claimed.
     Returns list of claimable positions with details.
+
+    Uses the 'redeemable' field from the data API which indicates
+    positions that are ready to claim.
     """
     # Use proxy wallet (where positions are held), not EOA
     wallet = PROXY_WALLET
@@ -220,6 +223,10 @@ def check_claimable_positions(include_already_processed=False):
     claimable = []
 
     for pos in positions:
+        # The API provides 'redeemable' field directly - no need to check resolution separately
+        if not pos.get('redeemable'):
+            continue
+
         condition_id = pos.get('conditionId') or pos.get('condition_id')
         if not condition_id:
             continue
@@ -229,28 +236,17 @@ def check_claimable_positions(include_already_processed=False):
         if not include_already_processed and pos_key in redeemed_positions:
             continue
 
-        # Check resolution
-        resolution = get_market_resolution(condition_id)
-        if not resolution.get('resolved'):
-            continue
+        size = float(pos.get('size', 0))
+        claimable_amount = size  # Winning shares worth $1 each
 
-        # Check if user has winning position
-        user_outcome = pos.get('outcome')
-        winning_outcome = resolution.get('winner')
-
-        if user_outcome == winning_outcome:
-            size = float(pos.get('size', 0))
-            claimable_amount = size  # Winning shares worth $1 each
-
-            claimable.append({
-                'condition_id': condition_id,
-                'market': pos.get('title', pos.get('slug', 'Unknown')),
-                'outcome': user_outcome,
-                'shares': size,
-                'claimable_usdc': claimable_amount,
-                'token_id': resolution.get('token_id'),
-                'pos_key': pos_key
-            })
+        claimable.append({
+            'condition_id': condition_id,
+            'market': pos.get('title', pos.get('slug', 'Unknown')),
+            'outcome': pos.get('outcome'),
+            'shares': size,
+            'claimable_usdc': claimable_amount,
+            'pos_key': pos_key
+        })
 
     return claimable
 
