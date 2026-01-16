@@ -1804,6 +1804,21 @@ def run_pairing_mode(books, ttc):
 
     cancel_all_orders()
 
+    # RE-VERIFY position after cancel to prevent duplicate orders (Bug Fix: race condition)
+    # The original order may have filled between our imbalance check and cancel
+    time.sleep(1.0)  # Brief settle time for cancel/fills to propagate
+    verified_up, verified_down = get_verified_fills()
+    window_state['filled_up_shares'] = verified_up
+    window_state['filled_down_shares'] = verified_down
+
+    # Re-check imbalance with fresh data
+    imb = get_arb_imbalance()
+    if imb == 0:
+        print(f"[{ts()}] PAIRING_MODE: Order filled during cancel - now balanced!")
+        window_state['state'] = STATE_DONE
+        _send_pair_outcome_notification()
+        return
+
     if not asks:
         return
 
