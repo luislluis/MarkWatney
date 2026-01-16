@@ -1,0 +1,32 @@
+============================================================
+ORDER BOOK IMBALANCE CORRELATION ANALYSIS
+Generated: 2026-01-15 21:03:25
+============================================================
+
+Completed windows analyzed: 160
+
+SIGNAL PREDICTION ACCURACY:
+----------------------------------------
+  Correct: 0/128 (0.0%)
+  Wrong: 128/128
+  No signal: 0
+
+BY SIGNAL STRENGTH:
+----------------------------------------
+  STRONG: 0/128 correct (0.0%)
+
+STRONG SIGNALS ONLY:
+----------------------------------------
+  Accuracy: 0/128 (0.0%)
+
+TREND CONFIRMATION:
+----------------------------------------
+  Correct: 0/98 (0.0%)
+  No trend: 30
+
+============================================================
+STRATEGY RECOMMENDATIONS:
+============================================================
+Need more data (5+ windows) for reliable recommendations
+
+============================================================

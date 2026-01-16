@@ -1,0 +1,69 @@
+# ===========================================
+# SECRETS - NEVER COMMIT THESE
+# ===========================================
+.env
+*.env
+.env.local
+.env.production
+.env.development
+config.json
+secrets.json
+**/credentials*.json
+**/service_account*.json
+*key*
+*secret*
+
+# ===========================================
+# LARGE DATA FILES
+# ===========================================
+*.log
+imbalance_data.json
+tracker_log.txt
+server_bot.log
+trades_smart.json
+
+# ===========================================
+# SYSTEM FILES
+# ===========================================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# ===========================================
+# PYTHON
+# ===========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+.eggs/
+*.egg-info/
+dist/
+build/
+
+# ===========================================
+# OLD/ARCHIVE FILES
+# ===========================================
+polymarket_arb_bot/
+polymarket_arb_bot.zip
+*.zip
+*.tar.gz
+
+# ===========================================
+# IDE
+# ===========================================
+.vscode/
+.idea/
+*.sublime-*
+
+# ===========================================
+# NODE (if any)
+# ===========================================
+node_modules/
+package-lock.json
