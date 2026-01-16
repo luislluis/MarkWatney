@@ -54,27 +54,46 @@ def get_market_data(slug):
 
 def parse_price_to_beat(market):
     """
-    Extract price-to-beat from market title.
+    Extract price-to-beat from market title or description.
     Example title: "Will BTC be above $42,500.00 at 3:15 PM UTC?"
     """
     if not market:
         return None
 
+    # Try title first, then description
     title = market.get('title', '')
+    description = market.get('description', '')
+
+    # Also check nested markets array for more specific data
+    markets_arr = market.get('markets', [])
+    if markets_arr:
+        inner_market = markets_arr[0]
+        if not title:
+            title = inner_market.get('question', '')
+        if not description:
+            description = inner_market.get('description', '')
+
+    # Debug: print what we're searching
+    print(f"[DEBUG] Title: {title[:100]}..." if len(title) > 100 else f"[DEBUG] Title: {title}")
 
     # Try to extract price with regex - matches $XX,XXX.XX or $XX,XXX
+    text_to_search = f"{title} {description}"
     patterns = [
         r'\$([0-9,]+(?:\.[0-9]+)?)',  # $42,500.00 or $42,500
         r'above\s+([0-9,]+(?:\.[0-9]+)?)',  # above 42,500
         r'below\s+([0-9,]+(?:\.[0-9]+)?)',  # below 42,500
+        r'(\d{2,3}[,.]?\d{3}(?:\.\d+)?)',  # 94,500 or 94500.00 (no $ sign)
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, title, re.IGNORECASE)
+        match = re.search(pattern, text_to_search, re.IGNORECASE)
         if match:
             price_str = match.group(1).replace(',', '')
             try:
-                return float(price_str)
+                price = float(price_str)
+                # Sanity check - BTC price should be > 10000
+                if price > 10000:
+                    return price
             except ValueError:
                 continue
 
@@ -211,11 +230,28 @@ def fetch_all_api_data():
     }
 
 
+def dump_raw_api_response(slug):
+    """Debug function to see raw API response"""
+    market = get_market_data(slug)
+    if market:
+        import json
+        print("\n=== RAW API RESPONSE ===")
+        print(json.dumps(market, indent=2, default=str)[:3000])
+        print("... (truncated)")
+    return market
+
+
 if __name__ == '__main__':
     # Test the module
     print("Testing data_fetcher.py...")
     print("-" * 50)
 
+    slug, _ = get_current_window()
+
+    # Show raw API response for debugging
+    dump_raw_api_response(slug)
+
+    print("\n" + "-" * 50)
     data = fetch_all_api_data()
 
     print(f"Window ID: {data['window_id']}")
