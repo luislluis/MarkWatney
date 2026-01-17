@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.3",
-    "codename": "Neon Falcon",
-    "date": "2026-01-16",
-    "changes": "Fix: Cancel race condition - track pending hedge orders to prevent duplicates"
+    "version": "v1.4",
+    "codename": "Iron Hedgehog",
+    "date": "2026-01-17",
+    "changes": "Fix: PAIRING_MODE now triggers when second order fails - prevents lopsided trades"
 }
 
 import os
@@ -1350,11 +1350,16 @@ def check_and_place_arb(books, ttc):
         local_up = window_state['filled_up_shares']
         local_down = window_state['filled_down_shares']
         if api_up != local_up or api_down != local_down:
-            print(f"🔄 PRE-ARB POSITION SYNC: local=({local_up},{local_down}) api=({api_up},{api_down})")
-            window_state['filled_up_shares'] = api_up
-            window_state['filled_down_shares'] = api_down
+            # Use MAX - fills can only increase, never decrease (API may be stale)
+            new_up = max(local_up, api_up)
+            new_down = max(local_down, api_down)
+            print(f"🔄 PRE-ARB POSITION SYNC: local=({local_up},{local_down}) api=({api_up},{api_down}) -> ({new_up},{new_down})")
+            window_state['filled_up_shares'] = new_up
+            window_state['filled_down_shares'] = new_down
             save_trades()
-            return False
+            # Only return False if position actually changed (prevents infinite loop)
+            if new_up != local_up or new_down != local_down:
+                return False
 
     imb = get_imbalance()
     if imb != 0:
@@ -1562,6 +1567,7 @@ def check_and_place_arb(books, ttc):
                 first_fill_shares = status['filled']
                 print(f"✅ {first_side} FILLED: {first_fill_shares} shares")
                 sheets_log_event("ARB_FILL", window_state.get('window_id', ''), side=first_side, shares=first_fill_shares, price=first_bid)
+                window_state['arb_placed_this_window'] = True  # Prevent duplicate arb attempts after first fill
                 break
             if i % 5 == 4:
                 print(f"⏳ {first_side}: {status['filled']}/{q} filled...")
@@ -1584,8 +1590,16 @@ def check_and_place_arb(books, ttc):
             else:
                 window_state['filled_down_shares'] = first_fill_shares
                 window_state['avg_down_price_paid'] = first_bid
-            success_up = first_side == "UP"
-            success_down = first_side == "DOWN"
+
+            # === FIX: Enter PAIRING_MODE to complete hedge ===
+            print(f"⚠️ ONE-LEG FILL! Entering PAIRING_MODE to hedge {first_side}")
+            window_state['state'] = STATE_PAIRING
+            window_state['pairing_start_time'] = time.time()
+            window_state['best_distance_seen'] = float('inf')
+            window_state['arb_placed_this_window'] = True  # Prevent new arb attempts
+            sheets_log_event("PAIRING_ENTRY", window_state.get('window_id', ''),
+                           imbalance=first_fill_shares, reason="second_order_failed")
+            return False  # Main loop will call run_pairing_mode()
         else:
             print(f"📝 ORDER {second_side}: ✅ {q} shares @ {second_bid*100:.0f}c")
 
