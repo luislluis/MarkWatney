@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.4",
-    "codename": "Iron Hedgehog",
+    "version": "v1.5",
+    "codename": "Houdini",
     "date": "2026-01-17",
-    "changes": "Fix: PAIRING_MODE now triggers when second order fails - prevents lopsided trades"
+    "changes": "Early bail: Compare hedge vs bail after 30s, detect 10c reversals, 5c max loss tolerance"
 }
 
 import os
@@ -247,6 +247,14 @@ HEDGE_PRICE_CAP = 0.50             # Never hedge above 50c
 BAIL_UNHEDGED_TIMEOUT = 120        # Bail if unhedged >2 minutes
 BAIL_TIME_REMAINING = 90           # Force bail at 90 seconds remaining (NO EXCEPTIONS)
 BAIL_LOSS_THRESHOLD = 0.05         # Bail if position down >5%
+
+# ===========================================
+# EARLY BAIL - MINIMIZE EXPOSURE (v1.5)
+# ===========================================
+EARLY_HEDGE_TIMEOUT = 30           # Try hedging for 30s before evaluating bail
+EARLY_BAIL_MAX_LOSS = 0.05         # 5c max loss per share triggers early decision
+EARLY_BAIL_CHECK_INTERVAL = 10     # Re-check every 10s after EARLY_HEDGE_TIMEOUT
+MARKET_REVERSAL_THRESHOLD = 0.10   # 10c move in 15s = consider immediate bail
 
 # ===========================================
 # ENTRY RESTRICTIONS
@@ -1146,6 +1154,57 @@ def execute_bail(side, shares, token, books):
     print(f"[{ts()}] BAIL_ORDER_FAILED")
     return False
 
+
+def bail_vs_hedge_decision(filled_side, filled_price, filled_shares, books):
+    """
+    Decide whether to HEDGE (buy other side) or BAIL (sell filled side).
+    Used after EARLY_HEDGE_TIMEOUT to minimize exposure.
+
+    Returns: ("HEDGE", price) or ("BAIL", price) or ("WAIT", None)
+    """
+    other_side = "DOWN" if filled_side == "UP" else "UP"
+
+    # Get current market prices
+    if filled_side == "UP":
+        hedge_asks = books.get('down_asks', [])
+        bail_bids = books.get('up_bids', [])
+    else:
+        hedge_asks = books.get('up_asks', [])
+        bail_bids = books.get('down_bids', [])
+
+    if not hedge_asks or not bail_bids:
+        return ("WAIT", None)
+
+    hedge_ask = float(hedge_asks[0]['price'])
+    bail_bid = float(bail_bids[0]['price'])
+
+    # Calculate losses
+    # Target hedge price = 0.99 - filled_price (break-even for arb)
+    target_hedge = 0.99 - filled_price
+    hedge_loss = max(0, hedge_ask - target_hedge)  # How much worse than break-even
+    bail_loss = max(0, filled_price - bail_bid)    # How much we lose by selling
+
+    print(f"[{ts()}] BAIL_VS_HEDGE: filled {filled_side}@{filled_price*100:.0f}c | "
+          f"hedge {other_side}@{hedge_ask*100:.0f}c (loss={hedge_loss*100:.1f}c) | "
+          f"bail@{bail_bid*100:.0f}c (loss={bail_loss*100:.1f}c)")
+
+    # Decision logic:
+    # 1. If hedge is at/near target (<=2c loss), always hedge
+    if hedge_loss <= 0.02:
+        return ("HEDGE", hedge_ask)
+
+    # 2. If bail is within tolerance AND cheaper than hedge, bail
+    if bail_loss <= EARLY_BAIL_MAX_LOSS and bail_loss < hedge_loss:
+        return ("BAIL", bail_bid)
+
+    # 3. If hedge is within tolerance (even if more than bail), hedge
+    if hedge_loss <= EARLY_BAIL_MAX_LOSS:
+        return ("HEDGE", hedge_ask)
+
+    # 4. Both too expensive - wait and let normal escalation handle it
+    return ("WAIT", None)
+
+
 # ============================================================================
 # 99c BID CAPTURE STRATEGY
 # ============================================================================
@@ -1802,6 +1861,20 @@ def run_pairing_mode(books, ttc):
         filled_price = window_state['avg_down_price_paid']
 
     # ===========================================
+    # TRACK MARKET STATE AT PAIRING ENTRY (for reversal detection)
+    # ===========================================
+    if 'pairing_entry_market' not in window_state:
+        window_state['pairing_entry_market'] = {
+            'up_ask': float(books['up_asks'][0]['price']) if books.get('up_asks') else 0.50,
+            'down_ask': float(books['down_asks'][0]['price']) if books.get('down_asks') else 0.50,
+            'up_bid': float(books['up_bids'][0]['price']) if books.get('up_bids') else 0.50,
+            'down_bid': float(books['down_bids'][0]['price']) if books.get('down_bids') else 0.50,
+            'time': time.time()
+        }
+        print(f"[{ts()}] PAIRING_ENTRY_MARKET: UP ask={window_state['pairing_entry_market']['up_ask']*100:.0f}c | "
+              f"DOWN ask={window_state['pairing_entry_market']['down_ask']*100:.0f}c")
+
+    # ===========================================
     # SCALE-UP LOGIC: Handle partial fills properly
     # If missing < 5, buy 5 on missing side + extra on filled side
     # ===========================================
@@ -1843,8 +1916,7 @@ def run_pairing_mode(books, ttc):
     best_ask = float(asks[0]['price'])
 
     # ===========================================
-    # EARLY BAIL CHECK - if stuck too long with no hope
-    # Triggers if: 5+ min in pairing AND current distance > 20c AND best_ever > 8c
+    # EARLY BAIL LOGIC v1.5 - MINIMIZE EXPOSURE
     # ===========================================
     if window_state.get('pairing_start_time'):
         time_in_pairing = time.time() - window_state['pairing_start_time']
@@ -1857,10 +1929,74 @@ def run_pairing_mode(books, ttc):
             window_state['best_distance_seen'] = current_distance
             best_ever = current_distance
 
-        # Early bail conditions: stuck too long with no hope of good hedge
+        # --- MARKET REVERSAL DETECTION (first 15 seconds) ---
+        entry_market = window_state.get('pairing_entry_market', {})
+        time_since_entry = time.time() - entry_market.get('time', time.time())
+
+        if time_since_entry <= 15 and entry_market:
+            # Calculate market move against our position
+            if filled_side == "UP":
+                entry_bid = entry_market.get('up_bid', 0.50)
+                current_bid = float(books['up_bids'][0]['price']) if books.get('up_bids') else 0.50
+            else:
+                entry_bid = entry_market.get('down_bid', 0.50)
+                current_bid = float(books['down_bids'][0]['price']) if books.get('down_bids') else 0.50
+
+            market_move = entry_bid - current_bid  # Positive = market moved against us
+
+            if market_move >= MARKET_REVERSAL_THRESHOLD:
+                print(f"⚡ MARKET_REVERSAL: {market_move*100:.0f}c move against {filled_side} in {time_since_entry:.0f}s!")
+                # Immediately evaluate bail vs hedge
+                decision, price = bail_vs_hedge_decision(filled_side, filled_price, missing_shares, books)
+                if decision == "BAIL":
+                    print(f"🛑 REVERSAL_BAIL: Selling {filled_side} @ {price*100:.0f}c")
+                    execute_bail(filled_side, missing_shares, filled_token, books)
+                    sheets_log_event("EARLY_BAIL", window_state.get('window_id', ''),
+                                    side=filled_side, shares=missing_shares, price=price,
+                                    reason="market_reversal")
+                    window_state['state'] = STATE_DONE
+                    return
+
+        # --- EARLY BAIL EVALUATION (after 30s timeout) ---
+        if time_in_pairing >= EARLY_HEDGE_TIMEOUT and time_in_pairing < 120:
+            # Check every EARLY_BAIL_CHECK_INTERVAL seconds
+            last_check = window_state.get('last_bail_check_time', 0)
+            if time.time() - last_check >= EARLY_BAIL_CHECK_INTERVAL:
+                window_state['last_bail_check_time'] = time.time()
+
+                decision, price = bail_vs_hedge_decision(filled_side, filled_price, missing_shares, books)
+
+                if decision == "BAIL":
+                    print(f"🛑 EARLY_BAIL: Selling {filled_side} @ {price*100:.0f}c (cheaper than hedging)")
+                    execute_bail(filled_side, missing_shares, filled_token, books)
+                    sheets_log_event("EARLY_BAIL", window_state.get('window_id', ''),
+                                    side=filled_side, shares=missing_shares, price=price,
+                                    reason="bail_cheaper_than_hedge")
+                    window_state['state'] = STATE_DONE
+                    return
+
+                elif decision == "HEDGE" and price:
+                    # Take the hedge at loss - within tolerance
+                    print(f"📈 EARLY_HEDGE: Taking {missing_side} @ {price*100:.0f}c (within {EARLY_BAIL_MAX_LOSS*100:.0f}c loss limit)")
+                    success, order_id, status_msg = place_and_verify_order(missing_token, price, missing_shares)
+                    if success:
+                        wait_and_sync_position()
+                        imb_check = get_imbalance()
+                        if imb_check == 0:
+                            sheets_log_event("EARLY_HEDGE", window_state.get('window_id', ''),
+                                            side=missing_side, shares=missing_shares, price=price,
+                                            reason="hedge_within_tolerance")
+                            window_state['pending_hedge_order_id'] = None
+                            window_state['pending_hedge_side'] = None
+                            _send_pair_outcome_notification()
+                            window_state['state'] = STATE_DONE
+                            return
+                        cancel_order(order_id)
+
+        # --- FALLBACK: 5+ min stuck with no hope ---
         if time_in_pairing > 300 and current_distance > 20 and best_ever > 8:
-            print(f"[{ts()}] EARLY_BAIL: {time_in_pairing:.0f}s elapsed, distance={current_distance:.0f}c, best_ever={best_ever:.0f}c")
-            execute_bail(missing_side, missing_shares, missing_token, books)
+            print(f"[{ts()}] LATE_BAIL: {time_in_pairing:.0f}s elapsed, distance={current_distance:.0f}c, best_ever={best_ever:.0f}c")
+            execute_bail(filled_side, missing_shares, filled_token, books)
             window_state['state'] = STATE_DONE
             return
 
