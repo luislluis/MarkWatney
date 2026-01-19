@@ -26,10 +26,10 @@ This enhancement adds a multi-signal danger scoring system to the existing 99c c
   2. Bot maintains rolling 5-second window of BTC prices for velocity calculation
   3. window_state contains danger_score field (initially 0) when position is held
   4. Velocity window size is configurable via constant (default 5 seconds)
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 01-01: TBD
+- [ ] 01-01-PLAN.md - Add tracking infrastructure (constants, state fields, tracking logic)
 
 ### Phase 2: Danger Scoring Engine
 **Goal**: Bot calculates danger score every tick when holding 99c position
@@ -80,7 +80,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Tracking Infrastructure | 0/? | Not started | - |
+| 1. Tracking Infrastructure | 0/1 | Planned | - |
 | 2. Danger Scoring Engine | 0/? | Not started | - |
 | 3. Hedge Execution | 0/? | Not started | - |
 | 4. Observability | 0/? | Not started | - |
