@@ -18,11 +18,11 @@ Requirements for the smart hedge system. Each maps to roadmap phases.
 
 ### Hedge Trigger
 
-- [ ] **HEDGE-01**: Hedge triggers when danger score >= 0.40
-- [ ] **HEDGE-02**: Hedge buys opposite side at market (take the ask)
-- [ ] **HEDGE-03**: Hedge only triggers once per position (no double-hedging)
-- [ ] **HEDGE-04**: Hedge respects existing max price limits (opposite side < 50c)
-- [ ] **HEDGE-05**: Hedge shares must equal original 99c capture fill shares
+- [x] **HEDGE-01**: Hedge triggers when danger score >= 0.40
+- [x] **HEDGE-02**: Hedge buys opposite side at market (take the ask)
+- [x] **HEDGE-03**: Hedge only triggers once per position (no double-hedging)
+- [x] **HEDGE-04**: Hedge respects existing max price limits (opposite side < 50c)
+- [x] **HEDGE-05**: Hedge shares must equal original 99c capture fill shares
 
 ### Tracking & State
 
@@ -83,11 +83,11 @@ Deferred to future release. Not in current roadmap.
 | SCORE-06 | Phase 2 | Complete |
 | CFG-01 | Phase 2 | Complete |
 | CFG-02 | Phase 2 | Complete |
-| HEDGE-01 | Phase 3 | Pending |
-| HEDGE-02 | Phase 3 | Pending |
-| HEDGE-03 | Phase 3 | Pending |
-| HEDGE-04 | Phase 3 | Pending |
-| HEDGE-05 | Phase 3 | Pending |
+| HEDGE-01 | Phase 3 | Complete |
+| HEDGE-02 | Phase 3 | Complete |
+| HEDGE-03 | Phase 3 | Complete |
+| HEDGE-04 | Phase 3 | Complete |
+| HEDGE-05 | Phase 3 | Complete |
 | LOG-01 | Phase 4 | Pending |
 | LOG-02 | Phase 4 | Pending |
 | LOG-03 | Phase 4 | Pending |
@@ -99,4 +99,4 @@ Deferred to future release. Not in current roadmap.
 
 ---
 *Requirements defined: 2026-01-19*
-*Last updated: 2026-01-19 after Phase 2 completion*
+*Last updated: 2026-01-19 after Phase 3 completion*
