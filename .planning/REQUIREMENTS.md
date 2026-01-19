@@ -1,0 +1,102 @@
+# Requirements: Smart Hedge System
+
+**Defined:** 2026-01-19
+**Core Value:** Preserve 99c capture profits by limiting losses to small controlled amounts instead of total loss.
+
+## v1 Requirements
+
+Requirements for the smart hedge system. Each maps to roadmap phases.
+
+### Danger Scoring
+
+- [ ] **SCORE-01**: System calculates danger score every tick when 99c position is held
+- [ ] **SCORE-02**: Score incorporates confidence drop from peak (weight: 3.0)
+- [ ] **SCORE-03**: Score incorporates order book imbalance on our side (weight: 0.4)
+- [ ] **SCORE-04**: Score incorporates 5-second price velocity (weight: 2.0)
+- [ ] **SCORE-05**: Score incorporates opponent ask price (weight: 0.5)
+- [ ] **SCORE-06**: Score incorporates time decay in final 60 seconds (weight: 0.3)
+
+### Hedge Trigger
+
+- [ ] **HEDGE-01**: Hedge triggers when danger score >= 0.40
+- [ ] **HEDGE-02**: Hedge buys opposite side at market (take the ask)
+- [ ] **HEDGE-03**: Hedge only triggers once per position (no double-hedging)
+- [ ] **HEDGE-04**: Hedge respects existing max price limits (opposite side < 50c)
+- [ ] **HEDGE-05**: Hedge shares must equal original 99c capture fill shares
+
+### Tracking & State
+
+- [ ] **TRACK-01**: Track peak confidence for each 99c position
+- [ ] **TRACK-02**: Track rolling 5-second price history for velocity calculation
+- [ ] **TRACK-03**: Store danger score in window_state for logging
+
+### Observability
+
+- [ ] **LOG-01**: Log danger score to Google Sheets Ticks (new column)
+- [ ] **LOG-02**: Log hedge events with full signal breakdown (all 5 components)
+- [ ] **LOG-03**: Console output shows danger score when position held
+
+### Configuration
+
+- [ ] **CFG-01**: Danger threshold configurable via constant (default 0.40)
+- [ ] **CFG-02**: Individual signal weights configurable via constants
+- [ ] **CFG-03**: Velocity window configurable (default 5 seconds)
+
+## v2 Requirements
+
+Deferred to future release. Not in current roadmap.
+
+### Analytics
+
+- **ANALYTICS-01**: Backtesting framework to test threshold changes against historical data
+- **ANALYTICS-02**: Dashboard showing hedge effectiveness over time
+- **ANALYTICS-03**: Alerting when hedge rate exceeds expected threshold
+
+### Advanced Hedging
+
+- **ADV-01**: Partial hedges (hedge 50% at score 0.35, 100% at 0.50)
+- **ADV-02**: Adaptive thresholds based on market volatility
+- **ADV-03**: Alternative hedge via selling position instead of buying opposite
+
+## Out of Scope
+
+| Feature | Reason |
+|---------|--------|
+| Machine learning thresholds | Complexity not justified; tune manually first |
+| Real-time threshold adjustment | Keep it simple for v1; constant threshold |
+| Multiple hedge levels | Adds complexity; binary hedge/don't is clearer |
+| Selling position to hedge | Buying opposite is simpler and guarantees locked loss |
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| SCORE-01 | Phase 1 | Pending |
+| SCORE-02 | Phase 1 | Pending |
+| SCORE-03 | Phase 1 | Pending |
+| SCORE-04 | Phase 1 | Pending |
+| SCORE-05 | Phase 1 | Pending |
+| SCORE-06 | Phase 1 | Pending |
+| TRACK-01 | Phase 2 | Pending |
+| TRACK-02 | Phase 2 | Pending |
+| TRACK-03 | Phase 2 | Pending |
+| HEDGE-01 | Phase 3 | Pending |
+| HEDGE-02 | Phase 3 | Pending |
+| HEDGE-03 | Phase 3 | Pending |
+| HEDGE-04 | Phase 3 | Pending |
+| HEDGE-05 | Phase 3 | Pending |
+| LOG-01 | Phase 4 | Pending |
+| LOG-02 | Phase 4 | Pending |
+| LOG-03 | Phase 4 | Pending |
+| CFG-01 | Phase 1 | Pending |
+| CFG-02 | Phase 1 | Pending |
+| CFG-03 | Phase 2 | Pending |
+
+**Coverage:**
+- v1 requirements: 18 total
+- Mapped to phases: 18
+- Unmapped: 0 ✓
+
+---
+*Requirements defined: 2026-01-19*
+*Last updated: 2026-01-19 after initial definition*
