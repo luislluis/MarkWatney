@@ -40,10 +40,10 @@ Plans:
   2. Danger score incorporates all 5 signals: confidence drop, order book imbalance, price velocity, opponent ask, time decay
   3. Each signal weight is configurable via constants
   4. Danger threshold is configurable (default 0.40)
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 02-01: TBD
+- [ ] 02-01-PLAN.md - Add danger scoring constants, functions (get_price_velocity, calculate_danger_score), and main loop integration
 
 ### Phase 3: Hedge Execution
 **Goal**: Bot executes hedge orders when danger threshold is exceeded
@@ -81,7 +81,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Tracking Infrastructure | 1/1 | Complete | 2026-01-19 |
-| 2. Danger Scoring Engine | 0/? | Not started | - |
+| 2. Danger Scoring Engine | 0/1 | Not started | - |
 | 3. Hedge Execution | 0/? | Not started | - |
 | 4. Observability | 0/? | Not started | - |
 
