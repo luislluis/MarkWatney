@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.6",
-    "codename": "Sentinel Fox",
+    "version": "v1.7",
+    "codename": "Watchful Owl",
     "date": "2026-01-19",
-    "changes": "Hedge trigger now uses multi-signal danger score instead of confidence"
+    "changes": "Observability: danger score in Ticks, signal breakdown in hedge events, console D:X.XX display"
 }
 
 import os
