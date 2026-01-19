@@ -68,10 +68,10 @@ Plans:
   1. Google Sheets Ticks tab includes danger_score column
   2. Hedge events logged to Events tab with all 5 signal values
   3. Console output shows danger score when holding 99c position
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 04-01: TBD
+- [ ] 04-01-PLAN.md - Add danger score to Ticks, signal breakdown to hedge events, console D:X.XX display
 
 ## Progress
 
@@ -83,7 +83,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | 1. Tracking Infrastructure | 1/1 | Complete | 2026-01-19 |
 | 2. Danger Scoring Engine | 1/1 | Complete | 2026-01-19 |
 | 3. Hedge Execution | 1/1 | Complete | 2026-01-19 |
-| 4. Observability | 0/? | Not started | - |
+| 4. Observability | 0/1 | Planned | - |
 
 ---
 *Roadmap created: 2026-01-19*
