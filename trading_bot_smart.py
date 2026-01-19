@@ -1321,7 +1321,7 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
 
 
 def check_99c_capture_hedge(books, ttc):
-    """Monitor 99c capture position and hedge if confidence drops."""
+    """Monitor 99c capture position and hedge if danger score exceeds threshold."""
     global window_state
 
     # Guards
@@ -1348,22 +1348,22 @@ def check_99c_capture_hedge(books, ttc):
         opposite_token = window_state['up_token']
         opposite_side = "UP"
 
-    if current_ask == 0 or not opposite_asks:
+    if not opposite_asks:
         return
 
-    # Recalculate confidence
-    new_confidence, time_penalty = calculate_99c_confidence(current_ask, ttc)
+    # Get danger score from window_state (calculated by main loop)
+    danger_score = window_state.get('danger_score', 0)
 
-    # Check if we should hedge
-    if new_confidence < CAPTURE_99C_HEDGE_THRESHOLD:
+    # Check if we should hedge based on danger score
+    if danger_score >= DANGER_THRESHOLD:
         opposite_ask = float(opposite_asks[0]['price'])
         shares = window_state.get('capture_99c_shares', 0)
 
         if shares > 0 and opposite_ask < 0.50:  # Don't hedge if opposite too expensive
             print()
             print(f"┌─────────────── 99c HEDGE TRIGGERED ───────────────┐")
-            print(f"│  Confidence dropped: {new_confidence*100:.0f}% < {CAPTURE_99C_HEDGE_THRESHOLD*100:.0f}% threshold".ljust(50) + "│")
-            print(f"│  Bet: {bet_side} @ 99c | Now: {current_ask*100:.0f}c".ljust(50) + "│")
+            print(f"│  Danger score: {danger_score:.2f} >= {DANGER_THRESHOLD:.2f} threshold".ljust(50) + "│")
+            print(f"│  Bet: {bet_side} @ 99c".ljust(50) + "│")
             print(f"│  Hedging: {shares} {opposite_side} @ {opposite_ask*100:.0f}c".ljust(50) + "│")
             print(f"└───────────────────────────────────────────────────┘")
 
