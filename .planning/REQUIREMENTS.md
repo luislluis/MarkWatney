@@ -26,9 +26,9 @@ Requirements for the smart hedge system. Each maps to roadmap phases.
 
 ### Tracking & State
 
-- [ ] **TRACK-01**: Track peak confidence for each 99c position
-- [ ] **TRACK-02**: Track rolling 5-second price history for velocity calculation
-- [ ] **TRACK-03**: Store danger score in window_state for logging
+- [x] **TRACK-01**: Track peak confidence for each 99c position
+- [x] **TRACK-02**: Track rolling 5-second price history for velocity calculation
+- [x] **TRACK-03**: Store danger score in window_state for logging
 
 ### Observability
 
@@ -40,7 +40,7 @@ Requirements for the smart hedge system. Each maps to roadmap phases.
 
 - [ ] **CFG-01**: Danger threshold configurable via constant (default 0.40)
 - [ ] **CFG-02**: Individual signal weights configurable via constants
-- [ ] **CFG-03**: Velocity window configurable (default 5 seconds)
+- [x] **CFG-03**: Velocity window configurable (default 5 seconds)
 
 ## v2 Requirements
 
@@ -71,10 +71,10 @@ Deferred to future release. Not in current roadmap.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| TRACK-01 | Phase 1 | Pending |
-| TRACK-02 | Phase 1 | Pending |
-| TRACK-03 | Phase 1 | Pending |
-| CFG-03 | Phase 1 | Pending |
+| TRACK-01 | Phase 1 | Complete |
+| TRACK-02 | Phase 1 | Complete |
+| TRACK-03 | Phase 1 | Complete |
+| CFG-03 | Phase 1 | Complete |
 | SCORE-01 | Phase 2 | Pending |
 | SCORE-02 | Phase 2 | Pending |
 | SCORE-03 | Phase 2 | Pending |
@@ -99,4 +99,4 @@ Deferred to future release. Not in current roadmap.
 
 ---
 *Requirements defined: 2026-01-19*
-*Last updated: 2026-01-19 after roadmap creation*
+*Last updated: 2026-01-19 after Phase 1 completion*
