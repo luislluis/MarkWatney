@@ -1426,6 +1426,68 @@ def get_price_velocity(btc_price_history: deque, bet_side: str) -> float:
         return price_change
 
 
+def calculate_danger_score(
+    current_confidence: float,
+    peak_confidence: float,
+    our_imbalance: float,
+    btc_price_history: deque,
+    opponent_ask: float,
+    time_remaining: float,
+    bet_side: str
+) -> dict:
+    """
+    Calculate danger score for 99c capture position.
+
+    Formula:
+    danger_score = (
+        3.0 * (peak_confidence - current_confidence) +      # Confidence drop
+        0.4 * max(-our_imbalance - 0.5, 0) +                # Order book selling pressure
+        2.0 * max(price_velocity_against_us, 0) +           # BTC moving against us
+        0.5 * max(opponent_ask - 0.20, 0) +                 # Opponent strength
+        0.3 * max(1 - ttl/60, 0)                            # Time decay in final 60s
+    )
+
+    Returns dict with 'score' and individual signal components for logging.
+    """
+    # Signal 1: Confidence drop from peak (always >= 0)
+    confidence_drop = max(peak_confidence - current_confidence, 0)
+    conf_component = DANGER_WEIGHT_CONFIDENCE * confidence_drop
+
+    # Signal 2: Order book imbalance against us
+    # Negative imbalance = selling pressure. Only count if heavily negative (< -0.5)
+    imb_signal = max(-our_imbalance - 0.5, 0)
+    imb_component = DANGER_WEIGHT_IMBALANCE * imb_signal
+
+    # Signal 3: BTC price velocity against our position
+    velocity = get_price_velocity(btc_price_history, bet_side)
+    velocity_component = DANGER_WEIGHT_VELOCITY * max(velocity, 0)
+
+    # Signal 4: Opponent ask strength (only counts if > 20c)
+    opp_signal = max(opponent_ask - 0.20, 0)
+    opp_component = DANGER_WEIGHT_OPPONENT * opp_signal
+
+    # Signal 5: Time decay in final 60 seconds (0 outside, ramps 0->1 as ttl goes 60->0)
+    time_signal = max(1 - time_remaining / 60, 0) if time_remaining < 60 else 0
+    time_component = DANGER_WEIGHT_TIME * time_signal
+
+    # Total danger score (not capped - values > 1.0 mean "very dangerous")
+    total = conf_component + imb_component + velocity_component + opp_component + time_component
+
+    return {
+        'score': total,
+        'confidence_drop': confidence_drop,
+        'confidence_component': conf_component,
+        'imbalance': our_imbalance,
+        'imbalance_component': imb_component,
+        'velocity': velocity,
+        'velocity_component': velocity_component,
+        'opponent_ask': opponent_ask,
+        'opponent_component': opp_component,
+        'time_remaining': time_remaining,
+        'time_component': time_component,
+    }
+
+
 # ============================================================================
 # ARB QUOTING WITH SMART SIGNALS
 # ============================================================================
