@@ -81,6 +81,7 @@ TICKS_HEADERS = [
     "BTC",
     "UP Imb",
     "DN Imb",
+    "Danger",
     "Reason"
 ]
 
@@ -309,7 +310,7 @@ class SheetsLogger:
     def buffer_tick(self, window_id: str, ttc: float, status: str,
                     ask_up: float, ask_down: float, up_shares: float, down_shares: float,
                     btc_price: float = None, up_imb: float = None, down_imb: float = None,
-                    reason: str = "") -> None:
+                    danger_score: float = None, reason: str = "") -> None:
         """
         Buffer a tick for batch upload to Google Sheets.
         Called every second from log_state().
@@ -326,6 +327,7 @@ class SheetsLogger:
             "btc_price": btc_price,
             "up_imb": up_imb,
             "down_imb": down_imb,
+            "danger_score": danger_score,
             "reason": reason
         })
 
@@ -352,6 +354,7 @@ class SheetsLogger:
                 f"{t['btc_price']:,.0f}" if t["btc_price"] else "",
                 f"{t['up_imb']:.2f}" if t["up_imb"] is not None else "",
                 f"{t['down_imb']:.2f}" if t["down_imb"] is not None else "",
+                f"{t['danger_score']:.2f}" if t["danger_score"] is not None else "",
                 t["reason"]
             ])
 
@@ -423,7 +426,7 @@ def sheets_log_window(window_state: Dict[str, Any]) -> bool:
 def buffer_tick(window_id: str, ttc: float, status: str,
                 ask_up: float, ask_down: float, up_shares: float, down_shares: float,
                 btc_price: float = None, up_imb: float = None, down_imb: float = None,
-                reason: str = "") -> None:
+                danger_score: float = None, reason: str = "") -> None:
     """
     Buffer a per-second tick for batch upload.
     Called from log_state() every second.
@@ -431,7 +434,7 @@ def buffer_tick(window_id: str, ttc: float, status: str,
     if _logger is None or not _logger.enabled:
         return
     _logger.buffer_tick(window_id, ttc, status, ask_up, ask_down, up_shares, down_shares,
-                        btc_price, up_imb, down_imb, reason)
+                        btc_price, up_imb, down_imb, danger_score, reason)
 
 
 def maybe_flush_ticks() -> bool:
