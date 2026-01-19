@@ -55,10 +55,10 @@ Plans:
   3. Hedge only triggers once per position (no double-hedging)
   4. Hedge respects max price limit (opposite side ask < 50c)
   5. Hedge uses existing place_and_verify_order() with retries
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 03-01: TBD
+- [ ] 03-01-PLAN.md - Replace confidence threshold with danger score trigger in check_99c_capture_hedge()
 
 ### Phase 4: Observability
 **Goal**: All hedge decisions are logged with full signal breakdown
@@ -82,7 +82,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 |-------|----------------|--------|-----------|
 | 1. Tracking Infrastructure | 1/1 | Complete | 2026-01-19 |
 | 2. Danger Scoring Engine | 1/1 | Complete | 2026-01-19 |
-| 3. Hedge Execution | 0/? | Not started | - |
+| 3. Hedge Execution | 0/1 | Planned | - |
 | 4. Observability | 0/? | Not started | - |
 
 ---
