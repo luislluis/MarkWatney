@@ -10,28 +10,29 @@ See: .planning/PROJECT.md (updated 2026-01-19)
 ## Current Position
 
 Phase: 2 of 4 (Danger Scoring Engine)
-Plan: 0 of ? in current phase
-Status: Ready to plan
-Last activity: 2026-01-19 -- Phase 1 verified and complete
+Plan: 1 of 1 in current phase
+Status: Phase 2 complete
+Last activity: 2026-01-19 -- Completed 02-01-PLAN.md (danger scoring engine)
 
-Progress: [##........] 25%
+Progress: [#####.....] 50%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 1
+- Total plans completed: 2
 - Average duration: 2 min
-- Total execution time: 2 min
+- Total execution time: 4 min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 1 - Tracking Infrastructure | 1 | 2 min | 2 min |
+| 2 - Danger Scoring Engine | 1 | 2 min | 2 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (2 min)
-- Trend: baseline established
+- Last 5 plans: 01-01 (2 min), 02-01 (2 min)
+- Trend: consistent 2 min/plan
 
 *Updated after each plan completion*
 
@@ -52,6 +53,12 @@ Recent decisions affecting current work:
 - Store (timestamp, price) tuples for future velocity calculation
 - Peak confidence uses current ask at fill detection, not order placement values
 
+**From 02-01 execution:**
+- Danger score uncapped - values >1.0 indicate very dangerous situations
+- Default imbalance=0 when analyzer unavailable (neutral)
+- Default opponent_ask=0.50 when no asks available (neutral)
+- Signal component pattern: each signal returns raw value and weighted component separately
+
 ### Pending Todos
 
 None.
@@ -62,6 +69,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-19T20:32:53Z
-Stopped at: Phase 1 verified, ready for Phase 2
+Last session: 2026-01-19T20:48:36Z
+Stopped at: Completed 02-01-PLAN.md (danger scoring engine)
 Resume file: None
