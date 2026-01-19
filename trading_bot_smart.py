@@ -287,6 +287,14 @@ VELOCITY_WINDOW_SECONDS = 5  # Rolling window for BTC price velocity
 CAPTURE_99C_HEDGE_ENABLED = True        # Enable auto-hedge on confidence drop
 CAPTURE_99C_HEDGE_THRESHOLD = 0.85      # Hedge if confidence drops below 85%
 
+# Danger Scoring Configuration (for smart hedge)
+DANGER_THRESHOLD = 0.40              # Hedge triggers when danger >= this
+DANGER_WEIGHT_CONFIDENCE = 3.0       # Weight for confidence drop from peak
+DANGER_WEIGHT_IMBALANCE = 0.4        # Weight for order book imbalance against us
+DANGER_WEIGHT_VELOCITY = 2.0         # Weight for BTC price velocity against us
+DANGER_WEIGHT_OPPONENT = 0.5         # Weight for opponent ask price strength
+DANGER_WEIGHT_TIME = 0.3             # Weight for time decay in final 60s
+
 # Bot identity
 BOT_NAME = "ChatGPT-Smart"
 
@@ -1388,6 +1396,34 @@ def check_99c_capture_hedge(books, ttc):
                 print(f"│  ❌ HEDGE FAILED: {status}".ljust(50) + "│")
                 print(f"└───────────────────────────────────────────────────┘")
                 print()
+
+
+def get_price_velocity(btc_price_history: deque, bet_side: str) -> float:
+    """
+    Calculate BTC price velocity over the rolling window.
+    Returns fractional price change against our position (positive = dangerous).
+
+    For UP position: falling BTC = positive (dangerous)
+    For DOWN position: rising BTC = positive (dangerous)
+    """
+    if len(btc_price_history) < 2:
+        return 0.0
+
+    oldest_ts, oldest_price = btc_price_history[0]
+    newest_ts, newest_price = btc_price_history[-1]
+
+    if oldest_price == 0:
+        return 0.0
+
+    # Fractional change: (new - old) / old
+    price_change = (newest_price - oldest_price) / oldest_price
+
+    # For UP: falling price is bad, so negate (falling = negative change -> positive danger)
+    # For DOWN: rising price is bad, so keep as-is (rising = positive change -> positive danger)
+    if bet_side == "UP":
+        return -price_change
+    else:
+        return price_change
 
 
 # ============================================================================
