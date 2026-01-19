@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.5",
-    "codename": "Houdini",
-    "date": "2026-01-17",
-    "changes": "Early bail: Compare hedge vs bail after 30s, detect 10c reversals, 5c max loss tolerance"
+    "version": "v1.6",
+    "codename": "Sentinel Fox",
+    "date": "2026-01-19",
+    "changes": "Hedge trigger now uses multi-signal danger score instead of confidence"
 }
 
 import os
@@ -1391,7 +1391,8 @@ def check_99c_capture_hedge(books, ttc):
 
                 sheets_log_event("99C_HEDGE", window_state.get('window_id', ''),
                                bet_side=bet_side, hedge_side=opposite_side,
-                               hedge_price=opposite_ask, combined=combined, loss=total_loss)
+                               hedge_price=opposite_ask, combined=combined, loss=total_loss,
+                               danger_score=danger_score)
             else:
                 print(f"│  ❌ HEDGE FAILED: {status}".ljust(50) + "│")
                 print(f"└───────────────────────────────────────────────────┘")
