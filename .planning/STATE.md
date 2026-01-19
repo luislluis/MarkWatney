@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-01-19)
 
 **Core value:** Preserve 99c capture profits by limiting losses to small controlled amounts instead of total loss.
-**Current focus:** Phase 4 - Observability
+**Current focus:** Phase 4 - Observability (COMPLETE)
 
 ## Current Position
 
 Phase: 4 of 4 (Observability)
-Plan: 0 of ? in current phase
-Status: Ready to plan
-Last activity: 2026-01-19 -- Phase 3 verified and complete
+Plan: 1 of 1 in current phase
+Status: Phase complete - PROJECT COMPLETE
+Last activity: 2026-01-19 -- Completed 04-01-PLAN.md (danger score observability)
 
-Progress: [#######...] 75%
+Progress: [##########] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 3
+- Total plans completed: 4
 - Average duration: 2 min
-- Total execution time: 6 min
+- Total execution time: 8 min
 
 **By Phase:**
 
@@ -30,9 +30,10 @@ Progress: [#######...] 75%
 | 1 - Tracking Infrastructure | 1 | 2 min | 2 min |
 | 2 - Danger Scoring Engine | 1 | 2 min | 2 min |
 | 3 - Hedge Execution | 1 | 2 min | 2 min |
+| 4 - Observability | 1 | 2 min | 2 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (2 min), 02-01 (2 min), 03-01 (2 min)
+- Last 5 plans: 01-01 (2 min), 02-01 (2 min), 03-01 (2 min), 04-01 (2 min)
 - Trend: consistent 2 min/plan
 
 *Updated after each plan completion*
@@ -64,6 +65,12 @@ Recent decisions affecting current work:
 - Removed current_ask==0 early return since danger_score handles missing data with defaults
 - Version codename "Sentinel Fox" for v1.6 (danger-aware hedging)
 
+**From 04-01 execution:**
+- Danger score only logged to Sheets when holding 99c position (avoids noise)
+- Console D:X.XX indicator only during active 99c capture monitoring
+- Signal breakdown uses {signal}_raw and {signal}_wgt naming convention
+- Version codename "Watchful Owl" for v1.7 (observability release)
+
 ### Pending Todos
 
 None.
@@ -74,6 +81,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-19T21:03:00Z
-Stopped at: Completed 03-01-PLAN.md (hedge execution)
+Last session: 2026-01-19T21:12:00Z
+Stopped at: Completed 04-01-PLAN.md (danger score observability) - PROJECT COMPLETE
 Resume file: None
