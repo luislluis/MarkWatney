@@ -2486,6 +2486,45 @@ def main():
 
                 # Check if 99c capture needs hedging (confidence dropped)
                 if window_state.get('capture_99c_fill_notified') and not window_state.get('capture_99c_hedged'):
+                    # Calculate danger score from 5 signals
+                    bet_side = window_state.get('capture_99c_side')
+
+                    # Get current confidence (same calculation as original entry)
+                    if bet_side == "UP":
+                        current_ask = float(books['up_asks'][0]['price']) if books.get('up_asks') else 0
+                    else:
+                        current_ask = float(books['down_asks'][0]['price']) if books.get('down_asks') else 0
+                    current_confidence, _ = calculate_99c_confidence(current_ask, remaining_secs)
+
+                    # Get order book imbalance for our side
+                    our_imbalance = 0.0
+                    if ORDERBOOK_ANALYZER_AVAILABLE:
+                        ob_result = orderbook_analyzer.analyze(
+                            books.get('up_bids', []), books.get('up_asks', []),
+                            books.get('down_bids', []), books.get('down_asks', [])
+                        )
+                        our_imbalance = ob_result['up_imbalance'] if bet_side == "UP" else ob_result['down_imbalance']
+
+                    # Get opponent ask price
+                    if bet_side == "UP":
+                        opponent_asks = books.get('down_asks', [])
+                    else:
+                        opponent_asks = books.get('up_asks', [])
+                    opponent_ask = float(opponent_asks[0]['price']) if opponent_asks else 0.50
+
+                    # Calculate danger score
+                    danger_result = calculate_danger_score(
+                        current_confidence=current_confidence,
+                        peak_confidence=window_state.get('capture_99c_peak_confidence', 0),
+                        our_imbalance=our_imbalance,
+                        btc_price_history=btc_price_history,
+                        opponent_ask=opponent_ask,
+                        time_remaining=remaining_secs,
+                        bet_side=bet_side
+                    )
+                    window_state['danger_score'] = danger_result['score']
+
+                    # Existing hedge check (will use danger_score in Phase 3)
                     check_99c_capture_hedge(books, remaining_secs)
 
                 # State machine
