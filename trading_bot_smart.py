@@ -796,14 +796,26 @@ def log_state(ttc, books=None):
         str_str = f"({strength[0]})" if strength else ""
         ob_str = f" | OB:{up_imb:+.2f}/{down_imb:+.2f} {sig_str}{str_str}"
 
+    # Build danger score indicator if applicable (LOG-03)
+    danger_str = ""
+    if window_state.get('capture_99c_fill_notified') and not window_state.get('capture_99c_hedged'):
+        ds = window_state.get('danger_score', 0)
+        danger_str = f" | D:{ds:.2f}"
+
     price_str = f"UP:{ask_up*100:2.0f}c DN:{ask_down*100:2.0f}c"
-    print(f"[{ts()}] {status:7} | T-{ttc:3.0f}s | {btc_str}{price_str}{ob_str} | pos:{up_shares:.0f}/{down_shares:.0f} | {reason}")
+    print(f"[{ts()}] {status:7} | T-{ttc:3.0f}s | {btc_str}{price_str}{ob_str}{danger_str} | pos:{up_shares:.0f}/{down_shares:.0f} | {reason}")
+
+    # Get danger score if holding 99c position (LOG-01)
+    danger_for_log = None
+    if window_state.get('capture_99c_fill_notified') and not window_state.get('capture_99c_hedged'):
+        danger_for_log = window_state.get('danger_score')
 
     # Buffer tick for Google Sheets (batched upload)
     buffer_tick(
         window_state.get('window_id', ''),
         ttc, status, ask_up, ask_down, up_shares, down_shares,
-        btc_price=btc_price, up_imb=up_imb, down_imb=down_imb, reason=reason
+        btc_price=btc_price, up_imb=up_imb, down_imb=down_imb,
+        danger_score=danger_for_log, reason=reason
     )
     maybe_flush_ticks()
 
@@ -1389,10 +1401,22 @@ def check_99c_capture_hedge(books, ttc):
                 print(f"└───────────────────────────────────────────────────┘")
                 print()
 
+                # LOG-02: Log hedge event with full signal breakdown
+                danger_result = window_state.get('danger_result', {})
                 sheets_log_event("99C_HEDGE", window_state.get('window_id', ''),
                                bet_side=bet_side, hedge_side=opposite_side,
                                hedge_price=opposite_ask, combined=combined, loss=total_loss,
-                               danger_score=danger_score)
+                               danger_score=danger_score,
+                               conf_drop=danger_result.get('confidence_drop', 0),
+                               conf_wgt=danger_result.get('confidence_component', 0),
+                               imb_raw=danger_result.get('imbalance', 0),
+                               imb_wgt=danger_result.get('imbalance_component', 0),
+                               vel_raw=danger_result.get('velocity', 0),
+                               vel_wgt=danger_result.get('velocity_component', 0),
+                               opp_raw=danger_result.get('opponent_ask', 0),
+                               opp_wgt=danger_result.get('opponent_component', 0),
+                               time_raw=danger_result.get('time_remaining', 0),
+                               time_wgt=danger_result.get('time_component', 0))
             else:
                 print(f"│  ❌ HEDGE FAILED: {status}".ljust(50) + "│")
                 print(f"└───────────────────────────────────────────────────┘")
@@ -2524,6 +2548,7 @@ def main():
                         bet_side=bet_side
                     )
                     window_state['danger_score'] = danger_result['score']
+                    window_state['danger_result'] = danger_result  # Store full result for logging
 
                     # Existing hedge check (will use danger_score in Phase 3)
                     check_99c_capture_hedge(books, remaining_secs)
