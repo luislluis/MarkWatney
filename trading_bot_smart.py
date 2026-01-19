@@ -767,6 +767,7 @@ def log_state(ttc, books=None):
         btc_price, btc_age = chainlink_feed.get_price_with_age()
         if btc_price:
             btc_str = f"BTC:${btc_price:,.0f}({btc_age}s) | "
+            btc_price_history.append((time.time(), btc_price))
 
     # Get order book imbalance
     ob_str = ""
@@ -2376,6 +2377,11 @@ def main():
                         print(f"│  💰 Expected profit: ${filled * 0.01:.2f}".ljust(48) + "│")
                         print(f"└──────────────────────────────────────────────────┘")
                         print()
+                        # Record peak confidence at fill time
+                        if books.get('up_asks') and books.get('down_asks'):
+                            current_ask = float(books['up_asks'][0]['price']) if side == "UP" else float(books['down_asks'][0]['price'])
+                            peak_conf, _ = calculate_99c_confidence(current_ask, remaining_secs)
+                            window_state['capture_99c_peak_confidence'] = peak_conf
                         window_state['capture_99c_fill_notified'] = True
                         sheets_log_event("CAPTURE_FILL", slug, side=side, shares=filled,
                                         pnl=filled * 0.01)
