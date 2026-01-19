@@ -11,7 +11,7 @@ This enhancement adds a multi-signal danger scoring system to the existing 99c c
 - Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
 
 - [x] **Phase 1: Tracking Infrastructure** - State tracking for peak confidence and price velocity
-- [ ] **Phase 2: Danger Scoring Engine** - Calculate composite danger score from 5 weighted signals
+- [x] **Phase 2: Danger Scoring Engine** - Calculate composite danger score from 5 weighted signals
 - [ ] **Phase 3: Hedge Execution** - Trigger and place hedge orders when danger threshold exceeded
 - [ ] **Phase 4: Observability** - Logging to Google Sheets and console visibility
 
@@ -43,7 +43,7 @@ Plans:
 **Plans**: 1 plan
 
 Plans:
-- [ ] 02-01-PLAN.md - Add danger scoring constants, functions (get_price_velocity, calculate_danger_score), and main loop integration
+- [x] 02-01-PLAN.md - Add danger scoring constants, functions (get_price_velocity, calculate_danger_score), and main loop integration
 
 ### Phase 3: Hedge Execution
 **Goal**: Bot executes hedge orders when danger threshold is exceeded
@@ -81,7 +81,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Tracking Infrastructure | 1/1 | Complete | 2026-01-19 |
-| 2. Danger Scoring Engine | 0/1 | Not started | - |
+| 2. Danger Scoring Engine | 1/1 | Complete | 2026-01-19 |
 | 3. Hedge Execution | 0/? | Not started | - |
 | 4. Observability | 0/? | Not started | - |
 

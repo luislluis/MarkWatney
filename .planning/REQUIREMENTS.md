@@ -9,12 +9,12 @@ Requirements for the smart hedge system. Each maps to roadmap phases.
 
 ### Danger Scoring
 
-- [ ] **SCORE-01**: System calculates danger score every tick when 99c position is held
-- [ ] **SCORE-02**: Score incorporates confidence drop from peak (weight: 3.0)
-- [ ] **SCORE-03**: Score incorporates order book imbalance on our side (weight: 0.4)
-- [ ] **SCORE-04**: Score incorporates 5-second price velocity (weight: 2.0)
-- [ ] **SCORE-05**: Score incorporates opponent ask price (weight: 0.5)
-- [ ] **SCORE-06**: Score incorporates time decay in final 60 seconds (weight: 0.3)
+- [x] **SCORE-01**: System calculates danger score every tick when 99c position is held
+- [x] **SCORE-02**: Score incorporates confidence drop from peak (weight: 3.0)
+- [x] **SCORE-03**: Score incorporates order book imbalance on our side (weight: 0.4)
+- [x] **SCORE-04**: Score incorporates 5-second price velocity (weight: 2.0)
+- [x] **SCORE-05**: Score incorporates opponent ask price (weight: 0.5)
+- [x] **SCORE-06**: Score incorporates time decay in final 60 seconds (weight: 0.3)
 
 ### Hedge Trigger
 
@@ -38,8 +38,8 @@ Requirements for the smart hedge system. Each maps to roadmap phases.
 
 ### Configuration
 
-- [ ] **CFG-01**: Danger threshold configurable via constant (default 0.40)
-- [ ] **CFG-02**: Individual signal weights configurable via constants
+- [x] **CFG-01**: Danger threshold configurable via constant (default 0.40)
+- [x] **CFG-02**: Individual signal weights configurable via constants
 - [x] **CFG-03**: Velocity window configurable (default 5 seconds)
 
 ## v2 Requirements
@@ -75,14 +75,14 @@ Deferred to future release. Not in current roadmap.
 | TRACK-02 | Phase 1 | Complete |
 | TRACK-03 | Phase 1 | Complete |
 | CFG-03 | Phase 1 | Complete |
-| SCORE-01 | Phase 2 | Pending |
-| SCORE-02 | Phase 2 | Pending |
-| SCORE-03 | Phase 2 | Pending |
-| SCORE-04 | Phase 2 | Pending |
-| SCORE-05 | Phase 2 | Pending |
-| SCORE-06 | Phase 2 | Pending |
-| CFG-01 | Phase 2 | Pending |
-| CFG-02 | Phase 2 | Pending |
+| SCORE-01 | Phase 2 | Complete |
+| SCORE-02 | Phase 2 | Complete |
+| SCORE-03 | Phase 2 | Complete |
+| SCORE-04 | Phase 2 | Complete |
+| SCORE-05 | Phase 2 | Complete |
+| SCORE-06 | Phase 2 | Complete |
+| CFG-01 | Phase 2 | Complete |
+| CFG-02 | Phase 2 | Complete |
 | HEDGE-01 | Phase 3 | Pending |
 | HEDGE-02 | Phase 3 | Pending |
 | HEDGE-03 | Phase 3 | Pending |
@@ -99,4 +99,4 @@ Deferred to future release. Not in current roadmap.
 
 ---
 *Requirements defined: 2026-01-19*
-*Last updated: 2026-01-19 after Phase 1 completion*
+*Last updated: 2026-01-19 after Phase 2 completion*
