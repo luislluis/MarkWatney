@@ -32,9 +32,9 @@ Requirements for the smart hedge system. Each maps to roadmap phases.
 
 ### Observability
 
-- [ ] **LOG-01**: Log danger score to Google Sheets Ticks (new column)
-- [ ] **LOG-02**: Log hedge events with full signal breakdown (all 5 components)
-- [ ] **LOG-03**: Console output shows danger score when position held
+- [x] **LOG-01**: Log danger score to Google Sheets Ticks (new column)
+- [x] **LOG-02**: Log hedge events with full signal breakdown (all 5 components)
+- [x] **LOG-03**: Console output shows danger score when position held
 
 ### Configuration
 
@@ -88,9 +88,9 @@ Deferred to future release. Not in current roadmap.
 | HEDGE-03 | Phase 3 | Complete |
 | HEDGE-04 | Phase 3 | Complete |
 | HEDGE-05 | Phase 3 | Complete |
-| LOG-01 | Phase 4 | Pending |
-| LOG-02 | Phase 4 | Pending |
-| LOG-03 | Phase 4 | Pending |
+| LOG-01 | Phase 4 | Complete |
+| LOG-02 | Phase 4 | Complete |
+| LOG-03 | Phase 4 | Complete |
 
 **Coverage:**
 - v1 requirements: 18 total
@@ -99,4 +99,4 @@ Deferred to future release. Not in current roadmap.
 
 ---
 *Requirements defined: 2026-01-19*
-*Last updated: 2026-01-19 after Phase 3 completion*
+*Last updated: 2026-01-19 after Phase 4 completion*
