@@ -280,6 +280,9 @@ CAPTURE_99C_TIME_PENALTIES = [
     (9999, 0.15),   # 5+ min: -15% (very uncertain)
 ]
 
+# Velocity tracking for danger score
+VELOCITY_WINDOW_SECONDS = 5  # Rolling window for BTC price velocity
+
 # 99c Capture Hedge Protection
 CAPTURE_99C_HEDGE_ENABLED = True        # Enable auto-hedge on confidence drop
 CAPTURE_99C_HEDGE_THRESHOLD = 0.85      # Hedge if confidence drops below 85%
@@ -298,6 +301,8 @@ STATE_DONE = "DONE"
 
 trades_log = []
 api_latencies = deque(maxlen=10)
+# Rolling window for BTC price velocity (danger score calculation)
+btc_price_history = deque(maxlen=VELOCITY_WINDOW_SECONDS)
 error_count = 0
 
 # HTTP session
@@ -378,6 +383,8 @@ def reset_window_state(slug):
         "best_distance_seen": None,          # Best (lowest) distance from profit target (in cents)
         "pending_hedge_order_id": None,      # Track pending hedge order to prevent duplicates
         "pending_hedge_side": None,          # Which side the pending hedge is for (UP/DOWN)
+        "danger_score": 0,                    # Current danger score (0.0-1.0)
+        "capture_99c_peak_confidence": 0,     # Confidence at 99c fill time
     }
 
 def get_imbalance():
