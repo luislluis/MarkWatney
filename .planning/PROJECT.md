@@ -1,80 +1,74 @@
-# Polymarket Bot: Smart Hedge System
+# Polymarket Bot: Performance Tracker
 
 ## What This Is
 
-Enhancement to the existing Polymarket BTC 15-minute trading bot. Adds a multi-signal danger scoring system for 99c capture positions that triggers hedges earlier, based on weighted analysis of confidence erosion, order book imbalance, price velocity, opponent strength, and time decay.
+A real-time performance tracking bot that runs alongside the Polymarket trading bot. Monitors BTC 15-minute window trades, grades each window's ARB and 99c capture performance, and writes formatted results to a dedicated Google Sheet dashboard.
 
-**Current Version:** v1.7 "Watchful Owl"
+**Current Version:** v2.0 "Performance Tracker"
 
 ## Core Value
 
-**Preserve 99c capture profits by limiting losses to small controlled amounts instead of total loss.**
+**See trading performance at a glance with real-time grading of every window.**
 
-The 99c capture strategy wins 97-98% of the time. When it loses, we currently lose 100% of the position. A well-tuned hedge system that triggers early enough can convert devastating losses into small, acceptable ones — preserving the strategy's profitability.
+Quick visual feedback on what's working and what's not. Green means money, red means learn.
+
+## Current Milestone: v2.0 Performance Tracker
+
+**Goal:** Build a standalone dashboard bot that grades every trading window in real-time.
+
+**Target features:**
+- Independent bot running alongside trading bot
+- Own Google Sheet with per-window grading
+- ARB trade tracking (entry, result, P/L)
+- 99c capture tracking (entry, result, P/L)
+- Color-coded formatting (green wins, red losses)
+- Summary row with totals and win rates
 
 ## Requirements
 
 ### Validated
 
-These capabilities exist in the bot:
+These capabilities exist in the trading bot (reference only):
 
-- ✓ BTC 15-minute Up/Down arbitrage trading — existing
-- ✓ 99c capture strategy (confidence-based single-side bets) — existing
-- ✓ Basic hedge system (triggers at 85% confidence drop) — existing
-- ✓ Google Sheets logging (per-second ticks, events, windows) — existing
-- ✓ Order book imbalance tracking — existing
-- ✓ Chainlink BTC price feed — existing
+- ✓ BTC 15-minute Up/Down arbitrage trading
+- ✓ 99c capture strategy
 - ✓ Multi-signal danger scoring system — v1.0
-- ✓ Configurable danger threshold (default 0.40) — v1.0
-- ✓ Price velocity tracking (5-second rolling window) — v1.0
-- ✓ Peak confidence tracking per position — v1.0
-- ✓ Danger score logging to Google Sheets — v1.0
-- ✓ Hedge decision logging with signal breakdown — v1.0
+- ✓ OB-based early bail detection — v1.9
+- ✓ 5-second rule for ARB pairing — v1.10
 
 ### Active
 
-(None — planning next milestone)
+- [ ] Standalone tracker bot (separate from trading bot)
+- [ ] Position monitoring via Polymarket APIs
+- [ ] Window-by-window grading after each 15-min close
+- [ ] ARB trade detection and grading
+- [ ] 99c capture detection and grading
+- [ ] Own Google Sheet with formatted dashboard
+- [ ] Color coding (green/red) and emoji indicators
+- [ ] Summary row with totals and win rates
+- [ ] Real-time updates as windows close
 
 ### Out of Scope
 
-- Machine learning / adaptive thresholds — complexity not justified yet, tune manually first
-- Backtesting framework — would be nice but not required for v1
-- Multiple hedge levels (partial hedges) — keep it simple: hedge or don't
-- Alternative hedge mechanisms (selling position vs buying opposite) — buying opposite is simpler and guaranteed
-
-## Current State
-
-**Shipped:** v1.0 Smart Hedge System (2026-01-19)
-
-**Codebase:**
-- 3,176 lines of Python (trading_bot_smart.py, sheets_logger.py)
-- Tech stack: py-clob-client, gspread, Chainlink oracle
-
-**What's Working:**
-- Danger score calculated every tick when holding 99c position
-- 5 weighted signals: confidence drop (3.0), OB imbalance (0.4), velocity (2.0), opponent ask (0.5), time decay (0.3)
-- Hedge triggers at danger_score >= 0.40
-- Full observability: D:X.XX console display, Sheets Ticks column, signal breakdown on hedge events
-
-**Next:** Monitor hedge effectiveness in production, tune threshold if needed
+- Modifying the trading bot — this is a separate observer
+- Historical backfill — starts fresh, grades going forward
+- Alerts/notifications — just logging for now
+- Trade recommendations — pure observation and grading
 
 ## Constraints
 
-- **Integration**: Must integrate cleanly with existing `check_99c_capture_hedge()` function ✓
-- **Performance**: Cannot add latency to the main loop (already runs per-second) ✓
-- **Reliability**: Hedge orders must use existing `place_and_verify_order()` with retries ✓
-- **Observability**: All hedge decisions must be logged with full signal breakdown ✓
+- **Independence**: Must not interfere with trading bot operation
+- **Same server**: Runs on 174.138.5.183 alongside trading bot
+- **API limits**: Use same APIs but don't duplicate calls unnecessarily
+- **Google Sheets**: Use existing service account credentials
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Weighted score over multi-trigger | More nuanced, avoids unnecessary hedges from single false signals | ✓ Shipped v1.0 |
-| 0.40 threshold (cautious) | User preference; with 97-98% win rate, can afford extra hedges | ✓ Shipped v1.0 |
-| Buy opposite side to hedge | Simpler than selling; guarantees locked-in loss amount | ✓ Shipped v1.0 |
-| 5-second velocity window | Long enough to smooth noise, short enough to catch rapid flips | ✓ Shipped v1.0 |
-| Danger score uncapped | Values >1.0 indicate very dangerous situations, useful information | ✓ Shipped v1.0 |
-| Signal component dict return | Returns both raw values and weighted components for logging | ✓ Shipped v1.0 |
+| Separate bot | Clean separation, no risk to trading | — Pending |
+| Own Google Sheet | Fresh dashboard, not cluttering trading logs | — Pending |
+| Watch positions | Most reliable way to detect actual trades | — Pending |
 
 ---
-*Last updated: 2026-01-19 after v1.0 milestone*
+*Last updated: 2026-01-20 after v2.0 milestone start*
