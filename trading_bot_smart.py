@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.7",
-    "codename": "Watchful Owl",
-    "date": "2026-01-19",
-    "changes": "Observability: danger score in Ticks, signal breakdown in hedge events, console D:X.XX display"
+    "version": "v1.10",
+    "codename": "Swift Hare",
+    "date": "2026-01-20",
+    "changes": "5-second rule: if second ARB leg doesn't fill in 5s, bail immediately (most pairs happen <5s)"
 }
 
 import os
@@ -249,12 +249,17 @@ BAIL_TIME_REMAINING = 90           # Force bail at 90 seconds remaining (NO EXCE
 BAIL_LOSS_THRESHOLD = 0.05         # Bail if position down >5%
 
 # ===========================================
-# EARLY BAIL - MINIMIZE EXPOSURE (v1.5)
+# EARLY BAIL - MINIMIZE EXPOSURE (v1.10)
 # ===========================================
-EARLY_HEDGE_TIMEOUT = 30           # Try hedging for 30s before evaluating bail
+PAIR_WINDOW_SECONDS = 5            # If second leg doesn't fill in 5s, bail immediately
+EARLY_HEDGE_TIMEOUT = 30           # (legacy) Try hedging for 30s before evaluating bail
 EARLY_BAIL_MAX_LOSS = 0.05         # 5c max loss per share triggers early decision
-EARLY_BAIL_CHECK_INTERVAL = 10     # Re-check every 10s after EARLY_HEDGE_TIMEOUT
+EARLY_BAIL_CHECK_INTERVAL = 10     # (legacy) Re-check every 10s after EARLY_HEDGE_TIMEOUT
 MARKET_REVERSAL_THRESHOLD = 0.10   # 10c move in 15s = consider immediate bail
+
+# OB-BASED EARLY BAIL (v1.9) - Detect reversals via order book before price moves
+OB_REVERSAL_THRESHOLD = -0.25      # If filled side OB imbalance < -25%, sellers dominating
+OB_REVERSAL_PRICE_CONFIRM = 0.03   # Only need 3c price drop when OB confirms reversal
 
 # ===========================================
 # ENTRY RESTRICTIONS
@@ -269,6 +274,7 @@ CAPTURE_99C_MAX_SPEND = 5.00       # Max $5 per window on this strategy
 CAPTURE_99C_BID_PRICE = 0.99       # Place bid at 99c
 CAPTURE_99C_MIN_TIME = 10          # Need at least 10 seconds to settle order
 CAPTURE_99C_MIN_CONFIDENCE = 0.95  # Only bet when 95%+ confident
+CAPTURE_99C_MAX_ASK = 0.99         # Don't capture if ask >= 99c (avoids reversal traps)
 
 # Time penalties: (max_time_remaining, penalty)
 # Confidence = ask_price - time_penalty
@@ -1278,11 +1284,17 @@ def check_99c_capture_opportunity(ask_up, ask_down, ttc):
     # Check UP side
     conf_up, penalty_up = calculate_99c_confidence(ask_up, ttc)
     if conf_up >= CAPTURE_99C_MIN_CONFIDENCE:
+        # Don't enter if ask is too high - filling at 99c would mean catching a reversal
+        if ask_up >= CAPTURE_99C_MAX_ASK:
+            return None
         return {'side': 'UP', 'ask': ask_up, 'confidence': conf_up, 'penalty': penalty_up}
 
     # Check DOWN side
     conf_down, penalty_down = calculate_99c_confidence(ask_down, ttc)
     if conf_down >= CAPTURE_99C_MIN_CONFIDENCE:
+        # Don't enter if ask is too high - filling at 99c would mean catching a reversal
+        if ask_down >= CAPTURE_99C_MAX_ASK:
+            return None
         return {'side': 'DOWN', 'ask': ask_down, 'confidence': conf_down, 'penalty': penalty_down}
 
     return None
@@ -2047,7 +2059,7 @@ def run_pairing_mode(books, ttc):
     best_ask = float(asks[0]['price'])
 
     # ===========================================
-    # EARLY BAIL LOGIC v1.5 - MINIMIZE EXPOSURE
+    # EARLY BAIL LOGIC v1.10 - 5-SECOND RULE
     # ===========================================
     if window_state.get('pairing_start_time'):
         time_in_pairing = time.time() - window_state['pairing_start_time']
@@ -2060,11 +2072,37 @@ def run_pairing_mode(books, ttc):
             window_state['best_distance_seen'] = current_distance
             best_ever = current_distance
 
-        # --- MARKET REVERSAL DETECTION (first 15 seconds) ---
+        # --- 5-SECOND RULE (v1.10) ---
+        # Most successful pairs happen within 5 seconds. After that, bail immediately.
+        if time_in_pairing >= PAIR_WINDOW_SECONDS and not window_state.get('five_sec_bail_triggered'):
+            window_state['five_sec_bail_triggered'] = True  # Only try once
+
+            # Get best available bail price
+            if filled_side == "UP":
+                bail_bids = books.get('up_bids', [])
+            else:
+                bail_bids = books.get('down_bids', [])
+
+            if bail_bids:
+                bail_price = float(bail_bids[0]['price'])
+                bail_loss = (filled_price - bail_price) * 100  # Loss in cents
+
+                print(f"⏱️ 5-SEC RULE: {time_in_pairing:.1f}s elapsed, second leg didn't fill")
+                print(f"🛑 IMMEDIATE_BAIL: Selling {missing_shares} {filled_side} @ {bail_price*100:.0f}c (loss: {bail_loss:.0f}c)")
+
+                execute_bail(filled_side, missing_shares, filled_token, books)
+                sheets_log_event("EARLY_BAIL", window_state.get('window_id', ''),
+                                side=filled_side, shares=missing_shares, price=bail_price,
+                                reason="5_second_rule", time_in_pairing=time_in_pairing)
+                window_state['state'] = STATE_DONE
+                return
+
+        # --- MARKET REVERSAL DETECTION (within 5-second window) ---
+        # Can trigger early bail BEFORE the 5-second rule if market moves against us
         entry_market = window_state.get('pairing_entry_market', {})
         time_since_entry = time.time() - entry_market.get('time', time.time())
 
-        if time_since_entry <= 15 and entry_market:
+        if time_since_entry <= PAIR_WINDOW_SECONDS and entry_market:
             # Calculate market move against our position
             if filled_side == "UP":
                 entry_bid = entry_market.get('up_bid', 0.50)
@@ -2087,6 +2125,28 @@ def run_pairing_mode(books, ttc):
                                     reason="market_reversal")
                     window_state['state'] = STATE_DONE
                     return
+
+            # --- OB-BASED REVERSAL DETECTION (v1.9) ---
+            # If OB shows heavy selling on our filled side + small price drop, bail early
+            if ORDERBOOK_ANALYZER_AVAILABLE and orderbook_analyzer:
+                ob_result = orderbook_analyzer.analyze(
+                    books.get('up_bids', []), books.get('up_asks', []),
+                    books.get('down_bids', []), books.get('down_asks', [])
+                )
+                filled_side_imb = ob_result['up_imbalance'] if filled_side == "UP" else ob_result['down_imbalance']
+
+                # OB shows selling pressure + small price drop = bail immediately
+                if filled_side_imb < OB_REVERSAL_THRESHOLD and market_move >= OB_REVERSAL_PRICE_CONFIRM:
+                    print(f"📊 OB_REVERSAL: {filled_side} imbalance={filled_side_imb:+.2f} (<{OB_REVERSAL_THRESHOLD}) + {market_move*100:.0f}c drop")
+                    decision, price = bail_vs_hedge_decision(filled_side, filled_price, missing_shares, books)
+                    if decision == "BAIL":
+                        print(f"🛑 OB_BAIL: Selling {filled_side} @ {price*100:.0f}c (OB confirmed reversal)")
+                        execute_bail(filled_side, missing_shares, filled_token, books)
+                        sheets_log_event("EARLY_BAIL", window_state.get('window_id', ''),
+                                        side=filled_side, shares=missing_shares, price=price,
+                                        reason="ob_reversal", ob_imbalance=filled_side_imb)
+                        window_state['state'] = STATE_DONE
+                        return
 
         # --- EARLY BAIL EVALUATION (after 30s timeout) ---
         if time_in_pairing >= EARLY_HEDGE_TIMEOUT and time_in_pairing < 120:

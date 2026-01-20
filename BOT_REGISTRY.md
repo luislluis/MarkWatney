@@ -1,15 +1,70 @@
 # Polybot Version Registry
 
-## Current Version: v1.3 "Neon Falcon"
+## Current Version: v1.10 "Swift Hare"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.3 | 2026-01-16 01:00 PST | Neon Falcon | Fix: Cancel race condition - track pending hedge order IDs | Active |
+| v1.10 | 2026-01-20 PST | Swift Hare | 5-second rule: if second ARB leg doesn't fill in 5s, bail immediately | Active |
+| v1.9 | 2026-01-20 PST | Nimble Otter | OB-based early bail: detect ARB reversals via order book before price moves (target <10c loss) | Archived |
+| v1.8 | 2026-01-19 20:30 PST | Cautious Crow | 99c capture: skip entry when ask >= 99c (avoids reversal traps) | Archived |
+| v1.7 | 2026-01-19 14:00 PST | Watchful Owl | Observability: danger score in Ticks, signal breakdown in hedge events | Archived |
+| v1.6 | 2026-01-19 13:30 PST | Swift Panther | Hedge execution: replace confidence trigger with danger score >= 0.40 | Archived |
+| v1.5 | 2026-01-19 13:00 PST | Keen Falcon | Danger scoring engine: 5-signal weighted scoring system | Archived |
+| v1.4 | 2026-01-19 12:30 PST | Steady Hawk | Tracking infrastructure: peak confidence, price velocity | Archived |
+| v1.3 | 2026-01-16 01:00 PST | Neon Falcon | Fix: Cancel race condition - track pending hedge order IDs | Archived |
 | v1.2 | 2026-01-16 00:30 PST | Silent Thunder | Fix: PAIRING_MODE race condition causing duplicate orders | Archived |
 | v1.1 | 2026-01-15 21:58 PST | Quantum Badger | Auto-redeem: direct CTF contract redemption through Gnosis Safe | Archived |
 | v1.0 | 2026-01-15 20:50 PST | Iron Phoenix | Baseline - includes PAIRING_MODE hedge escalation + 99c capture hedge protection | Archived |
 
 ## Version History Details
+
+### v1.10 - Swift Hare (2026-01-20)
+- **5-second rule for ARB pairing**
+- `PAIR_WINDOW_SECONDS = 5` - If second leg doesn't fill in 5 seconds, bail immediately
+- Observation: Most successful ARB pairs complete within 5 seconds
+- After 5 seconds without pairing, take best available bail price immediately
+- Simplifies logic: no more waiting 30+ seconds hoping for better prices
+- Market reversal / OB detection can still trigger earlier bail within the 5-second window
+
+### v1.9 - Nimble Otter (2026-01-20)
+- **OB-based early bail for ARB strategy**
+- Detects reversals via order book imbalance before price moves significantly
+- `OB_REVERSAL_THRESHOLD = -0.25` - Bail when filled side has 25%+ selling pressure
+- `OB_REVERSAL_PRICE_CONFIRM = 0.03` - Only need 3c price drop when OB confirms
+- Target: <10c loss instead of 23c (in the window 1768867800 example)
+- Runs during first 15 seconds of PAIRING_MODE when reversals are most likely
+- Combined with existing price-based reversal detection for redundancy
+
+### v1.8 - Cautious Crow (2026-01-19)
+- **99c capture reversal trap prevention**
+- Added `CAPTURE_99C_MAX_ASK = 0.99` threshold
+- If ask price >= 99c, skip the 99c capture entirely
+- Rationale: When ask is at 99c+, our 99c bid is at or below ask
+- A fill means price dropped TO our bid = catching a falling knife
+- When ask < 99c, our bid is above ask = immediate fill, safe entry
+- This would have prevented the -$1.60 loss in window 1768870800
+
+### v1.7 - Watchful Owl (2026-01-19)
+- **Full observability for danger score system**
+- Danger score (D:X.XX) displayed in console output every tick
+- DangerScore column added to Google Sheets Ticks
+- Signal breakdown logged on hedge events (confidence, velocity, OB, opponent, time)
+
+### v1.6 - Swift Panther (2026-01-19)
+- **Danger score triggers hedge instead of simple confidence threshold**
+- Replace 85% confidence check with danger_score >= 0.40
+- More nuanced triggering using multiple signals
+
+### v1.5 - Keen Falcon (2026-01-19)
+- **Multi-signal danger scoring engine**
+- 5 weighted signals: confidence drop (3.0), OB imbalance (0.4), velocity (2.0), opponent ask (0.5), time decay (0.3)
+- Returns both raw values and weighted components
+
+### v1.4 - Steady Hawk (2026-01-19)
+- **Tracking infrastructure for danger scoring**
+- Peak confidence tracking per 99c capture position
+- BTC price velocity tracking (5-second rolling window)
+- Foundation for v1.5 danger scoring
 
 ### v1.3 - Neon Falcon (2026-01-16)
 - **Bug fix**: Cancel race condition causing duplicate hedge orders
