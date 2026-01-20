@@ -2,42 +2,38 @@
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-01-19)
+See: .planning/PROJECT.md (updated 2026-01-20)
 
-**Core value:** Preserve 99c capture profits by limiting losses to small controlled amounts instead of total loss.
-**Current focus:** v1.0 complete — planning next milestone
+**Core value:** See trading performance at a glance with real-time grading of every window.
+**Current focus:** v2.0 Performance Tracker — Phase 1
 
 ## Current Position
 
-Milestone: v1.0 SHIPPED
-Phase: All 4 phases complete
-Status: Milestone archived
-Last activity: 2026-01-19 — v1.0 milestone complete
+Milestone: v2.0 Performance Tracker
+Phase: 1 - Core Bot Infrastructure
+Status: Ready to plan
+Last activity: 2026-01-20 — Milestone initialized
 
-Progress: [##########] 100%
+Progress: [░░░░░░░░░░] 0%
 
-## Performance Metrics
+## Roadmap Overview
 
-**v1.0 Milestone:**
-- Total plans: 4
-- Total phases: 4
-- Average duration: 2 min/plan
-- Total execution time: 8 min
-- Ship date: 2026-01-19
+| Phase | Name | Requirements | Status |
+|-------|------|--------------|--------|
+| 1 | Core Bot Infrastructure | CORE-01 to CORE-04 | ○ Pending |
+| 2 | Position Detection | POS-01 to POS-05 | ○ Pending |
+| 3 | Google Sheet Dashboard | SHEET-01 to SHEET-05 | ○ Pending |
 
 ## Accumulated Context
 
-### Decisions
+### Decisions Made
 
-All decisions ratified and shipped in v1.0:
-- Weighted score over multi-trigger ✓
-- 0.40 threshold (cautious) ✓
-- Buy opposite side to hedge ✓
-- 5-second velocity window ✓
-- Danger score uncapped ✓
-- Signal component dict return ✓
-
-See .planning/PROJECT.md Key Decisions table for full history.
+| Decision | Rationale |
+|----------|-----------|
+| Separate bot | Clean separation, no risk to trading |
+| Own Google Sheet | Fresh dashboard, not cluttering trading logs |
+| Watch positions via API | Most reliable way to detect actual trades |
+| Skip research | Same tech stack as trading bot |
 
 ### Pending Todos
 
@@ -45,10 +41,11 @@ None.
 
 ### Blockers/Concerns
 
-None.
+- Trading bot currently stopped (out of gas) — need MATIC to resume trading
+- Performance tracker can still be built and tested
 
 ## Session Continuity
 
-Last session: 2026-01-19
-Stopped at: v1.0 milestone complete and archived
-Resume: `/gsd:new-milestone` to start next milestone
+Last session: 2026-01-20
+Stopped at: Milestone initialized, ready to plan Phase 1
+Resume: `/gsd:plan-phase 1` to create execution plan
