@@ -23,6 +23,13 @@
 - [ ] Detects window transitions (old window ends, new begins)
 - [ ] Skeleton row written to console on each window close
 
+**Plans:** 3 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Bot skeleton with main loop, TeeLogger, graceful shutdown
+- [ ] 01-02-PLAN.md — Window detection (slug calculation, market data, time remaining)
+- [ ] 01-03-PLAN.md — Window transitions and graded row output skeleton
+
 **Depends on:** Nothing (first phase)
 
 ---
@@ -83,3 +90,4 @@
 
 ---
 *Roadmap created: 2026-01-20*
+*Phase 1 planned: 2026-01-20*
