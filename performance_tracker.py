@@ -144,6 +144,51 @@ def reset_window_state(slug):
         'graded': False,
     }
 
+def grade_window(state):
+    """Grade a completed window and output summary row.
+
+    This is a skeleton that outputs placeholder data.
+    Phase 2 will populate actual position and P/L data.
+    """
+    if not state:
+        return
+
+    slug = state.get('slug', 'unknown')
+    started = state.get('started_at', datetime.now(PST))
+
+    # Extract window time from slug (e.g., btc-updown-15m-1737417600)
+    try:
+        window_ts = int(slug.split('-')[-1])
+        window_time = datetime.fromtimestamp(window_ts, tz=PST).strftime('%H:%M')
+    except:
+        window_time = started.strftime('%H:%M')
+
+    # Placeholder data (Phase 2 will populate)
+    arb_entry = state.get('arb_entry')
+    arb_result = state.get('arb_result', '-')
+    arb_pnl = state.get('arb_pnl', 0)
+
+    capture_entry = state.get('capture_entry')
+    capture_result = state.get('capture_result', '-')
+    capture_pnl = state.get('capture_pnl', 0)
+
+    total_pnl = arb_pnl + capture_pnl
+
+    # Format row
+    print(f"\n{'='*60}")
+    print(f"WINDOW GRADED: {slug}")
+    print(f"{'='*60}")
+    print(f"  Time:        {window_time}")
+    print(f"  ARB Entry:   {'Yes' if arb_entry else '-'}")
+    print(f"  ARB Result:  {arb_result}")
+    print(f"  ARB P/L:     ${arb_pnl:+.2f}")
+    print(f"  99c Entry:   {'Yes' if capture_entry else '-'}")
+    print(f"  99c Result:  {capture_result}")
+    print(f"  99c P/L:     ${capture_pnl:+.2f}")
+    print(f"  -----------")
+    print(f"  TOTAL P/L:   ${total_pnl:+.2f}")
+    print(f"{'='*60}\n")
+
 # ===========================================
 # SIGNAL HANDLER
 # ===========================================
@@ -157,6 +202,7 @@ signal.signal(signal.SIGINT, signal_handler)
 # MAIN LOOP
 # ===========================================
 def main():
+    global window_state
     print("Performance Tracker starting main loop...")
     print()
 
@@ -170,10 +216,17 @@ def main():
             # Get current window
             slug, window_start = get_current_slug()
 
-            # Detect window change
+            # Detect window transition
             if slug != last_slug:
-                cached_market = None  # Force refresh on new window
+                # Grade completed window (if exists)
+                if last_slug is not None and window_state is not None:
+                    grade_window(window_state)
+
+                # Start fresh window
+                window_state = reset_window_state(slug)
+                cached_market = None
                 last_slug = slug
+
                 print(f"\n{'='*50}")
                 print(f"NEW WINDOW: {slug}")
                 print(f"{'='*50}")
@@ -196,7 +249,6 @@ def main():
 
             # Display status line
             # TODO: Position detection (Phase 2)
-            # TODO: Grading (Plan 03)
             print(f"[{datetime.now(PST).strftime('%H:%M:%S')}] T-{remaining_secs:3d}s | {slug}")
 
             # Maintain 1-second loop
