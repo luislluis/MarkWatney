@@ -134,15 +134,44 @@ def main():
     print("Performance Tracker starting main loop...")
     print()
 
+    cached_market = None
+    last_slug = None
+
     while True:
         cycle_start = time.time()
 
         try:
-            # TODO: Window detection (Plan 02)
+            # Get current window
+            slug, window_start = get_current_slug()
+
+            # Detect window change
+            if slug != last_slug:
+                cached_market = None  # Force refresh on new window
+                last_slug = slug
+                print(f"\n{'='*50}")
+                print(f"NEW WINDOW: {slug}")
+                print(f"{'='*50}")
+
+            # Fetch market data (cache per window)
+            if not cached_market:
+                cached_market = get_market_data(slug)
+                if not cached_market:
+                    print(f"[{datetime.now(PST).strftime('%H:%M:%S')}] Waiting for market data...")
+                    time.sleep(2)
+                    continue
+
+            # Calculate time remaining
+            time_str, remaining_secs = get_time_remaining(cached_market)
+
+            if remaining_secs < 0:
+                print(f"[{datetime.now(PST).strftime('%H:%M:%S')}] Window ended, waiting for next...")
+                time.sleep(2)
+                continue
+
+            # Display status line
             # TODO: Position detection (Phase 2)
             # TODO: Grading (Plan 03)
-
-            print(f"[{datetime.now(PST).strftime('%H:%M:%S')}] tick")
+            print(f"[{datetime.now(PST).strftime('%H:%M:%S')}] T-{remaining_secs:3d}s | {slug}")
 
             # Maintain 1-second loop
             elapsed = time.time() - cycle_start
@@ -150,6 +179,8 @@ def main():
 
         except Exception as e:
             print(f"ERROR: {e}")
+            import traceback
+            traceback.print_exc()
             time.sleep(1)
 
 if __name__ == "__main__":
