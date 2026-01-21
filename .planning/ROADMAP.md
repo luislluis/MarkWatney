@@ -23,7 +23,7 @@
 - [x] Detects window transitions (old window ends, new begins)
 - [x] Skeleton row written to console on each window close
 
-**Plans:** 3 plans ✓
+**Plans:** 3 plans
 
 Plans:
 - [x] 01-01-PLAN.md — Bot skeleton with main loop, TeeLogger, graceful shutdown
@@ -53,6 +53,13 @@ Plans:
 - [ ] Correctly grades 99c outcome (WIN, LOSS)
 - [ ] Calculates accurate P/L for each trade
 
+**Plans:** 2 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — Position fetching and trade type detection (POS-01, POS-03)
+- [ ] 02-02-PLAN.md — Market resolution and outcome grading with P/L (POS-02, POS-04, POS-05)
+
+**Status:** PLANNED (2026-01-20)
 **Depends on:** Phase 1 (window detection)
 
 ---
@@ -83,7 +90,7 @@ Plans:
 
 | Phase | Name | Requirements | Depends On |
 |-------|------|--------------|------------|
-| 1 | Core Bot Infrastructure | CORE-01 to CORE-04 | ✓ Complete |
+| 1 | Core Bot Infrastructure | CORE-01 to CORE-04 | COMPLETE |
 | 2 | Position Detection | POS-01 to POS-05 | Phase 1 |
 | 3 | Google Sheet Dashboard | SHEET-01 to SHEET-05 | Phase 2 |
 
@@ -93,3 +100,4 @@ Plans:
 *Roadmap created: 2026-01-20*
 *Phase 1 planned: 2026-01-20*
 *Phase 1 complete: 2026-01-20*
+*Phase 2 planned: 2026-01-20*
