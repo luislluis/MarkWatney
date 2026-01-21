@@ -386,11 +386,15 @@ def reset_window_state(slug):
         'graded': False,
     }
 
-def grade_window(state):
+def grade_window(state, market):
     """Grade a completed window and output summary row.
 
-    This is a skeleton that outputs placeholder data.
-    Phase 2 will populate actual position and P/L data.
+    Queries market resolution API to determine winner, then grades
+    any ARB or 99c capture trades with actual P/L calculations.
+
+    Args:
+        state: Window state dict with arb_entry and/or capture_entry
+        market: Market data dict for getting condition_id
     """
     if not state:
         return
@@ -405,13 +409,38 @@ def grade_window(state):
     except:
         window_time = started.strftime('%H:%M')
 
-    # Placeholder data (Phase 2 will populate)
+    # Get market resolution
+    winning_side = None
+    if market:
+        condition_id = get_condition_id(market)
+        if condition_id:
+            resolution = get_market_resolution(condition_id)
+            if resolution.get('resolved'):
+                winning_side = resolution['winner']
+                state['outcome'] = winning_side
+            else:
+                print(f"[WARN] Market not yet resolved for {slug}")
+        else:
+            print(f"[WARN] No condition ID for {slug}")
+
+    # Grade ARB trade if present
     arb_entry = state.get('arb_entry')
-    arb_result = state.get('arb_result', '-')
+    if arb_entry and winning_side:
+        arb_grade = grade_arb_trade(state, winning_side)
+        state['arb_result'] = arb_grade['result']
+        state['arb_pnl'] = arb_grade['pnl']
+
+    arb_result = state.get('arb_result', '-') or '-'
     arb_pnl = state.get('arb_pnl', 0)
 
+    # Grade 99c capture if present
     capture_entry = state.get('capture_entry')
-    capture_result = state.get('capture_result', '-')
+    if capture_entry and winning_side:
+        capture_grade = grade_99c_trade(state, winning_side)
+        state['capture_result'] = capture_grade['result']
+        state['capture_pnl'] = capture_grade['pnl']
+
+    capture_result = state.get('capture_result', '-') or '-'
     capture_pnl = state.get('capture_pnl', 0)
 
     total_pnl = arb_pnl + capture_pnl
@@ -421,6 +450,7 @@ def grade_window(state):
     print(f"WINDOW GRADED: {slug}")
     print(f"{'='*60}")
     print(f"  Time:        {window_time}")
+    print(f"  Outcome:     {winning_side or 'UNKNOWN'}")
     print(f"  ARB Entry:   {'Yes' if arb_entry else '-'}")
     print(f"  ARB Result:  {arb_result}")
     print(f"  ARB P/L:     ${arb_pnl:+.2f}")
@@ -463,7 +493,7 @@ def main():
             if slug != last_slug:
                 # Grade completed window (if exists)
                 if last_slug is not None and window_state is not None:
-                    grade_window(window_state)
+                    grade_window(window_state, cached_market)
 
                 # Start fresh window
                 window_state = reset_window_state(slug)
@@ -496,7 +526,7 @@ def main():
                 time.sleep(GRADE_DELAY_SECONDS)
 
                 # Grade the window
-                grade_window(window_state)
+                grade_window(window_state, cached_market)
                 window_state['graded'] = True
 
                 # Continue to wait for new window
