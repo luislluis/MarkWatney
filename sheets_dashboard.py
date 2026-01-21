@@ -270,6 +270,88 @@ class DashboardLogger:
 
         print("[DASHBOARD] Sheet structure setup complete")
 
+    def _apply_row_formatting(self, row_number: int, arb_result: Optional[str],
+                               arb_pnl: float, capture_result: Optional[str],
+                               capture_pnl: float) -> None:
+        """
+        Apply color formatting to a data row based on results and P/L values.
+
+        Uses batch_format for efficiency (single API call for all formatting).
+
+        Args:
+            row_number: The row number to format (1-indexed)
+            arb_result: ARB result string ('PAIRED', 'BAIL', 'LOPSIDED', None)
+            arb_pnl: ARB P/L in dollars
+            capture_result: 99c capture result ('WIN', 'LOSS', None)
+            capture_pnl: 99c capture P/L in dollars
+        """
+        formats = []
+
+        # ARB Result column (D) - green for PAIRED, red for BAIL/LOPSIDED
+        if arb_result == 'PAIRED':
+            formats.append({
+                "range": f"D{row_number}",
+                "format": {"backgroundColor": GREEN_BG}
+            })
+        elif arb_result in ('BAIL', 'LOPSIDED'):
+            formats.append({
+                "range": f"D{row_number}",
+                "format": {"backgroundColor": RED_BG}
+            })
+
+        # ARB P/L column (E) - green if positive, red if negative
+        if arb_pnl > 0:
+            formats.append({
+                "range": f"E{row_number}",
+                "format": {"backgroundColor": GREEN_BG}
+            })
+        elif arb_pnl < 0:
+            formats.append({
+                "range": f"E{row_number}",
+                "format": {"backgroundColor": RED_BG}
+            })
+
+        # 99c Result column (G) - green for WIN, red for LOSS
+        if capture_result == 'WIN':
+            formats.append({
+                "range": f"G{row_number}",
+                "format": {"backgroundColor": GREEN_BG}
+            })
+        elif capture_result == 'LOSS':
+            formats.append({
+                "range": f"G{row_number}",
+                "format": {"backgroundColor": RED_BG}
+            })
+
+        # 99c P/L column (H) - green if positive, red if negative
+        if capture_pnl > 0:
+            formats.append({
+                "range": f"H{row_number}",
+                "format": {"backgroundColor": GREEN_BG}
+            })
+        elif capture_pnl < 0:
+            formats.append({
+                "range": f"H{row_number}",
+                "format": {"backgroundColor": RED_BG}
+            })
+
+        # Total P/L column (I) - green if positive, red if negative
+        total_pnl = arb_pnl + capture_pnl
+        if total_pnl > 0:
+            formats.append({
+                "range": f"I{row_number}",
+                "format": {"backgroundColor": GREEN_BG}
+            })
+        elif total_pnl < 0:
+            formats.append({
+                "range": f"I{row_number}",
+                "format": {"backgroundColor": RED_BG}
+            })
+
+        # Apply all formats in one batch call
+        if formats:
+            self.worksheet.batch_format(formats)
+
     def log_row(self, window_state: Dict[str, Any]) -> Optional[int]:
         """
         Log a window result row to the dashboard.
@@ -326,6 +408,13 @@ class DashboardLogger:
 
                 # Get the row number that was just appended
                 row_number = len(self.worksheet.get_all_values())
+
+                # Apply color formatting to result and P/L cells
+                try:
+                    self._apply_row_formatting(row_number, arb_result, arb_pnl, capture_result, capture_pnl)
+                except Exception as fmt_err:
+                    # Graceful degradation - row logged but colors failed
+                    print(f"[DASHBOARD] Color formatting failed: {fmt_err}")
 
                 print(f"[DASHBOARD] Logged row {row_number}: {slug}")
                 return row_number
