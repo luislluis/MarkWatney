@@ -5,17 +5,17 @@
 See: .planning/PROJECT.md (updated 2026-01-20)
 
 **Core value:** See trading performance at a glance with real-time grading of every window.
-**Current focus:** v2.0 Performance Tracker — Ready for Phase 3
+**Current focus:** v2.0 Performance Tracker — Phase 3 in progress
 
 ## Current Position
 
 Milestone: v2.0 Performance Tracker
 Phase: 3 of 3 (Google Sheet Dashboard)
-Plan: 1 of 4 complete
+Plan: 2 of 4 complete
 Status: In progress
-Last activity: 2026-01-20 — Completed 03-01-PLAN.md (Dashboard Module)
+Last activity: 2026-01-20 — Completed 03-02-PLAN.md (Row Formatting and Summary)
 
-Progress: [██████░░░░] 67% (6/9 plans)
+Progress: [███████░░░] 78% (7/9 plans)
 
 ## Roadmap Overview
 
@@ -23,7 +23,7 @@ Progress: [██████░░░░] 67% (6/9 plans)
 |-------|------|--------------|--------|
 | 1 | Core Bot Infrastructure | CORE-01 to CORE-04 | COMPLETE (3/3 plans) |
 | 2 | Position Detection | POS-01 to POS-05 | COMPLETE (2/2 plans) |
-| 3 | Google Sheet Dashboard | SHEET-01 to SHEET-05 | IN PROGRESS (1/4 plans) |
+| 3 | Google Sheet Dashboard | SHEET-01 to SHEET-05 | IN PROGRESS (2/4 plans) |
 
 ## Accumulated Context
 
@@ -50,6 +50,9 @@ Progress: [██████░░░░] 67% (6/9 plans)
 | Combined tasks for cohesive modules | Tasks 1+2 both needed for functional module |
 | Same gspread patterns as sheets_logger.py | Consistency across codebase |
 | Summary row at fixed row 2 | Simpler updates vs dynamically moving |
+| parse_pnl handles multiple formats | Robust parsing of $+0.05, $-0.10, em dash, empty |
+| Gray background for zero P/L | Visual distinction for break-even |
+| Full recalculation on summary update | Simpler and more reliable than incremental |
 
 ### Pending Todos
 
@@ -62,6 +65,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-20 20:22 PST
-Stopped at: Completed 03-01-PLAN.md (Dashboard Module)
-Resume: `/gsd:execute-plan 03-02` to add row formatting with colors
+Last session: 2026-01-20 20:27 PST
+Stopped at: Completed 03-02-PLAN.md (Row Formatting and Summary)
+Resume: `/gsd:execute-plan 03-03` for testing or `/gsd:execute-plan 03-04` for cleanup
