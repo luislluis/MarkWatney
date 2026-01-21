@@ -268,6 +268,104 @@ def get_market_resolution(condition_id):
 
 
 # ===========================================
+# TRADE GRADING FUNCTIONS
+# ===========================================
+def classify_arb_result(up_shares, down_shares):
+    """Classify ARB result based on share balance.
+
+    Args:
+        up_shares: Number of UP shares
+        down_shares: Number of DOWN shares
+
+    Returns:
+        'PAIRED': Equal shares (difference < 0.5) - ideal outcome
+        'BAIL': One side was sold (only one side remains)
+        'LOPSIDED': Both sides but unequal (pairing failed)
+    """
+    diff = abs(up_shares - down_shares)
+
+    if diff < 0.5:  # MICRO_IMBALANCE_TOLERANCE from trading bot
+        return 'PAIRED'
+    elif up_shares == 0 or down_shares == 0:
+        return 'BAIL'  # One side was sold
+    else:
+        return 'LOPSIDED'  # Both sides but unequal
+
+
+def grade_arb_trade(window_state, winning_side):
+    """Grade an ARB trade and calculate P/L.
+
+    Uses estimated entry prices since position API doesn't provide them.
+    ARB strategy: buy cheap side (typically 42c) and expensive side (typically 57c).
+
+    Args:
+        window_state: Dict with arb_entry containing up_shares, down_shares
+        winning_side: 'UP' or 'DOWN' (which side won)
+
+    Returns:
+        {'result': 'PAIRED'/'LOPSIDED'/'BAIL', 'pnl': float}
+    """
+    arb_entry = window_state.get('arb_entry', {})
+    up_shares = arb_entry.get('up_shares', 0)
+    down_shares = arb_entry.get('down_shares', 0)
+
+    result = classify_arb_result(up_shares, down_shares)
+
+    # Estimate costs based on typical ARB entry
+    # The cheap side is what diverged (betting on the other side winning)
+    # If UP won, DOWN was cheap (bot bet on UP winning by buying cheap DOWN)
+    # If DOWN won, UP was cheap (bot bet on DOWN winning by buying cheap UP)
+    if winning_side == 'UP':
+        up_cost = 0.57  # Expensive side
+        down_cost = 0.42  # Cheap side
+    else:  # winning_side == 'DOWN'
+        up_cost = 0.42  # Cheap side
+        down_cost = 0.57  # Expensive side
+
+    total_cost = (up_shares * up_cost) + (down_shares * down_cost)
+
+    # Payout: min shares get $1 each (paired amount wins)
+    min_shares = min(up_shares, down_shares)
+    payout = min_shares * 1.00
+
+    pnl = payout - total_cost
+
+    return {'result': result, 'pnl': pnl}
+
+
+def grade_99c_trade(window_state, winning_side):
+    """Grade a 99c capture trade and calculate P/L.
+
+    99c captures are single-side bets at 99c on near-certain winners.
+
+    Args:
+        window_state: Dict with capture_entry containing side, shares
+        winning_side: 'UP' or 'DOWN' (which side won)
+
+    Returns:
+        {'result': 'WIN'/'LOSS', 'pnl': float}
+    """
+    capture_entry = window_state.get('capture_entry', {})
+    side = capture_entry.get('side')
+    shares = capture_entry.get('shares', 0)
+
+    # 99c capture always enters at 99c
+    cost = shares * 0.99
+
+    if side == winning_side:
+        # WIN - position pays out $1 per share
+        payout = shares * 1.00
+        pnl = payout - cost
+        result = 'WIN'
+    else:
+        # LOSS - position worth $0
+        pnl = -cost
+        result = 'LOSS'
+
+    return {'result': result, 'pnl': pnl}
+
+
+# ===========================================
 # WINDOW STATE MANAGEMENT
 # ===========================================
 def reset_window_state(slug):
