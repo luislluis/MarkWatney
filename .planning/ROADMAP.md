@@ -47,19 +47,19 @@ Plans:
 - POS-05: Calculate P/L for each trade type
 
 **Success criteria:**
-- [ ] Detects when wallet has positions in current window
-- [ ] Distinguishes ARB trades from 99c capture trades
-- [ ] Correctly grades ARB outcome (WIN, BAIL, LOSS)
-- [ ] Correctly grades 99c outcome (WIN, LOSS)
-- [ ] Calculates accurate P/L for each trade
+- [x] Detects when wallet has positions in current window
+- [x] Distinguishes ARB trades from 99c capture trades
+- [x] Correctly grades ARB outcome (WIN, BAIL, LOSS)
+- [x] Correctly grades 99c outcome (WIN, LOSS)
+- [x] Calculates accurate P/L for each trade
 
-**Plans:** 2 plans
+**Plans:** 2 plans ✓
 
 Plans:
-- [ ] 02-01-PLAN.md — Position fetching and trade type detection (POS-01, POS-03)
-- [ ] 02-02-PLAN.md — Market resolution and outcome grading with P/L (POS-02, POS-04, POS-05)
+- [x] 02-01-PLAN.md — Position fetching and trade type detection (POS-01, POS-03)
+- [x] 02-02-PLAN.md — Market resolution and outcome grading with P/L (POS-02, POS-04, POS-05)
 
-**Status:** PLANNED (2026-01-20)
+**Status:** COMPLETE (2026-01-20)
 **Depends on:** Phase 1 (window detection)
 
 ---
@@ -91,7 +91,7 @@ Plans:
 | Phase | Name | Requirements | Depends On |
 |-------|------|--------------|------------|
 | 1 | Core Bot Infrastructure | CORE-01 to CORE-04 | COMPLETE |
-| 2 | Position Detection | POS-01 to POS-05 | Phase 1 |
+| 2 | Position Detection | POS-01 to POS-05 | ✓ Complete |
 | 3 | Google Sheet Dashboard | SHEET-01 to SHEET-05 | Phase 2 |
 
 **Total:** 3 phases, 14 requirements, linear dependency chain
@@ -101,3 +101,4 @@ Plans:
 *Phase 1 planned: 2026-01-20*
 *Phase 1 complete: 2026-01-20*
 *Phase 2 planned: 2026-01-20*
+*Phase 2 complete: 2026-01-20*

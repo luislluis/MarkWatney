@@ -14,11 +14,11 @@
 
 ### Position Detection
 
-- [ ] **POS-01**: Detect ARB entries (bought both UP and DOWN)
-- [ ] **POS-02**: Detect ARB completion status (paired, lopsided, bail)
-- [ ] **POS-03**: Detect 99c capture entries
-- [ ] **POS-04**: Detect 99c capture outcomes (win/loss)
-- [ ] **POS-05**: Calculate P/L for each trade type
+- [x] **POS-01**: Detect ARB entries (bought both UP and DOWN)
+- [x] **POS-02**: Detect ARB completion status (paired, lopsided, bail)
+- [x] **POS-03**: Detect 99c capture entries
+- [x] **POS-04**: Detect 99c capture outcomes (win/loss)
+- [x] **POS-05**: Calculate P/L for each trade type
 
 ### Google Sheet Dashboard
 
@@ -60,11 +60,11 @@ Deferred to future release.
 | CORE-02 | Phase 1 | Complete |
 | CORE-03 | Phase 1 | Complete |
 | CORE-04 | Phase 1 | Complete |
-| POS-01 | Phase 2 | Pending |
-| POS-02 | Phase 2 | Pending |
-| POS-03 | Phase 2 | Pending |
-| POS-04 | Phase 2 | Pending |
-| POS-05 | Phase 2 | Pending |
+| POS-01 | Phase 2 | Complete |
+| POS-02 | Phase 2 | Complete |
+| POS-03 | Phase 2 | Complete |
+| POS-04 | Phase 2 | Complete |
+| POS-05 | Phase 2 | Complete |
 | SHEET-01 | Phase 3 | Pending |
 | SHEET-02 | Phase 3 | Pending |
 | SHEET-03 | Phase 3 | Pending |
@@ -78,4 +78,4 @@ Deferred to future release.
 
 ---
 *Requirements defined: 2026-01-20*
-*Last updated: 2026-01-20 — Phase 1 requirements complete*
+*Last updated: 2026-01-20 — Phase 2 requirements complete*

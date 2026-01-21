@@ -5,7 +5,7 @@
 See: .planning/PROJECT.md (updated 2026-01-20)
 
 **Core value:** See trading performance at a glance with real-time grading of every window.
-**Current focus:** v2.0 Performance Tracker — Phase 2 Position Detection COMPLETE
+**Current focus:** v2.0 Performance Tracker — Ready for Phase 3
 
 ## Current Position
 
@@ -61,4 +61,4 @@ None.
 
 Last session: 2026-01-20 20:10 PST
 Stopped at: Completed 02-02-PLAN.md (P/L Calculation)
-Resume: Ready for Phase 3 (Google Sheet Dashboard) or `/gsd:execute-phase 03-01`
+Resume: `/gsd:plan-phase 3` to plan Google Sheet Dashboard
