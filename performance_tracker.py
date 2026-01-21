@@ -27,6 +27,7 @@ import json
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
+import requests
 
 # Timezone for logging (Pacific Time)
 PST = ZoneInfo("America/Los_Angeles")
@@ -70,6 +71,19 @@ if WALLET_ADDRESS:
     print(f"Wallet: {WALLET_ADDRESS[:10]}...{WALLET_ADDRESS[-6:]}")
 else:
     print("WARNING: WALLET_ADDRESS not found in ~/.env")
+
+# ===========================================
+# HTTP SESSION
+# ===========================================
+http_session = requests.Session()
+http_session.headers.update({
+    'User-Agent': 'PerformanceTracker/0.1'
+})
+
+# ===========================================
+# WINDOW TIMING CONSTANTS
+# ===========================================
+WINDOW_DURATION_SECONDS = 900  # 15 minutes
 
 # ===========================================
 # SIGNAL HANDLER
