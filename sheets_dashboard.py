@@ -139,6 +139,29 @@ def get_short_window_id(slug: str) -> str:
     return slug[:20] if len(slug) > 20 else slug
 
 
+def parse_pnl(pnl_str: str) -> float:
+    """
+    Parse P/L string to float value.
+
+    Handles formats like '$+0.05', '$-0.10', '-', em dash, etc.
+
+    Args:
+        pnl_str: P/L string from sheet cell
+
+    Returns:
+        Float value (0.0 for non-numeric values like '-' or em dash)
+    """
+    if not pnl_str or pnl_str in ('-', EMOJI_NONE, ''):
+        return 0.0
+
+    try:
+        # Remove $ and any whitespace
+        cleaned = pnl_str.replace('$', '').replace(' ', '')
+        return float(cleaned)
+    except (ValueError, AttributeError):
+        return 0.0
+
+
 class DashboardLogger:
     """Google Sheets dashboard logger for performance tracker."""
 
@@ -352,6 +375,154 @@ class DashboardLogger:
         if formats:
             self.worksheet.batch_format(formats)
 
+    def update_summary(self) -> bool:
+        """
+        Update the summary row (row 2) with running totals and win rates.
+
+        Reads all data rows, calculates totals and win rates, updates row 2.
+
+        Returns:
+            True on success, False on error
+        """
+        if not self._ensure_initialized():
+            return False
+
+        try:
+            # Get all values from the worksheet
+            all_values = self.worksheet.get_all_values()
+
+            # Skip header (row 0) and summary (row 1), process data rows (row 2+)
+            if len(all_values) <= 2:
+                # No data rows yet
+                return True
+
+            data_rows = all_values[2:]  # Skip header and summary
+
+            # Calculate ARB totals
+            arb_trades = 0
+            arb_wins = 0
+            total_arb_pnl = 0.0
+
+            for row in data_rows:
+                if len(row) < 5:
+                    continue
+
+                # Column C (index 2) = ARB Entry ('Yes' or em dash)
+                if row[2] == 'Yes':
+                    arb_trades += 1
+                    # Column D (index 3) = ARB Result (check for checkmark = win)
+                    if EMOJI_WIN in row[3]:
+                        arb_wins += 1
+
+                # Column E (index 4) = ARB P/L
+                total_arb_pnl += parse_pnl(row[4])
+
+            # Calculate 99c capture totals
+            capture_trades = 0
+            capture_wins = 0
+            total_99c_pnl = 0.0
+
+            for row in data_rows:
+                if len(row) < 8:
+                    continue
+
+                # Column F (index 5) = 99c Entry ('Yes' or em dash)
+                if row[5] == 'Yes':
+                    capture_trades += 1
+                    # Column G (index 6) = 99c Result (check for checkmark = win)
+                    if EMOJI_WIN in row[6]:
+                        capture_wins += 1
+
+                # Column H (index 7) = 99c P/L
+                total_99c_pnl += parse_pnl(row[7])
+
+            # Calculate total P/L
+            total_pnl = total_arb_pnl + total_99c_pnl
+
+            # Build win rate strings
+            arb_rate = f"{arb_wins}/{arb_trades}" if arb_trades else "-"
+            capture_rate = f"{capture_wins}/{capture_trades}" if capture_trades else "-"
+
+            # Build summary row
+            summary = [
+                'SUMMARY',
+                '-',                                  # Time (not applicable)
+                arb_rate,                             # ARB Entry shows win rate
+                '-',                                  # ARB Result
+                f'${total_arb_pnl:+.2f}',            # ARB P/L total
+                capture_rate,                         # 99c Entry shows win rate
+                '-',                                  # 99c Result
+                f'${total_99c_pnl:+.2f}',            # 99c P/L total
+                f'${total_pnl:+.2f}'                 # Total P/L
+            ]
+
+            # Update row 2 in place
+            self.worksheet.update('A2:I2', [summary], value_input_option='USER_ENTERED')
+
+            # Apply coloring to summary P/L cells based on positive/negative
+            summary_formats = []
+
+            # ARB P/L (E2)
+            if total_arb_pnl > 0:
+                summary_formats.append({
+                    "range": "E2",
+                    "format": {"backgroundColor": GREEN_BG}
+                })
+            elif total_arb_pnl < 0:
+                summary_formats.append({
+                    "range": "E2",
+                    "format": {"backgroundColor": RED_BG}
+                })
+            else:
+                summary_formats.append({
+                    "range": "E2",
+                    "format": {"backgroundColor": GRAY_BG}
+                })
+
+            # 99c P/L (H2)
+            if total_99c_pnl > 0:
+                summary_formats.append({
+                    "range": "H2",
+                    "format": {"backgroundColor": GREEN_BG}
+                })
+            elif total_99c_pnl < 0:
+                summary_formats.append({
+                    "range": "H2",
+                    "format": {"backgroundColor": RED_BG}
+                })
+            else:
+                summary_formats.append({
+                    "range": "H2",
+                    "format": {"backgroundColor": GRAY_BG}
+                })
+
+            # Total P/L (I2)
+            if total_pnl > 0:
+                summary_formats.append({
+                    "range": "I2",
+                    "format": {"backgroundColor": GREEN_BG}
+                })
+            elif total_pnl < 0:
+                summary_formats.append({
+                    "range": "I2",
+                    "format": {"backgroundColor": RED_BG}
+                })
+            else:
+                summary_formats.append({
+                    "range": "I2",
+                    "format": {"backgroundColor": GRAY_BG}
+                })
+
+            # Apply formatting (keep summary row bold)
+            self.worksheet.batch_format(summary_formats)
+
+            print(f"[DASHBOARD] Summary updated: ARB {arb_rate} (${total_arb_pnl:+.2f}), 99c {capture_rate} (${total_99c_pnl:+.2f}), Total ${total_pnl:+.2f}")
+            return True
+
+        except Exception as e:
+            print(f"[DASHBOARD] Summary update failed: {e}")
+            return False
+
     def log_row(self, window_state: Dict[str, Any]) -> Optional[int]:
         """
         Log a window result row to the dashboard.
@@ -416,6 +587,13 @@ class DashboardLogger:
                     # Graceful degradation - row logged but colors failed
                     print(f"[DASHBOARD] Color formatting failed: {fmt_err}")
 
+                # Update summary row with new totals
+                try:
+                    self.update_summary()
+                except Exception as sum_err:
+                    # Graceful degradation - row logged but summary failed
+                    print(f"[DASHBOARD] Summary update failed: {sum_err}")
+
                 print(f"[DASHBOARD] Logged row {row_number}: {slug}")
                 return row_number
 
@@ -460,6 +638,19 @@ def log_dashboard_row(window_state: Dict[str, Any]) -> bool:
         return False
     result = _dashboard.log_row(window_state)
     return result is not None
+
+
+def update_dashboard_summary() -> bool:
+    """
+    Convenience function to update the summary row.
+    Returns False silently if dashboard not enabled (graceful degradation).
+
+    Returns:
+        True if summary was updated successfully, False otherwise
+    """
+    if _dashboard is None or not _dashboard.enabled:
+        return False
+    return _dashboard.update_summary()
 
 
 # ========== Test Function ==========
