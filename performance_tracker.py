@@ -86,6 +86,39 @@ http_session.headers.update({
 WINDOW_DURATION_SECONDS = 900  # 15 minutes
 
 # ===========================================
+# WINDOW DETECTION FUNCTIONS
+# ===========================================
+def get_current_slug():
+    """Calculate current BTC 15-min window slug from Unix timestamp."""
+    current = int(time.time())
+    window_start = (current // WINDOW_DURATION_SECONDS) * WINDOW_DURATION_SECONDS
+    return f"btc-updown-15m-{window_start}", window_start
+
+def get_market_data(slug):
+    """Fetch market metadata from Polymarket gamma-api."""
+    try:
+        url = f"https://gamma-api.polymarket.com/events?slug={slug}"
+        resp = http_session.get(url, timeout=3)
+        data = resp.json()
+        return data[0] if data else None
+    except Exception as e:
+        print(f"[WARN] Market data fetch failed: {e}")
+        return None
+
+def get_time_remaining(market):
+    """Calculate time remaining from market endDate."""
+    try:
+        end_str = market.get('markets', [{}])[0].get('endDate', '')
+        end_time = datetime.fromisoformat(end_str.replace('Z', '+00:00'))
+        remaining = (end_time - datetime.now(timezone.utc)).total_seconds()
+        if remaining < 0:
+            return "ENDED", -1
+        return f"{int(remaining)//60:02d}:{int(remaining)%60:02d}", int(remaining)
+    except Exception as e:
+        print(f"[WARN] Time remaining parse failed: {e}")
+        return "??:??", 0
+
+# ===========================================
 # SIGNAL HANDLER
 # ===========================================
 def signal_handler(sig, frame):
