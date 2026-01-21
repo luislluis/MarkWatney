@@ -53,7 +53,7 @@ Plans:
 - [x] Correctly grades 99c outcome (WIN, LOSS)
 - [x] Calculates accurate P/L for each trade
 
-**Plans:** 2 plans ✓
+**Plans:** 2 plans
 
 Plans:
 - [x] 02-01-PLAN.md — Position fetching and trade type detection (POS-01, POS-03)
@@ -82,6 +82,14 @@ Plans:
 - [ ] Emoji indicators display correctly
 - [ ] Summary row updates with running totals and win rates
 
+**Plans:** 3 plans
+
+Plans:
+- [ ] 03-01-PLAN.md — Dashboard module with sheet setup and row logging
+- [ ] 03-02-PLAN.md — Color formatting, summary updates, and tracker integration
+- [ ] 03-03-PLAN.md — Manual verification of complete dashboard
+
+**Status:** PLANNED (2026-01-20)
 **Depends on:** Phase 2 (position detection provides the data)
 
 ---
@@ -91,7 +99,7 @@ Plans:
 | Phase | Name | Requirements | Depends On |
 |-------|------|--------------|------------|
 | 1 | Core Bot Infrastructure | CORE-01 to CORE-04 | COMPLETE |
-| 2 | Position Detection | POS-01 to POS-05 | ✓ Complete |
+| 2 | Position Detection | POS-01 to POS-05 | COMPLETE |
 | 3 | Google Sheet Dashboard | SHEET-01 to SHEET-05 | Phase 2 |
 
 **Total:** 3 phases, 14 requirements, linear dependency chain
@@ -102,3 +110,4 @@ Plans:
 *Phase 1 complete: 2026-01-20*
 *Phase 2 planned: 2026-01-20*
 *Phase 2 complete: 2026-01-20*
+*Phase 3 planned: 2026-01-20*
