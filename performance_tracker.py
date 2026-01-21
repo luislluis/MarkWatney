@@ -29,6 +29,9 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 import requests
 
+# Google Sheets dashboard integration
+from sheets_dashboard import init_dashboard, log_dashboard_row
+
 # Timezone for logging (Pacific Time)
 PST = ZoneInfo("America/Los_Angeles")
 
@@ -461,6 +464,9 @@ def grade_window(state, market):
     print(f"  TOTAL P/L:   ${total_pnl:+.2f}")
     print(f"{'='*60}\n")
 
+    # Log to Google Sheets dashboard
+    log_dashboard_row(state)
+
 # ===========================================
 # SIGNAL HANDLER
 # ===========================================
@@ -476,6 +482,14 @@ signal.signal(signal.SIGINT, signal_handler)
 def main():
     global window_state
     print("Performance Tracker starting main loop...")
+
+    # Initialize Google Sheets dashboard
+    dashboard = init_dashboard()
+    if dashboard and dashboard.enabled:
+        print(f"[DASHBOARD] Connected to Google Sheets")
+    else:
+        print(f"[DASHBOARD] Disabled - will log to console only")
+
     print()
 
     cached_market = None
