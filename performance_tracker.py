@@ -125,6 +125,91 @@ def get_time_remaining(market):
         return "??:??", 0
 
 # ===========================================
+# POSITION FETCHING FUNCTIONS
+# ===========================================
+def get_token_ids(market):
+    """
+    Extract UP and DOWN token IDs from market data.
+
+    Args:
+        market: Market data dict from gamma-api
+
+    Returns:
+        Tuple (up_token, down_token) or (None, None) on error
+    """
+    try:
+        clob_ids = market.get('markets', [{}])[0].get('clobTokenIds', '')
+        clob_ids = clob_ids.replace('[', '').replace(']', '').replace('"', '')
+        tokens = [t.strip() for t in clob_ids.split(',')]
+        if len(tokens) >= 2:
+            return tokens[0], tokens[1]  # UP token, DOWN token
+        return None, None
+    except Exception as e:
+        print(f"[WARN] Token ID extraction failed: {e}")
+        return None, None
+
+
+def fetch_positions(wallet_address, up_token, down_token):
+    """
+    Fetch positions for current window tokens.
+
+    Calls the Polymarket data-api to get all positions for the wallet,
+    then filters by the UP and DOWN token IDs for the current window.
+
+    Args:
+        wallet_address: Ethereum wallet address
+        up_token: Token ID for UP side
+        down_token: Token ID for DOWN side
+
+    Returns:
+        Tuple (up_shares, down_shares) as floats, or (0, 0) on error
+    """
+    try:
+        url = f"https://data-api.polymarket.com/positions?user={wallet_address.lower()}"
+        resp = http_session.get(url, timeout=5)
+        positions = resp.json()
+
+        up_shares = 0.0
+        down_shares = 0.0
+
+        for pos in positions:
+            asset = pos.get('asset', '')
+            size = float(pos.get('size', 0))
+            if size > 0:
+                if asset == up_token:
+                    up_shares = size
+                elif asset == down_token:
+                    down_shares = size
+
+        return up_shares, down_shares
+    except Exception as e:
+        print(f"[WARN] Position fetch failed: {e}")
+        return 0.0, 0.0
+
+
+def detect_trade_type(up_shares, down_shares):
+    """
+    Determine what type of trade was made based on positions.
+
+    Args:
+        up_shares: Number of UP shares held
+        down_shares: Number of DOWN shares held
+
+    Returns:
+        'NO_TRADE': No positions
+        'ARB': Both UP and DOWN positions (arbitrage)
+        '99C_CAPTURE': Single-side position only
+    """
+    if up_shares == 0 and down_shares == 0:
+        return 'NO_TRADE'
+
+    if up_shares > 0 and down_shares > 0:
+        return 'ARB'
+
+    return '99C_CAPTURE'
+
+
+# ===========================================
 # WINDOW STATE MANAGEMENT
 # ===========================================
 def reset_window_state(slug):
