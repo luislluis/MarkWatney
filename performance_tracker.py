@@ -84,6 +84,7 @@ http_session.headers.update({
 # WINDOW TIMING CONSTANTS
 # ===========================================
 WINDOW_DURATION_SECONDS = 900  # 15 minutes
+GRADE_DELAY_SECONDS = 3  # Wait a few seconds after window ends before grading
 
 # ===========================================
 # GLOBAL WINDOW STATE
@@ -241,6 +242,18 @@ def main():
 
             # Calculate time remaining
             time_str, remaining_secs = get_time_remaining(cached_market)
+
+            # Check if window just ended - grade immediately
+            if remaining_secs <= 0 and window_state and not window_state.get('graded'):
+                # Wait a moment for settlement
+                time.sleep(GRADE_DELAY_SECONDS)
+
+                # Grade the window
+                grade_window(window_state)
+                window_state['graded'] = True
+
+                # Continue to wait for new window
+                continue
 
             if remaining_secs < 0:
                 print(f"[{datetime.now(PST).strftime('%H:%M:%S')}] Window ended, waiting for next...")
