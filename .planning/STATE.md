@@ -5,24 +5,24 @@
 See: .planning/PROJECT.md (updated 2026-01-20)
 
 **Core value:** See trading performance at a glance with real-time grading of every window.
-**Current focus:** v2.0 Performance Tracker — Ready for Phase 2
+**Current focus:** v2.0 Performance Tracker — Phase 2 Position Detection in progress
 
 ## Current Position
 
 Milestone: v2.0 Performance Tracker
-Phase: 1 of 3 (Core Bot Infrastructure) - COMPLETE
-Plan: 3 of 3 complete
-Status: Phase 1 complete
-Last activity: 2026-01-20 — Completed 01-03-PLAN.md (Grading Logic)
+Phase: 2 of 3 (Position Detection)
+Plan: 1 of 3 complete
+Status: In progress
+Last activity: 2026-01-20 — Completed 02-01-PLAN.md (Position Fetching)
 
-Progress: [███░░░░░░░] 33% (3/9 plans)
+Progress: [████░░░░░░] 44% (4/9 plans)
 
 ## Roadmap Overview
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
 | 1 | Core Bot Infrastructure | CORE-01 to CORE-04 | COMPLETE (3/3 plans) |
-| 2 | Position Detection | POS-01 to POS-05 | Pending |
+| 2 | Position Detection | POS-01 to POS-05 | In Progress (1/3 plans) |
 | 3 | Google Sheet Dashboard | SHEET-01 to SHEET-05 | Pending |
 
 ## Accumulated Context
@@ -42,6 +42,9 @@ Progress: [███░░░░░░░] 33% (3/9 plans)
 | Grade at T-0 with 3s delay | More responsive than waiting for slug change |
 | graded flag in state dict | Prevents double-grading on window transition |
 | Window state as dict | All tracking fields ready for Phase 2 |
+| Poll positions every second | Real-time tracking matches trading bot observation cadence |
+| Cache token IDs per window | Extract once from market data, minimize parsing |
+| Simple trade type heuristic | Both sides = ARB, single side = 99C_CAPTURE |
 
 ### Pending Todos
 
@@ -54,6 +57,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-20 19:38 PST
-Stopped at: Completed 01-03-PLAN.md (Grading Logic)
-Resume: `/gsd:plan-phase 2` to plan Position Detection
+Last session: 2026-01-20 20:06 PST
+Stopped at: Completed 02-01-PLAN.md (Position Fetching)
+Resume: Continue with 02-02-PLAN.md (P/L Calculation) or `/gsd:execute-phase 02-02`
