@@ -294,6 +294,7 @@ def main():
 
     cached_market = None
     last_slug = None
+    up_token, down_token = None, None
 
     while True:
         cycle_start = time.time()
@@ -311,6 +312,7 @@ def main():
                 # Start fresh window
                 window_state = reset_window_state(slug)
                 cached_market = None
+                up_token, down_token = None, None
                 last_slug = slug
 
                 print(f"\n{'='*50}")
@@ -324,6 +326,10 @@ def main():
                     print(f"[{datetime.now(PST).strftime('%H:%M:%S')}] Waiting for market data...")
                     time.sleep(2)
                     continue
+                # Extract token IDs once per window
+                up_token, down_token = get_token_ids(cached_market)
+                if up_token and down_token:
+                    print(f"[INFO] Token IDs - UP: {up_token[:8]}... DN: {down_token[:8]}...")
 
             # Calculate time remaining
             time_str, remaining_secs = get_time_remaining(cached_market)
@@ -345,9 +351,26 @@ def main():
                 time.sleep(2)
                 continue
 
-            # Display status line
-            # TODO: Position detection (Phase 2)
-            print(f"[{datetime.now(PST).strftime('%H:%M:%S')}] T-{remaining_secs:3d}s | {slug}")
+            # Poll positions and detect trade type
+            up_shares, down_shares = 0.0, 0.0
+            if up_token and down_token and WALLET_ADDRESS:
+                up_shares, down_shares = fetch_positions(WALLET_ADDRESS, up_token, down_token)
+                trade_type = detect_trade_type(up_shares, down_shares)
+
+                # Update window_state with position data
+                if trade_type == 'ARB':
+                    window_state['arb_entry'] = {'up_shares': up_shares, 'down_shares': down_shares}
+                elif trade_type == '99C_CAPTURE':
+                    side = 'UP' if up_shares > 0 else 'DOWN'
+                    shares = up_shares if up_shares > 0 else down_shares
+                    window_state['capture_entry'] = {'side': side, 'shares': shares}
+
+            # Display status line with position info
+            if up_shares or down_shares:
+                pos_str = f"UP:{up_shares:.1f} DN:{down_shares:.1f}"
+            else:
+                pos_str = "no pos"
+            print(f"[{datetime.now(PST).strftime('%H:%M:%S')}] T-{remaining_secs:3d}s | {pos_str} | {slug}")
 
             # Maintain 1-second loop
             elapsed = time.time() - cycle_start
