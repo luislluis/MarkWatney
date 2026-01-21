@@ -5,24 +5,24 @@
 See: .planning/PROJECT.md (updated 2026-01-20)
 
 **Core value:** See trading performance at a glance with real-time grading of every window.
-**Current focus:** v2.0 Performance Tracker — Phase 2 Position Detection in progress
+**Current focus:** v2.0 Performance Tracker — Phase 2 Position Detection COMPLETE
 
 ## Current Position
 
 Milestone: v2.0 Performance Tracker
 Phase: 2 of 3 (Position Detection)
-Plan: 1 of 3 complete
-Status: In progress
-Last activity: 2026-01-20 — Completed 02-01-PLAN.md (Position Fetching)
+Plan: 2 of 2 complete
+Status: Phase complete
+Last activity: 2026-01-20 — Completed 02-02-PLAN.md (P/L Calculation)
 
-Progress: [████░░░░░░] 44% (4/9 plans)
+Progress: [█████░░░░░] 56% (5/9 plans)
 
 ## Roadmap Overview
 
 | Phase | Name | Requirements | Status |
 |-------|------|--------------|--------|
 | 1 | Core Bot Infrastructure | CORE-01 to CORE-04 | COMPLETE (3/3 plans) |
-| 2 | Position Detection | POS-01 to POS-05 | In Progress (1/3 plans) |
+| 2 | Position Detection | POS-01 to POS-05 | COMPLETE (2/2 plans) |
 | 3 | Google Sheet Dashboard | SHEET-01 to SHEET-05 | Pending |
 
 ## Accumulated Context
@@ -45,6 +45,8 @@ Progress: [████░░░░░░] 44% (4/9 plans)
 | Poll positions every second | Real-time tracking matches trading bot observation cadence |
 | Cache token IDs per window | Extract once from market data, minimize parsing |
 | Simple trade type heuristic | Both sides = ARB, single side = 99C_CAPTURE |
+| Estimated entry prices for P/L | 42c cheap, 57c expensive for ARB; 99c for capture |
+| ARB PAIRED threshold < 0.5 | Matches trading bot's MICRO_IMBALANCE_TOLERANCE |
 
 ### Pending Todos
 
@@ -57,6 +59,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-01-20 20:06 PST
-Stopped at: Completed 02-01-PLAN.md (Position Fetching)
-Resume: Continue with 02-02-PLAN.md (P/L Calculation) or `/gsd:execute-phase 02-02`
+Last session: 2026-01-20 20:10 PST
+Stopped at: Completed 02-02-PLAN.md (P/L Calculation)
+Resume: Ready for Phase 3 (Google Sheet Dashboard) or `/gsd:execute-phase 03-01`
