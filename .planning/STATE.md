@@ -5,7 +5,7 @@
 See: .planning/PROJECT.md (updated 2026-01-20)
 
 **Core value:** See trading performance at a glance with real-time grading of every window.
-**Current focus:** v2.0 Performance Tracker — Phase 2
+**Current focus:** v2.0 Performance Tracker — Ready for Phase 2
 
 ## Current Position
 
@@ -56,4 +56,4 @@ None.
 
 Last session: 2026-01-20 19:38 PST
 Stopped at: Completed 01-03-PLAN.md (Grading Logic)
-Resume: Phase 1 complete, ready for Phase 2 (Position Detection)
+Resume: `/gsd:plan-phase 2` to plan Position Detection

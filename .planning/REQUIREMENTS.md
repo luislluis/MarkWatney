@@ -7,10 +7,10 @@
 
 ### Core Bot
 
-- [ ] **CORE-01**: Bot runs as standalone process on server
-- [ ] **CORE-02**: Bot monitors BTC 15-min windows in real-time
-- [ ] **CORE-03**: Bot detects window boundaries (start/end)
-- [ ] **CORE-04**: Bot writes graded row after each window closes
+- [x] **CORE-01**: Bot runs as standalone process on server
+- [x] **CORE-02**: Bot monitors BTC 15-min windows in real-time
+- [x] **CORE-03**: Bot detects window boundaries (start/end)
+- [x] **CORE-04**: Bot writes graded row after each window closes
 
 ### Position Detection
 
@@ -56,10 +56,10 @@ Deferred to future release.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CORE-01 | Phase 1 | Pending |
-| CORE-02 | Phase 1 | Pending |
-| CORE-03 | Phase 1 | Pending |
-| CORE-04 | Phase 1 | Pending |
+| CORE-01 | Phase 1 | Complete |
+| CORE-02 | Phase 1 | Complete |
+| CORE-03 | Phase 1 | Complete |
+| CORE-04 | Phase 1 | Complete |
 | POS-01 | Phase 2 | Pending |
 | POS-02 | Phase 2 | Pending |
 | POS-03 | Phase 2 | Pending |
@@ -78,4 +78,4 @@ Deferred to future release.
 
 ---
 *Requirements defined: 2026-01-20*
-*Last updated: 2026-01-20 after initial definition*
+*Last updated: 2026-01-20 — Phase 1 requirements complete*

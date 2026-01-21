@@ -18,18 +18,19 @@
 - CORE-04: Bot writes graded row after each window closes
 
 **Success criteria:**
-- [ ] Bot starts and runs continuously
-- [ ] Correctly identifies current window and time remaining
-- [ ] Detects window transitions (old window ends, new begins)
-- [ ] Skeleton row written to console on each window close
+- [x] Bot starts and runs continuously
+- [x] Correctly identifies current window and time remaining
+- [x] Detects window transitions (old window ends, new begins)
+- [x] Skeleton row written to console on each window close
 
-**Plans:** 3 plans
+**Plans:** 3 plans ✓
 
 Plans:
-- [ ] 01-01-PLAN.md — Bot skeleton with main loop, TeeLogger, graceful shutdown
-- [ ] 01-02-PLAN.md — Window detection (slug calculation, market data, time remaining)
-- [ ] 01-03-PLAN.md — Window transitions and graded row output skeleton
+- [x] 01-01-PLAN.md — Bot skeleton with main loop, TeeLogger, graceful shutdown
+- [x] 01-02-PLAN.md — Window detection (slug calculation, market data, time remaining)
+- [x] 01-03-PLAN.md — Window transitions and graded row output skeleton
 
+**Status:** COMPLETE (2026-01-20)
 **Depends on:** Nothing (first phase)
 
 ---
@@ -82,7 +83,7 @@ Plans:
 
 | Phase | Name | Requirements | Depends On |
 |-------|------|--------------|------------|
-| 1 | Core Bot Infrastructure | CORE-01 to CORE-04 | — |
+| 1 | Core Bot Infrastructure | CORE-01 to CORE-04 | ✓ Complete |
 | 2 | Position Detection | POS-01 to POS-05 | Phase 1 |
 | 3 | Google Sheet Dashboard | SHEET-01 to SHEET-05 | Phase 2 |
 
@@ -91,3 +92,4 @@ Plans:
 ---
 *Roadmap created: 2026-01-20*
 *Phase 1 planned: 2026-01-20*
+*Phase 1 complete: 2026-01-20*
