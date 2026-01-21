@@ -86,6 +86,11 @@ http_session.headers.update({
 WINDOW_DURATION_SECONDS = 900  # 15 minutes
 
 # ===========================================
+# GLOBAL WINDOW STATE
+# ===========================================
+window_state = None
+
+# ===========================================
 # WINDOW DETECTION FUNCTIONS
 # ===========================================
 def get_current_slug():
@@ -117,6 +122,27 @@ def get_time_remaining(market):
     except Exception as e:
         print(f"[WARN] Time remaining parse failed: {e}")
         return "??:??", 0
+
+# ===========================================
+# WINDOW STATE MANAGEMENT
+# ===========================================
+def reset_window_state(slug):
+    """Initialize fresh window state for tracking."""
+    return {
+        'slug': slug,
+        'started_at': datetime.now(PST),
+        # Position tracking (populated in Phase 2)
+        'arb_entry': None,       # {'up_shares': X, 'down_shares': X, 'cost': X}
+        'arb_result': None,      # 'PAIRED', 'BAIL', 'LOPSIDED'
+        'arb_pnl': 0.0,
+        'capture_entry': None,   # {'side': 'UP'/'DOWN', 'shares': X, 'cost': X}
+        'capture_result': None,  # 'WIN', 'LOSS'
+        'capture_pnl': 0.0,
+        # Metadata
+        'window_end_price': None,
+        'outcome': None,         # 'UP' or 'DOWN'
+        'graded': False,
+    }
 
 # ===========================================
 # SIGNAL HANDLER
