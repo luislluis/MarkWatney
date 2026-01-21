@@ -210,6 +210,64 @@ def detect_trade_type(up_shares, down_shares):
 
 
 # ===========================================
+# MARKET RESOLUTION FUNCTIONS
+# ===========================================
+def get_condition_id(market):
+    """Extract condition ID from market data.
+
+    Args:
+        market: Market data dict from gamma-api
+
+    Returns:
+        Condition ID string or None on error
+    """
+    try:
+        return market.get('markets', [{}])[0].get('conditionId')
+    except Exception:
+        return None
+
+
+def get_market_resolution(condition_id):
+    """Check if market resolved and which side won.
+
+    Queries the Polymarket CLOB API to determine market resolution.
+    The API returns winner=True on the token that won.
+
+    Args:
+        condition_id: The market's condition ID
+
+    Returns:
+        {'resolved': True, 'winner': 'UP' or 'DOWN', 'winner_token': token_id}
+        or {'resolved': False} if not yet resolved
+    """
+    try:
+        url = f"https://clob.polymarket.com/markets/{condition_id}"
+        resp = http_session.get(url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            tokens = data.get('tokens', [])
+            for token in tokens:
+                if token.get('winner') == True:
+                    outcome = token.get('outcome', '').upper()
+                    # Normalize: "Up" -> "UP", "Down" -> "DOWN"
+                    if 'UP' in outcome:
+                        winner = 'UP'
+                    elif 'DOWN' in outcome:
+                        winner = 'DOWN'
+                    else:
+                        winner = outcome
+                    return {
+                        'resolved': True,
+                        'winner': winner,
+                        'winner_token': token.get('token_id')
+                    }
+            return {'resolved': False}
+    except Exception as e:
+        print(f"[WARN] Resolution check failed: {e}")
+    return {'resolved': False}
+
+
+# ===========================================
 # WINDOW STATE MANAGEMENT
 # ===========================================
 def reset_window_state(slug):
