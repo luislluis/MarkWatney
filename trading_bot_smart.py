@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.12",
+    "version": "v1.13",
     "codename": "Resilient Eagle",
     "date": "2026-01-21",
-    "changes": "99c capture recovery from 403 errors via position polling + retry logic"
+    "changes": "99c capture 403 recovery + clean Cloudflare error messages (no HTML spam)"
 }
 
 import os
@@ -833,6 +833,25 @@ def log_order_event(order_id, side, action, price, qty, filled, avg_fill, reason
 # ORDER MANAGEMENT
 # ============================================================================
 
+def clean_api_error(error_str):
+    """Clean up API error messages - especially Cloudflare HTML responses"""
+    if "<!DOCTYPE" in error_str or "<html" in error_str.lower():
+        # Extract Cloudflare Ray ID if present
+        ray_id = ""
+        if "Ray ID:" in error_str:
+            try:
+                ray_id = error_str.split("Ray ID:")[1].split("<")[0].strip()[:20]
+            except:
+                pass
+        if "403" in error_str:
+            return f"CLOUDFLARE_403_BLOCK (Ray:{ray_id})" if ray_id else "CLOUDFLARE_403_BLOCK"
+        return "CLOUDFLARE_BLOCK"
+    # Truncate long errors
+    if len(error_str) > 100:
+        return error_str[:100] + "..."
+    return error_str
+
+
 def place_limit_order(token_id, price, size, side="BUY", bypass_price_failsafe=False, _retry_count=0):
     """Place a post-only limit order with FAILSAFE checks and 403 retry logic"""
 
@@ -871,16 +890,17 @@ def place_limit_order(token_id, price, size, side="BUY", bypass_price_failsafe=F
         log_activity("ORDER_PLACED", {"order_id": order_id, "side": side, "price": price, "size": size})
         return True, order_id
     except Exception as e:
-        error_str = str(e)
-        log_activity("ORDER_FAILED", {"side": side, "price": price, "size": size, "error": error_str})
+        error_raw = str(e)
+        error_clean = clean_api_error(error_raw)
+        log_activity("ORDER_FAILED", {"side": side, "price": price, "size": size, "error": error_clean})
 
-        # Retry once on 403 with delay (Cloudflare intermittent errors)
-        if "403" in error_str and _retry_count < 1:
-            print(f"[{ts()}] 403 detected, retrying in 2s...")
+        # Retry once on 403/Cloudflare with delay
+        if ("403" in error_raw or "CLOUDFLARE" in error_clean) and _retry_count < 1:
+            print(f"[{ts()}] {error_clean} - retrying in 2s...")
             time.sleep(2)
             return place_limit_order(token_id, price, size, side, bypass_price_failsafe, _retry_count + 1)
 
-        return False, error_str
+        return False, error_clean
 
 def cancel_order(order_id):
     try:
@@ -1069,13 +1089,13 @@ def place_and_verify_order(token_id, price, size, side="BUY", bypass_price_fails
     success, result = place_limit_order(token_id, price, size, side, bypass_price_failsafe)
 
     if not success:
-        # result contains the error message
+        # result contains the (already cleaned) error message
         error_msg = str(result) if result else "UNKNOWN_ERROR"
         if "FAILSAFE" in error_msg:
             return False, None, "FAILSAFE_BLOCKED"
         else:
             print(f"[{ts()}] ORDER_ERROR: {error_msg}")
-            return False, None, f"API_ERROR: {error_msg[:50]}"
+            return False, None, f"API_ERROR: {error_msg}"
 
     order_id = result
 
@@ -1337,8 +1357,9 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
 
     # 403 RECOVERY: Even on "failure", try to detect if order went through
     # Cloudflare 403 errors may occur after the order was actually placed
-    if not success and status and "403" in str(status):
-        print(f"[{ts()}] 99c CAPTURE: Got 403, polling to check if order actually placed...")
+    status_str = str(status) if status else ""
+    if not success and ("403" in status_str or "CLOUDFLARE" in status_str):
+        print(f"[{ts()}] 99c CAPTURE: {status_str} - polling to check if order actually placed...")
         baseline_up = window_state.get('filled_up_shares', 0)
         baseline_down = window_state.get('filled_down_shares', 0)
 

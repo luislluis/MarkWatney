@@ -1,10 +1,11 @@
 # Polybot Version Registry
 
-## Current Version: v1.12 "Resilient Eagle"
+## Current Version: v1.13 "Resilient Eagle"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.12 | 2026-01-21 PST | Resilient Eagle | 99c capture recovery from 403 errors via position polling + retry logic | Active |
+| v1.13 | 2026-01-21 PST | Resilient Eagle | 99c capture 403 recovery + clean Cloudflare error messages (no HTML spam) | Active |
+| v1.12 | 2026-01-21 PST | Resilient Eagle | 99c capture recovery from 403 errors via position polling + retry logic | Archived |
 | v1.11 | 2026-01-21 PST | Precise Falcon | Fix: Record fill prices for second leg in pairing mode + log 99c capture bid_price | Archived |
 | v1.10 | 2026-01-20 PST | Swift Hare | 5-second rule: if second ARB leg doesn't fill in 5s, bail immediately | Archived |
 | v1.9 | 2026-01-20 PST | Nimble Otter | OB-based early bail: detect ARB reversals via order book before price moves (target <10c loss) | Archived |
@@ -19,6 +20,14 @@
 | v1.0 | 2026-01-15 20:50 PST | Iron Phoenix | Baseline - includes PAIRING_MODE hedge escalation + 99c capture hedge protection | Archived |
 
 ## Version History Details
+
+### v1.13 - Resilient Eagle (2026-01-21)
+- **Clean Cloudflare error messages + 99c capture 403 recovery**
+- Problem: Cloudflare 403 blocks dumped entire HTML page to logs (hundreds of lines)
+- Added `clean_api_error()` helper to detect and clean Cloudflare responses
+- Errors now show: `CLOUDFLARE_403_BLOCK (Ray:abc123)` instead of full HTML
+- All 403/Cloudflare errors trigger retry with 2-second delay
+- Recovery polling uses cleaned error format for detection
 
 ### v1.12 - Resilient Eagle (2026-01-21)
 - **99c capture recovery from Cloudflare 403 errors**
