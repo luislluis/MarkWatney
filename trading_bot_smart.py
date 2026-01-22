@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.13",
-    "codename": "Resilient Eagle",
+    "version": "v1.14",
+    "codename": "Careful Fox",
     "date": "2026-01-21",
-    "changes": "99c capture 403 recovery + clean Cloudflare error messages (no HTML spam)"
+    "changes": "Fix: Remove retry from place_limit_order (caused duplicate orders bypassing dedup check)"
 }
 
 import os
@@ -852,8 +852,12 @@ def clean_api_error(error_str):
     return error_str
 
 
-def place_limit_order(token_id, price, size, side="BUY", bypass_price_failsafe=False, _retry_count=0):
-    """Place a post-only limit order with FAILSAFE checks and 403 retry logic"""
+def place_limit_order(token_id, price, size, side="BUY", bypass_price_failsafe=False):
+    """Place a post-only limit order with FAILSAFE checks.
+
+    NOTE: No retry logic here - retrying would bypass duplicate order detection
+    in place_and_verify_order(). Let caller handle 403 recovery via position polling.
+    """
 
     if side == "BUY":
         if price > FAILSAFE_MAX_BUY_PRICE and not bypass_price_failsafe:
@@ -893,13 +897,6 @@ def place_limit_order(token_id, price, size, side="BUY", bypass_price_failsafe=F
         error_raw = str(e)
         error_clean = clean_api_error(error_raw)
         log_activity("ORDER_FAILED", {"side": side, "price": price, "size": size, "error": error_clean})
-
-        # Retry once on 403/Cloudflare with delay
-        if ("403" in error_raw or "CLOUDFLARE" in error_clean) and _retry_count < 1:
-            print(f"[{ts()}] {error_clean} - retrying in 2s...")
-            time.sleep(2)
-            return place_limit_order(token_id, price, size, side, bypass_price_failsafe, _retry_count + 1)
-
         return False, error_clean
 
 def cancel_order(order_id):
