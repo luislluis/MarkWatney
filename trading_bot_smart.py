@@ -581,7 +581,7 @@ def notify_99c_resolution(side, shares, won, pnl):
     total_trades = sniper_stats['wins'] + sniper_stats['losses']
     win_rate = (sniper_stats['wins'] / total_trades * 100) if total_trades > 0 else 0
     avg_trade_value = 5.00  # $5 per trade
-    pnl_pct = (sniper_stats['total_pnl'] / (total_trades * avg_trade_value)) * 100 if total_trades > 0 else 0
+    pnl_pct = (sniper_stats['total_pnl'] / avg_trade_value) * 100  # ROI based on $5 avg trade
 
     msg = f"""{emoji} <b>99c SNIPER {result}</b>
 Side: {side} ({shares:.0f} shares)
@@ -591,7 +591,7 @@ P&L: ${pnl:+.2f}
 Wins: {sniper_stats['wins']} | Losses: {sniper_stats['losses']}
 Win Rate: {win_rate:.0f}%
 Total P&L: ${sniper_stats['total_pnl']:+.2f}
-ROI: {pnl_pct:+.1f}% (of ${total_trades * avg_trade_value:.0f} traded)"""
+ROI: {pnl_pct:+.1f}% (of $5 avg)"""
     send_telegram(msg)
 
 def check_99c_outcome(side, books):
