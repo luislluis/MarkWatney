@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.19",
-    "codename": "Laser Falcon",
+    "version": "v1.20",
+    "codename": "Signal Hawk",
     "date": "2026-01-24",
-    "changes": "ARB disabled - 99c sniper only mode"
+    "changes": "99c sniper Telegram notifications: fill alerts + win/loss results + daily rolling summary"
 }
 
 import os
@@ -402,6 +402,14 @@ def reset_window_state(slug):
         "capture_99c_peak_confidence": 0,     # Confidence at 99c fill time
     }
 
+# 99c Sniper Daily Stats (rolling summary for Telegram notifications)
+sniper_stats = {
+    'wins': 0,
+    'losses': 0,
+    'total_pnl': 0.0,
+    'trades': []  # List of {window_id, side, shares, won, pnl}
+}
+
 def get_imbalance():
     """Calculate current imbalance (includes all shares)"""
     if not window_state:
@@ -535,6 +543,75 @@ Shares closed: {shares}
 Realized PnL impact: {pnl_impact:.2f}
 Reason: Risk control"""
     send_telegram(msg)
+
+def notify_99c_fill(side, shares, confidence, ttc):
+    """Telegram notification when 99c sniper order fills"""
+    msg = f"""🎯 <b>99c SNIPER FILLED</b>
+Side: {side}
+Shares: {shares:.0f} @ 99c
+Confidence: {confidence:.0f}%
+Time left: {ttc}s
+Cost: ${shares * 0.99:.2f}
+Potential profit: ${shares * 0.01:.2f}"""
+    send_telegram(msg)
+
+def notify_99c_resolution(side, shares, won, pnl):
+    """Telegram notification when 99c sniper window resolves"""
+    global sniper_stats
+
+    # Update stats
+    if won:
+        sniper_stats['wins'] += 1
+        emoji = "✅"
+        result = "WIN"
+    else:
+        sniper_stats['losses'] += 1
+        emoji = "❌"
+        result = "LOSS"
+
+    sniper_stats['total_pnl'] += pnl
+    sniper_stats['trades'].append({
+        'side': side,
+        'shares': shares,
+        'won': won,
+        'pnl': pnl
+    })
+
+    # Calculate stats
+    total_trades = sniper_stats['wins'] + sniper_stats['losses']
+    win_rate = (sniper_stats['wins'] / total_trades * 100) if total_trades > 0 else 0
+    avg_trade_value = 5.00  # $5 per trade
+    pnl_pct = (sniper_stats['total_pnl'] / (total_trades * avg_trade_value)) * 100 if total_trades > 0 else 0
+
+    msg = f"""{emoji} <b>99c SNIPER {result}</b>
+Side: {side} ({shares:.0f} shares)
+P&L: ${pnl:+.2f}
+
+<b>📊 Daily Summary</b>
+Wins: {sniper_stats['wins']} | Losses: {sniper_stats['losses']}
+Win Rate: {win_rate:.0f}%
+Total P&L: ${sniper_stats['total_pnl']:+.2f}
+ROI: {pnl_pct:+.1f}% (of ${total_trades * avg_trade_value:.0f} traded)"""
+    send_telegram(msg)
+
+def check_99c_outcome(side, books):
+    """Check if our 99c bet won based on final market state"""
+    # At window close, winning side price approaches $1 (100c)
+    # Losing side approaches $0 (0c)
+    if not books:
+        return None  # Can't determine
+
+    try:
+        if side == "UP":
+            # Check UP ask - if >= 95c at close, UP won
+            up_ask = float(books.get('up_asks', [{'price': 0.5}])[0]['price'])
+            return up_ask >= 0.95
+        else:
+            # Check DOWN ask - if >= 95c at close, DOWN won
+            down_ask = float(books.get('down_asks', [{'price': 0.5}])[0]['price'])
+            return down_ask >= 0.95
+    except (IndexError, KeyError, TypeError):
+        return None
 
 def _send_pair_outcome_notification():
     """Send appropriate notification when pair completes"""
@@ -2417,6 +2494,35 @@ def main():
                         print(f"│  💵 Session PnL: ${session_stats['pnl']:.2f}".ljust(55) + "│")
                         print("└────────────────────────────────────────────────────────┘")
 
+                        # 99c Sniper Resolution Notification
+                        if window_state.get('capture_99c_fill_notified'):
+                            sniper_side = window_state.get('capture_99c_side')
+                            sniper_shares = window_state.get('capture_99c_filled_up', 0) + window_state.get('capture_99c_filled_down', 0)
+
+                            if window_state.get('capture_99c_hedged'):
+                                # Hedged: loss = (0.99 + hedge_price) - 1.00 per share
+                                hedge_price = window_state.get('capture_99c_hedge_price', 0)
+                                sniper_pnl = -(0.99 + hedge_price - 1.00) * sniper_shares
+                                sniper_won = False
+                                print(f"[{ts()}] 99c SNIPER RESULT: HEDGED (loss avoided) P&L=${sniper_pnl:.2f}")
+                            else:
+                                # Fetch final books to determine outcome
+                                try:
+                                    final_books = get_order_books(cached_market)
+                                    sniper_won = check_99c_outcome(sniper_side, final_books)
+                                    if sniper_won is None:
+                                        # Can't determine - assume loss to be conservative
+                                        sniper_won = False
+                                        print(f"[{ts()}] 99c SNIPER RESULT: UNKNOWN (assuming loss)")
+                                    sniper_pnl = sniper_shares * 0.01 if sniper_won else -sniper_shares * 0.99
+                                    print(f"[{ts()}] 99c SNIPER RESULT: {'WIN' if sniper_won else 'LOSS'} P&L=${sniper_pnl:.2f}")
+                                except Exception as e:
+                                    print(f"[{ts()}] 99c SNIPER RESULT ERROR: {e}")
+                                    sniper_won = False
+                                    sniper_pnl = -sniper_shares * 0.99
+
+                            notify_99c_resolution(sniper_side, sniper_shares, sniper_won, sniper_pnl)
+
                         # Log window end to Google Sheets
                         sheets_log_window(window_state)
                         flush_ticks()  # Flush any remaining tick data
@@ -2567,6 +2673,8 @@ def main():
                             peak_conf, _ = calculate_99c_confidence(current_ask, remaining_secs)
                             window_state['capture_99c_peak_confidence'] = peak_conf
                         window_state['capture_99c_fill_notified'] = True
+                        # Send Telegram notification
+                        notify_99c_fill(side, filled, peak_conf * 100 if peak_conf else 95, remaining_secs)
                         sheets_log_event("CAPTURE_FILL", slug, side=side, shares=filled,
                                         pnl=filled * 0.01)
 

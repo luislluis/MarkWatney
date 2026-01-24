@@ -1,10 +1,11 @@
 # Polybot Version Registry
 
-## Current Version: v1.19 "Laser Falcon"
+## Current Version: v1.20 "Signal Hawk"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.19 | 2026-01-24 PST | Laser Falcon | ARB disabled - 99c sniper only mode | Active |
+| v1.20 | 2026-01-24 PST | Signal Hawk | 99c sniper Telegram notifications: fill alerts + win/loss + daily summary | Active |
+| v1.19 | 2026-01-24 PST | Laser Falcon | ARB disabled - 99c sniper only mode | Archived |
 | v1.18 | 2026-01-22 PST | Watney's Orphans | Fix: Orphaned startup shares excluded from ARB imbalance (no more false BAIL loops) | Archived |
 | v1.17 | 2026-01-22 PST | The Bellagio Job | Fix: 99c outcome via CLOB API resolution, background checker, activity log sheet, dashboard merge fix | Archived |
 | v1.16 | 2026-01-21 PST | Dollar Bill's Recovery | Fix: STATE_DONE recovery - detect and handle ARB imbalances that slipped through | Archived |
@@ -26,6 +27,15 @@
 | v1.0 | 2026-01-15 20:50 PST | The Potato Farmer | Baseline - includes PAIRING_MODE hedge escalation + 99c capture hedge protection | Archived |
 
 ## Version History Details
+
+### v1.20 - Signal Hawk (2026-01-24)
+*"Eyes in the sky, reporting every move."*
+- **99c Sniper Telegram Notifications**
+- Fill notification: Sends alert when 99c order fills with side, shares, confidence, time left
+- Resolution notification: Sends win/loss result when window closes with P&L
+- Daily rolling summary: Shows wins, losses, total P&L, win rate, ROI % after each trade
+- Added `sniper_stats` tracking for session-wide 99c performance
+- Added `check_99c_outcome()` function to determine win/loss from final market prices
 
 ### v1.19 - Laser Falcon (2026-01-24)
 *"I can hit a target from 2 miles away."*
