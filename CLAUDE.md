@@ -51,19 +51,46 @@ grep "POLYBOT" ~/polybot/bot.log | tail -1
 ```
 
 ### Deploy New Version
-```bash
-# From Mac - push to server
-scp ~/polymarket_bot/trading_bot_smart.py root@174.138.5.183:~/polymarket_bot/
 
-# On server - restart
+**IMPORTANT**: Always SSH in interactively to start the bot. Long one-liner commands via `ssh "command"` break due to line wrapping issues.
+
+```bash
+# Step 1: From Mac - push files to server
+scp ~/MarkWatney/trading_bot_smart.py ~/MarkWatney/sheets_dashboard.py root@174.138.5.183:~/polymarket_bot/
+
+# Step 2: SSH into server
 ssh root@174.138.5.183
+
+# Step 3: On server - stop old bot
 pkill -f trading_bot_smart.py
+
+# Step 4: On server - start new bot (run as ONE command)
 cd ~/polymarket_bot && export GOOGLE_SHEETS_SPREADSHEET_ID=1fxGKxKxj2RAL0hwtqjaOWdmnwqg6RcKseYYP-cCKp74 && export GOOGLE_SHEETS_CREDENTIALS_FILE=~/.google_sheets_credentials.json && nohup python3 trading_bot_smart.py > /dev/null 2>&1 &
+
+# Step 5: Verify it's running
 tail -20 ~/polybot/bot.log
 ```
 
 ### Version History
 See `BOT_REGISTRY.md` for full version history with codenames and changes.
+
+### Git Version Control
+**IMPORTANT**: Each version is committed to GitHub individually so we can rollback if issues arise.
+
+```bash
+# Commit new version
+git add trading_bot_smart.py BOT_REGISTRY.md
+git commit -m "v1.X: Brief description of changes"
+git push
+
+# Rollback to previous version
+git checkout HEAD~1 -- trading_bot_smart.py
+scp ~/MarkWatney/trading_bot_smart.py root@174.138.5.183:~/polymarket_bot/
+
+# Rollback to specific version (find commit hash first)
+git log --oneline trading_bot_smart.py
+git checkout <commit-hash> -- trading_bot_smart.py
+```
 
 ---
 
@@ -259,8 +286,10 @@ HARD_FLATTEN_SECONDS = 10
 ## Commands Reference
 
 ### Start Bot on Server
+**Best method**: SSH in interactively, then run:
 ```bash
-ssh root@174.138.5.183 "cd ~/polymarket_bot && nohup python3 trading_bot_smart.py > /dev/null 2>&1 &"
+ssh root@174.138.5.183
+cd ~/polymarket_bot && export GOOGLE_SHEETS_SPREADSHEET_ID=1fxGKxKxj2RAL0hwtqjaOWdmnwqg6RcKseYYP-cCKp74 && export GOOGLE_SHEETS_CREDENTIALS_FILE=~/.google_sheets_credentials.json && nohup python3 trading_bot_smart.py > /dev/null 2>&1 &
 ```
 
 ### Stop Bot on Server
@@ -290,17 +319,20 @@ scp trading_bot_smart.py root@174.138.5.183:~/polymarket_bot/
 
 ### Full Restart Sequence
 ```bash
-# 1. Kill old bot
-ssh root@174.138.5.183 "pkill -f trading_bot_smart.py"
+# 1. Upload new code (from Mac)
+scp ~/MarkWatney/trading_bot_smart.py ~/MarkWatney/sheets_dashboard.py root@174.138.5.183:~/polymarket_bot/
 
-# 2. Upload new code
-scp trading_bot_smart.py root@174.138.5.183:~/polymarket_bot/
+# 2. SSH into server
+ssh root@174.138.5.183
 
-# 3. Start new bot
-ssh root@174.138.5.183 "cd ~/polymarket_bot && nohup python3 trading_bot_smart.py > /dev/null 2>&1 &"
+# 3. On server - kill old bot
+pkill -f trading_bot_smart.py
 
-# 4. Verify running
-ssh root@174.138.5.183 "tail -20 ~/polybot/bot.log"
+# 4. On server - start new bot (run as ONE command)
+cd ~/polymarket_bot && export GOOGLE_SHEETS_SPREADSHEET_ID=1fxGKxKxj2RAL0hwtqjaOWdmnwqg6RcKseYYP-cCKp74 && export GOOGLE_SHEETS_CREDENTIALS_FILE=~/.google_sheets_credentials.json && nohup python3 trading_bot_smart.py > /dev/null 2>&1 &
+
+# 5. Verify running
+tail -20 ~/polybot/bot.log
 ```
 
 ---
@@ -346,6 +378,34 @@ ssh root@174.138.5.183 "tail -20 ~/polybot/bot.log"
 ### Bot Status
 - Bot is currently **RUNNING** on server
 - Google Sheets logging: **ENABLED** (per-second ticks + events)
+
+---
+
+## RPC Configuration (Polygon)
+
+**IMPORTANT:** Use Alchemy (or Infura) RPC instead of public `polygon-rpc.com` which gets rate limited.
+
+### Setup Alchemy (Free)
+1. Sign up at https://www.alchemy.com
+2. Create app: Polygon Mainnet
+3. Copy HTTPS URL: `https://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY`
+4. Add to server `~/.env`:
+   ```bash
+   POLYGON_RPC=https://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY
+   ```
+
+### Gas for Redemptions
+- EOA wallet needs MATIC for gas (~0.002-0.005 per redeem)
+- Proxy wallet has MATIC but can't spend it directly on gas
+- Use `send_matic.py` to transfer MATIC from Proxy to EOA:
+  ```bash
+  python3 send_matic.py  # Sends 0.5 MATIC to EOA
+  ```
+
+### Check Balances
+```bash
+cd ~/polymarket_bot && python3 auto_redeem.py --test
+```
 
 ---
 
@@ -452,6 +512,23 @@ tail -100 ~/polybot/bot.log | grep -i sheets
 ---
 
 ## Session Log
+
+### 2026-01-24
+- **Deployed v1.19 "Laser Falcon"** - ARB disabled, 99c sniper only mode
+  - Added `ARB_ENABLED = False` flag to disable arbitrage trading
+  - 99c capture strategy remains fully active
+  - Goal: Perfect the 99c strategy before re-enabling ARB
+- **Fixed auto_redeem.py rate limiting:**
+  - Problem: Public `polygon-rpc.com` was rate limiting redemptions
+  - Solution: Added Alchemy RPC (`POLYGON_RPC` in ~/.env)
+  - Added retry logic with exponential backoff for RPC calls
+- **Added send_matic.py utility:**
+  - Sends MATIC from Proxy (Safe) wallet to EOA for gas
+  - EOA needs MATIC to execute redemption transactions
+  - Funded EOA with 0.5 MATIC
+- **SSH access improvements:**
+  - Fixed slow SSH by disabling DNS lookup (`UseDNS no` in sshd_config)
+  - Added SSH key for Claude Code access
 
 ### 2026-01-15
 - Created CLAUDE.md documentation file

@@ -13,6 +13,16 @@ Usage:
 
     # Integrated in bot
     from auto_redeem import check_claimable_positions, redeem_position
+
+Configuration (in ~/.env):
+    POLYGON_RPC=https://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY
+    PRIVATE_KEY=your_private_key
+    WALLET_ADDRESS=your_proxy_wallet_address
+
+Notes:
+    - Use Alchemy/Infura RPC to avoid rate limits (polygon-rpc.com gets throttled)
+    - EOA needs MATIC for gas (~0.002-0.005 per redeem)
+    - Retry logic handles temporary RPC rate limits with exponential backoff
 """
 
 import os
@@ -127,6 +137,30 @@ def get_web3():
             print("[REDEEM] Error: web3 not installed. Run: pip install web3")
             return None
     return _w3
+
+
+def retry_on_rate_limit(func, max_retries=3, initial_delay=10):
+    """
+    Decorator/wrapper to retry RPC calls on rate limit errors.
+    Handles error code -32090 (rate limit) with exponential backoff.
+    """
+    def wrapper(*args, **kwargs):
+        delay = initial_delay
+        for attempt in range(max_retries):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                error_str = str(e)
+                # Check for rate limit error
+                if '-32090' in error_str or 'rate limit' in error_str.lower() or 'too many requests' in error_str.lower():
+                    if attempt < max_retries - 1:
+                        print(f"[REDEEM] Rate limited, waiting {delay}s before retry {attempt + 2}/{max_retries}...")
+                        time.sleep(delay)
+                        delay *= 2  # Exponential backoff
+                        continue
+                raise  # Re-raise if not rate limit or max retries exceeded
+        return None
+    return wrapper
 
 
 def send_telegram(message):
@@ -313,8 +347,10 @@ def redeem_position(condition_id):
 
         print(f"[REDEEM] Encoded redeem call for condition: {condition_id[:20]}...")
 
-        # Step 2: Get Safe nonce and prepare transaction hash
-        safe_nonce = safe.functions.nonce().call()
+        # Step 2: Get Safe nonce and prepare transaction hash (with retry)
+        def get_nonce():
+            return safe.functions.nonce().call()
+        safe_nonce = retry_on_rate_limit(get_nonce)()
         print(f"[REDEEM] Safe nonce: {safe_nonce}")
 
         # Safe transaction parameters
@@ -328,19 +364,21 @@ def redeem_position(condition_id):
         gas_token = "0x0000000000000000000000000000000000000000"
         refund_receiver = "0x0000000000000000000000000000000000000000"
 
-        # Get transaction hash from Safe contract
-        tx_hash_to_sign = safe.functions.getTransactionHash(
-            to_addr,
-            value,
-            data,
-            operation,
-            safe_tx_gas,
-            base_gas,
-            gas_price_param,
-            gas_token,
-            refund_receiver,
-            safe_nonce
-        ).call()
+        # Get transaction hash from Safe contract (with retry)
+        def get_tx_hash():
+            return safe.functions.getTransactionHash(
+                to_addr,
+                value,
+                data,
+                operation,
+                safe_tx_gas,
+                base_gas,
+                gas_price_param,
+                gas_token,
+                refund_receiver,
+                safe_nonce
+            ).call()
+        tx_hash_to_sign = retry_on_rate_limit(get_tx_hash)()
 
         print(f"[REDEEM] Safe tx hash to sign: {tx_hash_to_sign.hex()}")
 
@@ -382,9 +420,12 @@ def redeem_position(condition_id):
             'chainId': 137
         })
 
-        # Sign and send
+        # Sign and send (with retry)
         signed_tx = account.sign_transaction(exec_tx)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+
+        def send_tx():
+            return w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        tx_hash = retry_on_rate_limit(send_tx)()
 
         print(f"[REDEEM] Transaction sent: {tx_hash.hex()}")
         print(f"[REDEEM] View on Polygonscan: https://polygonscan.com/tx/{tx_hash.hex()}")

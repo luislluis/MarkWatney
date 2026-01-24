@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.14",
-    "codename": "Careful Fox",
-    "date": "2026-01-21",
-    "changes": "Fix: Remove retry from place_limit_order (caused duplicate orders bypassing dedup check)"
+    "version": "v1.19",
+    "codename": "Laser Falcon",
+    "date": "2026-01-24",
+    "changes": "ARB disabled - 99c sniper only mode"
 }
 
 import os
@@ -202,6 +202,7 @@ AGGRESSIVE_COMPLETION_WAIT = 2.0
 AGGRESSIVE_COMPLETION_ENABLED = True
 USE_FAST_ORDER_CHECK = True
 MOMENTUM_FIRST_ENABLED = True
+ARB_ENABLED = False                # Disable ARB strategy, 99c sniper only
 
 # ===========================================
 # SMART STRATEGY SETTINGS (NEW)
@@ -833,31 +834,8 @@ def log_order_event(order_id, side, action, price, qty, filled, avg_fill, reason
 # ORDER MANAGEMENT
 # ============================================================================
 
-def clean_api_error(error_str):
-    """Clean up API error messages - especially Cloudflare HTML responses"""
-    if "<!DOCTYPE" in error_str or "<html" in error_str.lower():
-        # Extract Cloudflare Ray ID if present
-        ray_id = ""
-        if "Ray ID:" in error_str:
-            try:
-                ray_id = error_str.split("Ray ID:")[1].split("<")[0].strip()[:20]
-            except:
-                pass
-        if "403" in error_str:
-            return f"CLOUDFLARE_403_BLOCK (Ray:{ray_id})" if ray_id else "CLOUDFLARE_403_BLOCK"
-        return "CLOUDFLARE_BLOCK"
-    # Truncate long errors
-    if len(error_str) > 100:
-        return error_str[:100] + "..."
-    return error_str
-
-
 def place_limit_order(token_id, price, size, side="BUY", bypass_price_failsafe=False):
-    """Place a post-only limit order with FAILSAFE checks.
-
-    NOTE: No retry logic here - retrying would bypass duplicate order detection
-    in place_and_verify_order(). Let caller handle 403 recovery via position polling.
-    """
+    """Place a post-only limit order with FAILSAFE checks"""
 
     if side == "BUY":
         if price > FAILSAFE_MAX_BUY_PRICE and not bypass_price_failsafe:
@@ -894,10 +872,8 @@ def place_limit_order(token_id, price, size, side="BUY", bypass_price_failsafe=F
         log_activity("ORDER_PLACED", {"order_id": order_id, "side": side, "price": price, "size": size})
         return True, order_id
     except Exception as e:
-        error_raw = str(e)
-        error_clean = clean_api_error(error_raw)
-        log_activity("ORDER_FAILED", {"side": side, "price": price, "size": size, "error": error_clean})
-        return False, error_clean
+        log_activity("ORDER_FAILED", {"side": side, "price": price, "size": size, "error": str(e)})
+        return False, str(e)
 
 def cancel_order(order_id):
     try:
@@ -1086,13 +1062,13 @@ def place_and_verify_order(token_id, price, size, side="BUY", bypass_price_fails
     success, result = place_limit_order(token_id, price, size, side, bypass_price_failsafe)
 
     if not success:
-        # result contains the (already cleaned) error message
+        # result contains the error message
         error_msg = str(result) if result else "UNKNOWN_ERROR"
         if "FAILSAFE" in error_msg:
             return False, None, "FAILSAFE_BLOCKED"
         else:
             print(f"[{ts()}] ORDER_ERROR: {error_msg}")
-            return False, None, f"API_ERROR: {error_msg}"
+            return False, None, f"API_ERROR: {error_msg[:50]}"
 
     order_id = result
 
@@ -1335,11 +1311,6 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
     shares = int(CAPTURE_99C_MAX_SPEND / CAPTURE_99C_BID_PRICE)  # ~5 shares
     token = window_state['up_token'] if side == 'UP' else window_state['down_token']
 
-    # Record baseline positions for 403 recovery detection
-    # If 403 occurs, we can detect fills by checking if position increased
-    window_state['pre_capture_up_shares'] = window_state.get('filled_up_shares', 0)
-    window_state['pre_capture_down_shares'] = window_state.get('filled_down_shares', 0)
-
     print()
     print(f"┌─────────────── 99c CAPTURE ───────────────┐")
     print(f"│  {side} @ {current_ask*100:.0f}c | T-{ttc:.0f}s | Confidence: {confidence*100:.0f}%".ljust(44) + "│")
@@ -1351,33 +1322,6 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
     success, order_id, status = place_and_verify_order(
         token, CAPTURE_99C_BID_PRICE, shares, "BUY", bypass_price_failsafe=True
     )
-
-    # 403 RECOVERY: Even on "failure", try to detect if order went through
-    # Cloudflare 403 errors may occur after the order was actually placed
-    status_str = str(status) if status else ""
-    if not success and ("403" in status_str or "CLOUDFLARE" in status_str):
-        print(f"[{ts()}] 99c CAPTURE: {status_str} - polling to check if order actually placed...")
-        baseline_up = window_state.get('filled_up_shares', 0)
-        baseline_down = window_state.get('filled_down_shares', 0)
-
-        # Poll position API for 5 seconds to detect fill
-        for i in range(25):  # 25 * 0.2s = 5 seconds
-            time.sleep(0.2)
-            pos = verify_position_from_api()
-            if pos is None:
-                continue
-
-            # Check if we have new shares on this side
-            if side == "UP" and pos[0] > baseline_up:
-                print(f"[{ts()}] 99c CAPTURE: Order detected via position API despite 403! ({pos[0]} > {baseline_up})")
-                success = True
-                order_id = "RECOVERED_403"  # Marker for recovered order
-                break
-            elif side == "DOWN" and pos[1] > baseline_down:
-                print(f"[{ts()}] 99c CAPTURE: Order detected via position API despite 403! ({pos[1]} > {baseline_down})")
-                success = True
-                order_id = "RECOVERED_403"  # Marker for recovered order
-                break
 
     if success:
         window_state['capture_99c_used'] = True
@@ -2604,34 +2548,13 @@ def main():
                             remaining_secs
                         )
 
-                # Check if 99c capture order filled (via order status or position API fallback)
-                if window_state.get('capture_99c_side') and not window_state.get('capture_99c_fill_notified'):
-                    filled = 0
-                    side = window_state['capture_99c_side']
-                    expected_shares = window_state.get('capture_99c_shares', 5)
-                    order_id = window_state.get('capture_99c_order')
-
-                    # Primary: Check order status if we have a valid order_id
-                    if order_id and order_id != "RECOVERED_403":
-                        status = get_order_status(order_id)
-                        filled = status.get('filled', 0)
-
-                    # Fallback: Check position API if no valid order_id OR no fills detected yet
-                    # This catches 403-recovered orders and missed fills
-                    if filled == 0:
-                        pos = verify_position_from_api()
-                        if pos:
-                            # Check if position increased on the capture side
-                            baseline_up = window_state.get('pre_capture_up_shares', 0)
-                            baseline_down = window_state.get('pre_capture_down_shares', 0)
-                            if side == "UP" and pos[0] > baseline_up:
-                                filled = pos[0] - baseline_up
-                                print(f"[{ts()}] 99c CAPTURE: Fill detected via position API (UP: {pos[0]} > {baseline_up})")
-                            elif side == "DOWN" and pos[1] > baseline_down:
-                                filled = pos[1] - baseline_down
-                                print(f"[{ts()}] 99c CAPTURE: Fill detected via position API (DOWN: {pos[1]} > {baseline_down})")
-
-                    if filled > 0:
+                # Check if 99c capture order filled
+                if window_state.get('capture_99c_order') and not window_state.get('capture_99c_fill_notified'):
+                    order_id = window_state['capture_99c_order']
+                    status = get_order_status(order_id)
+                    if status.get('filled', 0) > 0:
+                        filled = status['filled']
+                        side = window_state['capture_99c_side']
                         print()
                         print(f"┌─────────────── 99c CAPTURE FILLED ───────────────┐")
                         print(f"│  ✅ {side}: {filled:.0f} shares filled @ ~99c".ljust(48) + "│")
@@ -2739,7 +2662,8 @@ def main():
                         if window_state['current_arb_orders']:
                             monitor_arb_orders(books)
                         else:
-                            check_and_place_arb(books, remaining_secs)
+                            if ARB_ENABLED:
+                                check_and_place_arb(books, remaining_secs)
 
                 elapsed = time.time() - cycle_start
                 if window_state['state'] == STATE_PAIRING:
