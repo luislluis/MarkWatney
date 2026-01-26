@@ -379,8 +379,16 @@ class SheetsLogger:
         print(f"[SHEETS] Giving up on {len(rows)} ticks")
         return False
 
-    def maybe_flush_ticks(self) -> bool:
-        """Flush ticks if enough time has passed since last flush."""
+    def maybe_flush_ticks(self, ttl: float = None) -> bool:
+        """Flush ticks if enough time has passed since last flush.
+
+        Args:
+            ttl: Time to close (seconds). If < 60, skip flush to protect critical trading period.
+        """
+        # Don't flush in final 60 seconds - protect trading operations
+        if ttl is not None and ttl < 60:
+            return True  # Skip, keep buffer for later
+
         if time.time() - self._last_flush_time >= TICK_FLUSH_INTERVAL:
             return self.flush_ticks()
         return True
@@ -437,11 +445,15 @@ def buffer_tick(window_id: str, ttc: float, status: str,
                         btc_price, up_imb, down_imb, danger_score, reason)
 
 
-def maybe_flush_ticks() -> bool:
-    """Flush ticks if enough time has passed (called every second)."""
+def maybe_flush_ticks(ttl: float = None) -> bool:
+    """Flush ticks if enough time has passed (called every second).
+
+    Args:
+        ttl: Time to close (seconds). If < 60, skip flush to protect critical trading period.
+    """
     if _logger is None or not _logger.enabled:
         return False
-    return _logger.maybe_flush_ticks()
+    return _logger.maybe_flush_ticks(ttl)
 
 
 def flush_ticks() -> bool:

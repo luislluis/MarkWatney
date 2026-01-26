@@ -1,10 +1,18 @@
 # Polybot Version Registry
 
-## Current Version: v1.20 "Signal Hawk"
+## Current Version: v1.28 "Price Guardian"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.20 | 2026-01-24 PST | Signal Hawk | 99c sniper Telegram notifications: fill alerts + win/loss + daily summary | Active |
+| v1.28 | 2026-01-26 PST | Price Guardian | Price stop-loss: Exit when price ≤ 80c, floor at 50c (never lose >50%) | Active |
+| v1.27 | 2026-01-26 PST | Critical Shield | Skip Sheets flush during final 60s to prevent blocking during critical trading | Archived |
+| v1.26 | 2026-01-25 PST | Supabase Stream | Add Supabase real-time tick logging + fix 99c outcome detection | Archived |
+| v1.25 | 2026-01-26 PST | OB Guardian | 99c OB-based early exit: Exit when OB < -0.30 for 3 consecutive ticks | Archived |
+| v1.24 | 2026-01-24 PST | Rich Purnell | Smart 99c sniper: Entry filters (stability/volatility) + disabled end-of-window hedge trigger | Archived |
+| v1.23 | 2026-01-24 PST | Hexadecimal | Fix: Silent exceptions logged (10 locations) + council backup system | Archived |
+| v1.22 | 2026-01-24 PST | Pathfinder Data | Fix: P&L logging for EARLY_BAIL and 99C_HEDGE now records actual losses | Archived |
+| v1.21 | 2026-01-24 PST | Ares III Council | AI Council system: 3 AI models analyze daily trades, debate, vote | Archived |
+| v1.20 | 2026-01-24 PST | Signal Hawk | 99c sniper Telegram notifications: fill alerts + win/loss + daily summary | Archived |
 | v1.19 | 2026-01-24 PST | Laser Falcon | ARB disabled - 99c sniper only mode | Archived |
 | v1.18 | 2026-01-22 PST | Watney's Orphans | Fix: Orphaned startup shares excluded from ARB imbalance (no more false BAIL loops) | Archived |
 | v1.17 | 2026-01-22 PST | The Bellagio Job | Fix: 99c outcome via CLOB API resolution, background checker, activity log sheet, dashboard merge fix | Archived |
@@ -27,6 +35,88 @@
 | v1.0 | 2026-01-15 20:50 PST | The Potato Farmer | Baseline - includes PAIRING_MODE hedge escalation + 99c capture hedge protection | Archived |
 
 ## Version History Details
+
+### v1.28 - Price Guardian (2026-01-26)
+*"When the price says run, you run."*
+- **Price Stop-Loss for 99c Capture**
+  - **Trigger at 80c**: When our side's price drops to 80c or below, immediately exit
+  - **Floor at 50c**: Never sell below 50c (never lose more than 50% of the trade)
+  - Reuses existing `execute_99c_early_exit()` function with new `reason` parameter
+  - Differentiates between "price_stop" (reactive) and "ob_reversal" (proactive) exits
+  - Different Telegram notifications and Sheets event types for each reason
+  - **Files changed:** trading_bot_smart.py
+  - **Priority order in main loop:** Hard floor (50c) → Price stop (80c) → OB exit (-0.30 imbalance)
+
+### v1.27 - Critical Shield (2026-01-26)
+*"The main loop must never be blocked during critical periods."*
+- **Fix: Skip Sheets flush during final 60 seconds**
+  - Root cause: $4.70 loss when Sheets flush blocked main loop for 12 seconds during market crash
+  - The bot couldn't detect price reversal because it was frozen uploading tick data
+  - Solution: `maybe_flush_ticks(ttl)` now skips if TTL < 60 seconds
+  - Ticks buffer until after the critical period, then flush normally
+- **Files changed:** sheets_logger.py, supabase_logger.py, trading_bot_smart.py
+- **Impact:** Zero blocking during the critical final minute of each window
+
+### v1.26 - Supabase Stream (2026-01-25)
+*"Real-time visibility into every tick."*
+- Add Supabase real-time tick logging alongside Google Sheets
+- Fix 99c outcome detection
+
+### v1.25 - OB Guardian (2026-01-26)
+*"Trust the order book, not the price."*
+- **99c OB-Based Early Exit**
+  - Exit 99c positions when order book imbalance < -0.30 for 3 consecutive ticks
+  - Protects against reversals before they show in price
+  - Minimum exit price floor of 70c to prevent panic sells
+
+### v1.24 - Rich Purnell (2026-01-24)
+*"I'm going to need to math the shit out of this."*
+- **Smart 99c Sniper Entry Filters** (Based on tick data analysis)
+  - **STABLE filter**: Only enter if last 3 ticks all >= 97c (sustained confidence, not spike)
+  - **LOW VOLATILITY filter**: Skip if any tick-to-tick jump > 8c in past 10 ticks
+  - **OPPOSING LOW filter**: Skip if opposing side was > 15c in past 30 ticks
+  - Pattern analysis showed: 100% of losses had volatile entries, 0% of stable entries lost
+- **Disabled End-of-Window Hedge Trigger**
+  - Problem: Hedge was firing when market "dies" at window end (prices drop to 50c/1c)
+  - This wasn't a real reversal - just end-of-window liquidity death
+  - Set `CAPTURE_99C_HEDGE_ENABLED = False`
+- **New tracking**: `market_price_history` deque stores (timestamp, up_ask, down_ask) for 30 ticks
+- **Expected improvement**: From -$12 net P&L to +$8 net P&L
+
+### v1.23 - Hexadecimal (2026-01-24)
+*"How Watney communicated with NASA using 16 characters."*
+- Fix: 10 silent exception blocks (`except: pass`) now log errors with descriptive messages
+- Added council backup system: saves to local JSON before Google Docs API call
+
+### v1.22 - Pathfinder Data (2026-01-24)
+*"First communication from Mars - now we can see the losses."*
+- Fix: P&L logging for EARLY_BAIL and 99C_HEDGE now records actual loss amounts
+- Previously only logged wins, making AI Council analysis inaccurate
+
+### v1.21 - Ares III Council (2026-01-24)
+*"Five crew members. Three AI minds. One mission."*
+- **AI Council Trading Analysis System**
+- Daily analysis from Claude (Watney), ChatGPT (Johanssen), Gemini (Martinez)
+- Each AI adopts a character persona from The Martian
+- **Phase 1: Independent Analysis**
+  - Each AI analyzes trade data without seeing others' responses
+  - Identifies patterns in wins/losses, risk factors, strategy recommendations
+- **Phase 2: Debate & Rebuttals**
+  - Each AI sees others' analyses and responds
+  - Points of agreement, disagreement, missed insights
+- **Phase 3: Final Vote**
+  - Each AI casts vote on #1 recommended change
+  - Includes reasoning, implementation steps, confidence level
+- **Output & Automation**
+  - Full transcript saved to Google Doc
+  - Telegram notification with summary and doc link
+  - Runs daily via cron at 6 AM PST
+  - Only analyzes trades since last council session
+- **Data Accuracy**
+  - Fetches directly from Google Sheets (Windows + Events)
+  - Validates timestamps and filters by last council date
+  - Shows sample size warnings for small datasets
+- **New File:** `ai_council.py`
 
 ### v1.20 - Signal Hawk (2026-01-24)
 *"Eyes in the sky, reporting every move."*
@@ -223,7 +313,7 @@
 
 ## Codename Inspiration
 
-**The Martian**: Watney's Orphans, Pathfinder, Sol 549, Ares III, Iron Man Maneuver, The Potato Farmer
+**The Martian**: Ares III Council, Watney's Orphans, Pathfinder, Sol 549, Ares III, Iron Man Maneuver, The Potato Farmer
 
 **Ocean's Trilogy**: The Bellagio Job, The Night Fox, Rusty's Cut
 
