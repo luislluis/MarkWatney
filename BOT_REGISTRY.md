@@ -1,10 +1,15 @@
 # Polybot Version Registry
 
-## Current Version: v1.28 "Price Guardian"
+## Current Version: v1.33 "Phoenix Feed"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.28 | 2026-01-26 PST | Price Guardian | Price stop-loss: Exit when price ≤ 80c, floor at 50c (never lose >50%) | Active |
+| v1.33 | 2026-01-28 PST | Phoenix Feed | RTDS WebSocket: Real-time BTC prices from Polymarket's Chainlink stream | Active |
+| v1.32 | 2026-01-27 PST | Gas Guardian | MATIC balance monitoring: Log at window start, bold Telegram alert when low | Archived |
+| v1.31 | 2026-01-26 PST | Background Flush | Non-blocking flush: Sheets/Supabase uploads run in background threads | Archived |
+| v1.30 | 2026-01-26 PST | Confidence Display | Show 99c confidence in tick output (DN:49%/95%) + activity logging to Supabase | Archived |
+| v1.29 | 2026-01-26 PST | Activity Stream | Activity logging to Supabase with market prices (up_ask, down_ask, ttl) | Archived |
+| v1.28 | 2026-01-26 PST | Price Guardian | Price stop-loss: Exit when price ≤ 80c, floor at 50c (never lose >50%) | Archived |
 | v1.27 | 2026-01-26 PST | Critical Shield | Skip Sheets flush during final 60s to prevent blocking during critical trading | Archived |
 | v1.26 | 2026-01-25 PST | Supabase Stream | Add Supabase real-time tick logging + fix 99c outcome detection | Archived |
 | v1.25 | 2026-01-26 PST | OB Guardian | 99c OB-based early exit: Exit when OB < -0.30 for 3 consecutive ticks | Archived |
@@ -35,6 +40,66 @@
 | v1.0 | 2026-01-15 20:50 PST | The Potato Farmer | Baseline - includes PAIRING_MODE hedge escalation + 99c capture hedge protection | Archived |
 
 ## Version History Details
+
+### v1.33 - Phoenix Feed (2026-01-28)
+*"Rising from the ashes of stale prices"*
+- **RTDS WebSocket Integration**
+  - Connects to `wss://ws-live-data.polymarket.com`
+  - Same price feed Polymarket uses for settlement
+  - ~100ms latency (vs 1-60 seconds from on-chain)
+- **Price to Beat Tracking**
+  - Captures BTC price at each 15-minute window start
+  - Shows delta in status line: `BTC:$89,200(+$52)`
+  - Positive = UP winning, Negative = DOWN winning
+- **Graceful Fallback**
+  - Falls back to Chainlink on-chain if RTDS disconnects
+- **Files changed:** rtds_price_feed.py (NEW), trading_bot_smart.py
+
+### v1.32 - Gas Guardian (2026-01-27)
+*"Never run out of gas."*
+- **MATIC Balance Monitoring**
+  - Checks EOA gas balance at every window start
+  - Logs balance and days remaining: `⛽ Gas: 0.1234 MATIC (4.6 days) [OK]`
+  - Status indicators: OK, LOW, CRITICAL
+- **Telegram Alerts**
+  - **LOW** (< 0.1 MATIC, ~4 days): Yellow warning with balance and EOA address
+  - **CRITICAL** (< 0.03 MATIC, ~1 day): Red alert with instructions to fund
+  - Alert cooldown: 1 hour to avoid spam
+- **Thresholds**
+  - `GAS_LOW_THRESHOLD = 0.1 MATIC` (~4 days of gas)
+  - `GAS_CRITICAL_THRESHOLD = 0.03 MATIC` (~1 day of gas)
+- **Files changed:** trading_bot_smart.py
+
+### v1.31 - Background Flush (2026-01-26)
+*"Never block the main loop."*
+- **Non-blocking flush operations**
+  - Sheets and Supabase flush operations now run in background threads
+  - Main loop no longer waits for API calls to complete
+  - Eliminates 10-12 second pauses during flush operations
+  - Buffer is copied and cleared immediately, upload happens asynchronously
+  - **Fix:** `_ensure_initialized()` moved to startup (was blocking before thread start)
+  - Connection established once at init, not on every flush call
+- **Files changed:** sheets_logger.py, supabase_logger.py
+
+### v1.30 - Confidence Display (2026-01-26)
+*"Know your odds at a glance."*
+- **99c Confidence in Tick Output**
+  - New display format: `DN:49%/95%` shows leading side, current confidence, and threshold
+  - Always visible so you can track how close the bot is to triggering 99c capture
+  - Example: `DN:49%/95%` = DOWN side at 49% confidence (needs 95% to trigger)
+- **Activity Logging to Supabase** (from v1.29)
+  - All bot activity buffered and sent to Supabase
+  - SMART_SKIP and SMART_TRADE_APPROVED include up_ask, down_ask, ttl
+- **Files changed:** trading_bot_smart.py
+
+### v1.29 - Activity Stream (2026-01-26)
+*"Every action tells a story."*
+- **Activity Logging to Supabase**
+  - All bot activity now buffered and sent to Supabase "Activity" table
+  - Non-blocking: uses buffer/flush pattern like tick logging
+  - Activity data includes market context: `up_ask`, `down_ask`, `ttl`
+  - SMART_SKIP and SMART_TRADE_APPROVED events include prices
+- **Files changed:** trading_bot_smart.py, supabase_logger.py
 
 ### v1.28 - Price Guardian (2026-01-26)
 *"When the price says run, you run."*

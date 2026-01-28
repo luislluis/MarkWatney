@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.28",
-    "codename": "Price Guardian",
-    "date": "2026-01-26",
-    "changes": "Price stop-loss: Exit when price <= 80c (floor 50c) + skip Sheets flush in final 60s"
+    "version": "v1.33",
+    "codename": "Phoenix Feed",
+    "date": "2026-01-28",
+    "changes": "RTDS WebSocket for real-time BTC prices from Polymarket's settlement feed"
 }
 
 import os
@@ -64,7 +64,9 @@ try:
     from supabase_logger import (init_supabase_logger,
                                  buffer_tick as supabase_buffer_tick,
                                  maybe_flush_ticks as supabase_maybe_flush_ticks,
-                                 flush_ticks as supabase_flush_ticks)
+                                 flush_ticks as supabase_flush_ticks,
+                                 buffer_activity as supabase_buffer_activity,
+                                 flush_activities as supabase_flush_activities)
     SUPABASE_LOGGER_AVAILABLE = True
 except ImportError:
     SUPABASE_LOGGER_AVAILABLE = False
@@ -72,6 +74,8 @@ except ImportError:
     supabase_buffer_tick = lambda *args, **kwargs: None
     supabase_maybe_flush_ticks = lambda ttl=None: False
     supabase_flush_ticks = lambda: False
+    supabase_buffer_activity = lambda *args, **kwargs: None
+    supabase_flush_activities = lambda: False
 
 # Unified tick functions (send to both Google Sheets and Supabase)
 def buffer_tick(*args, **kwargs):
@@ -86,10 +90,14 @@ def maybe_flush_ticks(ttl: float = None):
     """
     sheets_maybe_flush_ticks(ttl)
     supabase_maybe_flush_ticks(ttl)
+    # Also flush activities with ticks
+    if ttl is None or ttl >= 60:
+        supabase_flush_activities()
 
 def flush_ticks():
     sheets_flush_ticks()
     supabase_flush_ticks()
+    supabase_flush_activities()
 
 # Setup file logging (tee to console and file)
 import sys
@@ -131,6 +139,18 @@ except ImportError:
     CHAINLINK_AVAILABLE = False
     chainlink_feed = None
     print("WARNING: chainlink_feed.py not found - using Coinbase fallback")
+
+# RTDS Price Feed (Polymarket's real-time Chainlink stream)
+try:
+    from rtds_price_feed import RTDSPriceFeed
+    rtds_feed = RTDSPriceFeed()
+    RTDS_AVAILABLE = rtds_feed.start()
+    if RTDS_AVAILABLE:
+        print("RTDS feed starting (Polymarket real-time prices)")
+except ImportError:
+    RTDS_AVAILABLE = False
+    rtds_feed = None
+    print("WARNING: rtds_price_feed.py not found - using Chainlink fallback")
 
 # Order book imbalance analyzer
 try:
@@ -409,7 +429,7 @@ BOT_ID = "CHATGPT-SMART"
 ACTIVITY_LOG_FILE = os.path.expanduser("~/activity_log.jsonl")
 
 def log_activity(action, details=None):
-    """Log activity to shared JSONL file"""
+    """Log activity to shared JSONL file + buffer for Supabase"""
     try:
         entry = {
             "timestamp": datetime.now().isoformat(),
@@ -419,6 +439,9 @@ def log_activity(action, details=None):
         }
         with open(ACTIVITY_LOG_FILE, "a") as f:
             f.write(json.dumps(entry) + "\n")
+        # Also buffer for Supabase (non-blocking)
+        window_id = window_state.get('window_id', '') if window_state else ''
+        supabase_buffer_activity(action, window_id, details)
     except Exception as e:
         print(f"[{ts()}] LOG_ERROR: Failed to write activity log: {e}")
 
@@ -550,6 +573,82 @@ def send_telegram(message):
         }, timeout=5)
     except:
         pass
+
+# ============================================================================
+# GAS/MATIC BALANCE MONITORING
+# ============================================================================
+
+POLYGON_RPC = os.getenv("POLYGON_RPC", "https://polygon-rpc.com")
+EOA_ADDRESS = "0xa0bC1d8209B6601B0Ed99cA82a550f53FA3447F7"  # EOA that pays for gas
+GAS_LOW_THRESHOLD = 0.1  # MATIC - about 4 days of gas at 47 trades/day
+GAS_CRITICAL_THRESHOLD = 0.03  # MATIC - about 1 day of gas
+_last_gas_alert_time = 0  # Track when we last sent an alert
+
+def check_eoa_gas_balance():
+    """Check EOA MATIC balance for gas. Returns balance in MATIC or None on error."""
+    try:
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "eth_getBalance",
+            "params": [EOA_ADDRESS, "latest"],
+            "id": 1
+        }
+        response = requests.post(POLYGON_RPC, json=payload, timeout=5)
+        result = response.json().get("result")
+        if result:
+            balance_wei = int(result, 16)
+            balance_matic = balance_wei / 1e18
+            return balance_matic
+    except Exception as e:
+        print(f"[GAS] Failed to check balance: {e}")
+    return None
+
+def check_gas_and_alert():
+    """Check gas balance and send Telegram alert if low. Called once per window."""
+    global _last_gas_alert_time
+
+    balance = check_eoa_gas_balance()
+    if balance is None:
+        return None
+
+    # Calculate days remaining (0.0268 MATIC per redeem, 47 redeems/day)
+    daily_cost = 47 * 0.0268
+    days_remaining = balance / daily_cost if daily_cost > 0 else 999
+
+    # Only alert once per hour to avoid spam
+    now = time.time()
+    alert_cooldown = 3600  # 1 hour
+
+    if balance < GAS_CRITICAL_THRESHOLD:
+        if now - _last_gas_alert_time > alert_cooldown:
+            _last_gas_alert_time = now
+            msg = f"""🚨🚨🚨 <b>CRITICAL: GAS EMPTY</b> 🚨🚨🚨
+
+⛽ EOA Balance: <b>{balance:.4f} MATIC</b>
+⏰ Remaining: <b>{days_remaining:.1f} days</b>
+
+❌ AUTO-REDEEM WILL FAIL
+💰 Send MATIC to:
+<code>{EOA_ADDRESS}</code>
+
+Or run: python3 send_matic.py"""
+            send_telegram(msg)
+            print(f"[GAS] 🚨 CRITICAL: {balance:.4f} MATIC ({days_remaining:.1f} days)")
+
+    elif balance < GAS_LOW_THRESHOLD:
+        if now - _last_gas_alert_time > alert_cooldown:
+            _last_gas_alert_time = now
+            msg = f"""⚠️ <b>LOW GAS WARNING</b> ⚠️
+
+⛽ EOA Balance: <b>{balance:.4f} MATIC</b>
+⏰ Remaining: ~<b>{days_remaining:.1f} days</b>
+
+Send MATIC to:
+<code>{EOA_ADDRESS}</code>"""
+            send_telegram(msg)
+            print(f"[GAS] ⚠️ LOW: {balance:.4f} MATIC ({days_remaining:.1f} days)")
+
+    return balance
 
 def notify_profit_pair(up_shares, avg_up, down_shares, avg_down):
     """PROFIT_PAIR notification"""
@@ -955,10 +1054,24 @@ def log_state(ttc, books=None):
         else:
             reason = _last_skip_reason if _last_skip_reason else "checking..."
 
-    # Get Chainlink BTC price
+    # Get BTC price - prefer RTDS (real-time) over Chainlink (delayed)
     btc_str = ""
     btc_price = None
-    if CHAINLINK_AVAILABLE and chainlink_feed:
+    btc_delta = None
+
+    if RTDS_AVAILABLE and rtds_feed and rtds_feed.is_connected():
+        btc_price, btc_age = rtds_feed.get_price_with_age()
+        btc_delta = rtds_feed.get_window_delta()
+        if btc_price:
+            # Format: BTC:$89,200(+$52) or BTC:$89,200(-$30)
+            if btc_delta is not None:
+                delta_sign = "+" if btc_delta >= 0 else ""
+                btc_str = f"BTC:${btc_price:,.0f}({delta_sign}${btc_delta:,.0f}) | "
+            else:
+                btc_str = f"BTC:${btc_price:,.0f}({btc_age}s) | "
+            btc_price_history.append((time.time(), btc_price))
+    elif CHAINLINK_AVAILABLE and chainlink_feed:
+        # Fallback to Chainlink if RTDS unavailable
         btc_price, btc_age = chainlink_feed.get_price_with_age()
         if btc_price:
             btc_str = f"BTC:${btc_price:,.0f}({btc_age}s) | "
@@ -992,8 +1105,16 @@ def log_state(ttc, books=None):
         ds = window_state.get('danger_score', 0)
         danger_str = f" | D:{ds:.2f}"
 
+    # Calculate 99c confidence for the leading side (always show so we can track)
+    conf_str = ""
+    leading_ask = max(ask_up, ask_down)
+    leading_side = "UP" if ask_up > ask_down else "DN"
+    conf, _ = calculate_99c_confidence(leading_ask, ttc)
+    threshold = CAPTURE_99C_MIN_CONFIDENCE * 100
+    conf_str = f" | {leading_side}:{conf*100:.0f}%/{threshold:.0f}%"
+
     price_str = f"UP:{ask_up*100:2.0f}c DN:{ask_down*100:2.0f}c"
-    print(f"[{ts()}] {status:7} | T-{ttc:3.0f}s | {btc_str}{price_str}{ob_str}{danger_str} | pos:{up_shares:.0f}/{down_shares:.0f} | {reason}")
+    print(f"[{ts()}] {status:7} | T-{ttc:3.0f}s | {btc_str}{price_str}{conf_str}{ob_str}{danger_str} | pos:{up_shares:.0f}/{down_shares:.0f} | {reason}")
 
     # Get danger score if holding 99c position (LOG-01)
     danger_for_log = None
@@ -2016,7 +2137,10 @@ def check_and_place_arb(books, ttc):
             log_activity("SMART_SKIP", {
                 "reason": signal.reason,
                 "confidence": signal.confidence,
-                "direction": signal.direction
+                "direction": signal.direction,
+                "up_ask": ask_up,
+                "down_ask": ask_down,
+                "ttl": ttc
             })
             return False
 
@@ -2043,7 +2167,10 @@ def check_and_place_arb(books, ttc):
         log_activity("SMART_TRADE_APPROVED", {
             "confidence": signal.confidence,
             "direction": signal.direction,
-            "size_multiplier": size_multiplier
+            "size_multiplier": size_multiplier,
+            "up_ask": ask_up,
+            "down_ask": ask_down,
+            "ttl": ttc
         })
 
     # ===========================================
@@ -2881,6 +3008,14 @@ def main():
                     print("=" * 100)
                     print(f"[{ts()}] NEW WINDOW: {slug}")
                     print(f"[{ts()}] Session: {session_stats['windows']} windows | {session_stats['paired']} paired | PnL: ${session_stats['pnl']:.2f}")
+
+                    # Check gas balance and alert if low
+                    gas_balance = check_gas_and_alert()
+                    if gas_balance is not None:
+                        days_left = gas_balance / (47 * 0.0268)
+                        gas_status = "OK" if gas_balance >= GAS_LOW_THRESHOLD else ("LOW" if gas_balance >= GAS_CRITICAL_THRESHOLD else "CRITICAL")
+                        print(f"[{ts()}] ⛽ Gas: {gas_balance:.4f} MATIC ({days_left:.1f} days) [{gas_status}]")
+
                     print("=" * 100)
 
                     # Log window start to Google Sheets
