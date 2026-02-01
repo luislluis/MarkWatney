@@ -5,6 +5,7 @@ Logs trading ticks to Supabase for real-time analysis.
 """
 
 import os
+import threading
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from zoneinfo import ZoneInfo
@@ -28,7 +29,7 @@ TICKS_TABLE = "Polymarket Bot Log - Ticks"
 EVENTS_TABLE = "Polymarket Bot Log - Events"
 
 # Buffer configuration
-TICK_FLUSH_INTERVAL = 10  # Flush every 10 seconds
+TICK_FLUSH_INTERVAL = 30  # Flush every 30 seconds (increased from 10 to reduce API calls)
 
 
 class SupabaseLogger:
@@ -38,6 +39,7 @@ class SupabaseLogger:
         self.client: Optional[Client] = None
         self.enabled = False
         self._tick_buffer: List[Dict] = []
+        self._activity_buffer: List[Dict] = []
         self._last_flush = datetime.now()
         self._initialized = False
 
@@ -85,7 +87,7 @@ class SupabaseLogger:
         })
 
     def flush_ticks(self) -> bool:
-        """Flush buffered ticks to Supabase."""
+        """Flush buffered ticks to Supabase (non-blocking, runs in background thread)."""
         if not self._tick_buffer:
             return True
 
@@ -93,20 +95,21 @@ class SupabaseLogger:
             self._tick_buffer = []
             return False
 
-        try:
-            # Insert batch to Supabase
-            result = self.client.table(TICKS_TABLE).insert(self._tick_buffer).execute()
-            count = len(self._tick_buffer)
-            self._tick_buffer = []
-            self._last_flush = datetime.now()
-            print(f"[SUPABASE] Flushed {count} ticks")
-            return True
-        except Exception as e:
-            print(f"[SUPABASE] Failed to flush ticks: {e}")
-            # Keep buffer for retry, but limit size
-            if len(self._tick_buffer) > 500:
-                self._tick_buffer = self._tick_buffer[-200:]
-            return False
+        # Grab the buffer and clear it immediately (so main loop doesn't wait)
+        buffer_copy = self._tick_buffer[:]
+        self._tick_buffer = []
+        self._last_flush = datetime.now()
+
+        # Run the actual upload in a background thread
+        def _do_flush():
+            try:
+                self.client.table(TICKS_TABLE).insert(buffer_copy).execute()
+                print(f"[SUPABASE] Flushed {len(buffer_copy)} ticks")
+            except Exception as e:
+                print(f"[SUPABASE] Failed to flush ticks: {e}")
+
+        threading.Thread(target=_do_flush, daemon=True).start()
+        return True
 
     def maybe_flush_ticks(self, ttl: float = None) -> bool:
         """Flush ticks if enough time has passed.
@@ -146,6 +149,39 @@ class SupabaseLogger:
         except Exception as e:
             print(f"[SUPABASE] Failed to log event: {e}")
             return False
+
+    def buffer_activity(self, action: str, window_id: str = "", details: dict = None):
+        """Buffer an activity for batch upload."""
+        import json
+        self._activity_buffer.append({
+            "Timestamp": datetime.now(PST).isoformat(),
+            "Window ID": window_id,
+            "Action": action,
+            "Details": json.dumps(details) if details else None
+        })
+
+    def flush_activities(self) -> bool:
+        """Flush buffered activities to Supabase (non-blocking, runs in background thread)."""
+        if not self._activity_buffer:
+            return True
+        if not self.enabled or not self.client:
+            self._activity_buffer = []
+            return False
+
+        # Grab the buffer and clear it immediately
+        buffer_copy = self._activity_buffer[:]
+        self._activity_buffer = []
+
+        # Run the actual upload in a background thread
+        def _do_flush():
+            try:
+                self.client.table("Polymarket Bot Log - Activity").insert(buffer_copy).execute()
+                print(f"[SUPABASE] Flushed {len(buffer_copy)} activities")
+            except Exception as e:
+                print(f"[SUPABASE] Failed to flush activities: {e}")
+
+        threading.Thread(target=_do_flush, daemon=True).start()
+        return True
 
 
 # Global logger instance
@@ -194,6 +230,19 @@ def log_event(event_type: str, **kwargs):
     if _logger and _logger.enabled:
         return _logger.log_event(event_type, **kwargs)
     return False
+
+
+def buffer_activity(action: str, window_id: str = "", details: dict = None):
+    """Buffer an activity for batch upload."""
+    if _logger and _logger.enabled:
+        _logger.buffer_activity(action, window_id, details)
+
+
+def flush_activities() -> bool:
+    """Flush buffered activities to Supabase."""
+    if _logger and _logger.enabled:
+        return _logger.flush_activities()
+    return True
 
 
 # Test function

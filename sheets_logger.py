@@ -16,6 +16,7 @@ Setup:
 import os
 import json
 import time
+import threading
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from zoneinfo import ZoneInfo
@@ -85,8 +86,29 @@ TICKS_HEADERS = [
     "Reason"
 ]
 
+# Headers for WindowAnalysis sheet (v1.44)
+WINDOW_ANALYSIS_HEADERS = [
+    "Window ID",
+    "DateTime",
+    "Outcome",
+    "Traded",
+    "Trade Type",
+    "Trade Result",
+    "PnL",
+    "No Trade Reason",
+    "Peak Confidence",
+    "Peak Conf Side",
+    "Peak Conf TTL",
+    "Entry Filter Reason",
+    "BTC Open",
+    "BTC Close",
+    "BTC High",
+    "BTC Low",
+    "BTC Range",
+]
+
 # Tick buffer configuration
-TICK_FLUSH_INTERVAL = 30  # Flush every 30 seconds
+TICK_FLUSH_INTERVAL = 60  # Flush every 60 seconds (increased from 30 to reduce API quota usage)
 
 
 class SheetsLogger:
@@ -97,6 +119,7 @@ class SheetsLogger:
         self.events_sheet = None
         self.windows_sheet = None
         self.ticks_sheet = None
+        self.window_analysis_sheet = None  # v1.44: Window analysis
         self.enabled = False
         self._initialized = False
 
@@ -169,6 +192,18 @@ class SheetsLogger:
                 )
                 self.ticks_sheet.update('A1', [TICKS_HEADERS])
                 self.ticks_sheet.format('A1:L1', {'textFormat': {'bold': True}})
+
+            # Get or create WindowAnalysis sheet (v1.44)
+            try:
+                self.window_analysis_sheet = spreadsheet.worksheet("WindowAnalysis")
+            except gspread.exceptions.WorksheetNotFound:
+                self.window_analysis_sheet = spreadsheet.add_worksheet(
+                    title="WindowAnalysis",
+                    rows=10000,
+                    cols=len(WINDOW_ANALYSIS_HEADERS)
+                )
+                self.window_analysis_sheet.update('A1', [WINDOW_ANALYSIS_HEADERS])
+                self.window_analysis_sheet.format('A1:Q1', {'textFormat': {'bold': True}})
 
             self._initialized = True
             print(f"[SHEETS] Connected to Google Sheets")
@@ -307,6 +342,49 @@ class SheetsLogger:
         print(f"[SHEETS] Giving up on window: {window_id}")
         return False
 
+    def log_window_analysis(self, analysis_data: dict) -> bool:
+        """
+        Log window analysis to WindowAnalysis sheet (non-blocking).
+
+        Args:
+            analysis_data: Dictionary with window analysis data
+        """
+        if not self.enabled or not self._initialized:
+            return False
+
+        # Capture sheet reference for thread
+        ws = self.window_analysis_sheet
+
+        def _do_log():
+            try:
+                row = [
+                    analysis_data.get('window_id', ''),
+                    analysis_data.get('datetime', ''),
+                    analysis_data.get('outcome', ''),
+                    analysis_data.get('traded', False),
+                    analysis_data.get('trade_type', 'NONE'),
+                    analysis_data.get('trade_result', '-'),
+                    analysis_data.get('pnl', 0),
+                    analysis_data.get('no_trade_reason', ''),
+                    f"{analysis_data.get('peak_confidence', 0)*100:.0f}%",
+                    analysis_data.get('peak_conf_side', ''),
+                    f"{analysis_data.get('peak_conf_ttl', 0):.0f}",
+                    analysis_data.get('entry_filter_reason', ''),
+                    f"${analysis_data.get('btc_open', 0):,.0f}" if analysis_data.get('btc_open') else '',
+                    f"${analysis_data.get('btc_close', 0):,.0f}" if analysis_data.get('btc_close') else '',
+                    f"${analysis_data.get('btc_high', 0):,.0f}" if analysis_data.get('btc_high') else '',
+                    f"${analysis_data.get('btc_low', 0):,.0f}" if analysis_data.get('btc_low') and analysis_data.get('btc_low') != 999999 else '',
+                    f"${analysis_data.get('btc_range', 0):,.0f}" if analysis_data.get('btc_range') else '',
+                ]
+                ws.append_row(row, value_input_option='USER_ENTERED')
+                print(f"[SHEETS] Logged window analysis for {analysis_data.get('window_id', 'unknown')}")
+            except Exception as e:
+                print(f"[SHEETS] Error logging window analysis: {e}")
+
+        # Run in background thread (non-blocking)
+        threading.Thread(target=_do_log, daemon=True).start()
+        return True
+
     def buffer_tick(self, window_id: str, ttc: float, status: str,
                     ask_up: float, ask_down: float, up_shares: float, down_shares: float,
                     btc_price: float = None, up_imb: float = None, down_imb: float = None,
@@ -332,52 +410,59 @@ class SheetsLogger:
         })
 
     def flush_ticks(self) -> bool:
-        """Flush buffered ticks to Google Sheets."""
+        """Flush buffered ticks to Google Sheets (non-blocking, runs in background thread)."""
         if not self._tick_buffer:
             return True
 
-        if not self._ensure_initialized():
+        if not self.enabled or not self._initialized:
+            self._tick_buffer = []
             return False
 
-        # Convert buffer to rows (do this once, outside retry loop)
-        rows = []
-        for t in self._tick_buffer:
-            rows.append([
-                t["timestamp"],
-                t["window_id"],
-                f"{t['ttc']:.0f}",
-                t["status"],
-                f"{t['ask_up']:.2f}",
-                f"{t['ask_down']:.2f}",
-                f"{t['up_shares']:.0f}",
-                f"{t['down_shares']:.0f}",
-                f"{t['btc_price']:,.0f}" if t["btc_price"] else "",
-                f"{t['up_imb']:.2f}" if t["up_imb"] is not None else "",
-                f"{t['down_imb']:.2f}" if t["down_imb"] is not None else "",
-                f"{t['danger_score']:.2f}" if t["danger_score"] is not None else "",
-                t["reason"]
-            ])
+        # Grab the buffer and clear it immediately (so main loop doesn't wait)
+        buffer_copy = self._tick_buffer[:]
+        self._tick_buffer = []
+        self._last_flush_time = time.time()
 
-        # Retry up to 3 times with exponential backoff
-        for attempt in range(3):
-            try:
-                if attempt > 0 and not self._ensure_initialized():
-                    return False
-                self.ticks_sheet.append_rows(rows, value_input_option='USER_ENTERED')
+        # Capture sheet reference for thread (avoid race condition)
+        ticks_sheet = self.ticks_sheet
 
-                count = len(self._tick_buffer)
-                self._tick_buffer = []
-                self._last_flush_time = time.time()
-                print(f"[SHEETS] Flushed {count} ticks")
-                return True
-            except Exception as e:
-                print(f"[SHEETS] Failed to flush ticks (attempt {attempt+1}/3): {e}")
-                if attempt < 2:
-                    self._initialized = False  # Force reconnection on retry
-                    time.sleep(2 ** attempt)  # Backoff: 1s, 2s
+        # Run the actual upload in a background thread
+        def _do_flush():
+            # Convert buffer to rows
+            rows = []
+            for t in buffer_copy:
+                rows.append([
+                    t["timestamp"],
+                    t["window_id"],
+                    f"{t['ttc']:.0f}",
+                    t["status"],
+                    f"{t['ask_up']:.2f}",
+                    f"{t['ask_down']:.2f}",
+                    f"{t['up_shares']:.0f}",
+                    f"{t['down_shares']:.0f}",
+                    f"{t['btc_price']:,.0f}" if t["btc_price"] else "",
+                    f"{t['up_imb']:.2f}" if t["up_imb"] is not None else "",
+                    f"{t['down_imb']:.2f}" if t["down_imb"] is not None else "",
+                    f"{t['danger_score']:.2f}" if t["danger_score"] is not None else "",
+                    t["reason"]
+                ])
 
-        print(f"[SHEETS] Giving up on {len(rows)} ticks")
-        return False
+            # Retry up to 3 times with exponential backoff
+            for attempt in range(3):
+                try:
+                    ticks_sheet.append_rows(rows, value_input_option='USER_ENTERED')
+                    print(f"[SHEETS] Flushed {len(buffer_copy)} ticks")
+                    return
+                except Exception as e:
+                    print(f"[SHEETS] Failed to flush ticks (attempt {attempt+1}/3): {e}")
+                    if attempt < 2:
+                        time.sleep(2 ** attempt)
+
+            print(f"[SHEETS] Giving up on {len(rows)} ticks")
+
+        # Start background thread
+        threading.Thread(target=_do_flush, daemon=True).start()
+        return True
 
     def maybe_flush_ticks(self, ttl: float = None) -> bool:
         """Flush ticks if enough time has passed since last flush.
@@ -403,6 +488,9 @@ def init_sheets_logger() -> SheetsLogger:
     global _logger
     if _logger is None:
         _logger = SheetsLogger()
+        # Initialize connection at startup (non-blocking flush requires this)
+        if _logger.enabled:
+            _logger._ensure_initialized()
     return _logger
 
 
@@ -429,6 +517,16 @@ def sheets_log_window(window_state: Dict[str, Any]) -> bool:
     if _logger is None or not _logger.enabled:
         return False
     return _logger.log_window(window_state)
+
+
+def log_window_analysis(analysis_data: dict) -> bool:
+    """
+    Log window analysis to WindowAnalysis sheet (non-blocking).
+    Returns False silently if logger not enabled (graceful degradation).
+    """
+    if _logger is None or not _logger.enabled:
+        return False
+    return _logger.log_window_analysis(analysis_data)
 
 
 def buffer_tick(window_id: str, ttc: float, status: str,
