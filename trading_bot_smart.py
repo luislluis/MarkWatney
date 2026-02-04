@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.33",
-    "codename": "Phoenix Feed",
-    "date": "2026-01-28",
-    "changes": "RTDS WebSocket for real-time BTC prices from Polymarket's settlement feed"
+    "version": "v1.34",
+    "codename": "Iron Exit",
+    "date": "2026-02-03",
+    "changes": "60¢ hard stop with FOK market orders - guaranteed emergency exit"
 }
 
 import os
@@ -323,11 +323,22 @@ OB_EARLY_EXIT_ENABLED = True       # Enable/disable early exit feature
 OB_EARLY_EXIT_THRESHOLD = -0.30    # Exit when sellers > 30% (OB imbalance < -0.30)
 
 # ===========================================
-# 99c PRICE STOP-LOSS - Hard price floor exit
+# 99c PRICE STOP-LOSS - Hard price floor exit (LEGACY - DISABLED)
 # ===========================================
-PRICE_STOP_ENABLED = True          # Enable/disable price stop-loss
-PRICE_STOP_TRIGGER = 0.80          # Exit when our side's price <= 80c
-PRICE_STOP_FLOOR = 0.50            # Never sell below 50c (absolute floor)
+PRICE_STOP_ENABLED = False         # DISABLED - replaced by HARD_STOP below
+PRICE_STOP_TRIGGER = 0.80          # (legacy) Exit when our side's price <= 80c
+PRICE_STOP_FLOOR = 0.50            # (legacy) Never sell below 50c
+
+# ===========================================
+# 60¢ HARD STOP - FOK Market Orders (v1.34)
+# ===========================================
+# Guaranteed emergency exit using Fill-or-Kill market orders.
+# Triggers on BEST BID (not ask) to ensure real liquidity exists.
+# Will sell at any price to avoid riding to $0.
+HARD_STOP_ENABLED = True           # Enable 60¢ hard stop
+HARD_STOP_TRIGGER = 0.60           # Exit when best bid <= 60¢
+HARD_STOP_FLOOR = 0.01             # Effectively no floor (1¢ minimum)
+HARD_STOP_USE_FOK = True           # Use Fill-or-Kill market orders
 
 # ===========================================
 # ENTRY RESTRICTIONS
@@ -1180,6 +1191,217 @@ def place_limit_order(token_id, price, size, side="BUY", bypass_price_failsafe=F
         log_activity("ORDER_FAILED", {"side": side, "price": price, "size": size, "error": str(e)})
         return False, str(e)
 
+# ============================================================================
+# HARD STOP - FOK MARKET ORDERS (v1.34)
+# ============================================================================
+
+def place_fok_market_sell(token_id: str, shares: float) -> tuple:
+    """
+    Place a Fill-or-Kill market sell order for guaranteed execution.
+
+    Args:
+        token_id: The token to sell
+        shares: Number of shares to sell
+
+    Returns:
+        tuple: (success, order_id, filled_shares)
+    """
+    global clob_client
+
+    try:
+        from py_clob_client.clob_types import MarketOrderArgs, OrderType
+        from py_clob_client.order_builder.constants import SELL
+
+        print(f"[{ts()}] HARD_STOP: Placing FOK market sell: {shares} shares")
+
+        # Create market sell order
+        sell_args = MarketOrderArgs(
+            token_id=token_id,
+            amount=shares,
+            side=SELL
+        )
+
+        # Sign and post with FOK (Fill-or-Kill)
+        signed_order = clob_client.create_market_order(sell_args)
+        response = clob_client.post_order(signed_order, orderType=OrderType.FOK)
+
+        # Parse response
+        order_id = response.get("orderID", "unknown")
+        status = response.get("status", "UNKNOWN")
+        filled = float(response.get("filledAmount", 0))
+
+        if status == "MATCHED" or filled > 0:
+            print(f"[{ts()}] HARD_STOP: FOK filled {filled}/{shares} shares, order_id={order_id[:8]}...")
+            log_activity("FOK_FILLED", {"order_id": order_id, "filled": filled, "requested": shares})
+            return True, order_id, filled
+        else:
+            print(f"[{ts()}] HARD_STOP: FOK rejected, status={status}")
+            log_activity("FOK_REJECTED", {"order_id": order_id, "status": status})
+            return False, order_id, 0.0
+
+    except Exception as e:
+        print(f"[{ts()}] HARD_STOP_ERROR: FOK order failed: {e}")
+        log_activity("FOK_ERROR", {"error": str(e)})
+        return False, "", 0.0
+
+
+def check_hard_stop_trigger(books: dict, side: str) -> tuple:
+    """
+    Check if hard stop should trigger based on best bid.
+
+    Args:
+        books: Order book data with up_bids/down_bids
+        side: "UP" or "DOWN" - our position side
+
+    Returns:
+        tuple: (should_trigger, best_bid_price)
+    """
+    if not HARD_STOP_ENABLED:
+        return False, 0.0
+
+    try:
+        # Get bids for our side
+        bids_key = f'{side.lower()}_bids'
+        bids = books.get(bids_key, [])
+
+        # No bids = no trigger (can't sell into nothing)
+        if not bids or len(bids) == 0:
+            return False, 0.0
+
+        best_bid = float(bids[0]['price'])
+        best_bid_size = float(bids[0].get('size', 0))
+
+        # Must have actual size, not just phantom price
+        if best_bid_size <= 0:
+            return False, 0.0
+
+        # Trigger if best bid at or below threshold
+        if best_bid <= HARD_STOP_TRIGGER:
+            print(f"[{ts()}] HARD_STOP: TRIGGER CONDITION MET: best_bid={best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c")
+            return True, best_bid
+
+        return False, best_bid
+
+    except Exception as e:
+        print(f"[{ts()}] HARD_STOP_ERROR: Error checking trigger: {e}")
+        return False, 0.0
+
+
+def execute_hard_stop(side: str, books: dict) -> tuple:
+    """
+    Execute emergency hard stop using FOK market orders.
+    Keeps selling until position is completely flat.
+
+    Args:
+        side: "UP" or "DOWN" - which side we're liquidating
+        books: Order book data
+
+    Returns:
+        tuple: (success, total_pnl)
+    """
+    global window_state
+
+    shares = window_state.get(f'capture_99c_filled_{side.lower()}', 0)
+    if shares <= 0:
+        print(f"[{ts()}] HARD_STOP: No shares to sell for {side}")
+        return False, 0.0
+
+    token = window_state.get(f'{side.lower()}_token')
+    entry_price = window_state.get('capture_99c_fill_price', 0.99)
+
+    remaining_shares = shares
+    total_pnl = 0.0
+    attempts = 0
+    max_attempts = 10  # Safety limit
+
+    print()
+    print("=" * 50)
+    print(f"{'='*15} HARD STOP TRIGGERED {'='*15}")
+    print(f"Side: {side}")
+    print(f"Shares: {shares}")
+    print(f"Entry Price: {entry_price*100:.0f}c")
+    print("=" * 50)
+
+    while remaining_shares > 0 and attempts < max_attempts:
+        attempts += 1
+
+        # Get current best bid
+        bids_key = f'{side.lower()}_bids'
+        bids = books.get(bids_key, [])
+
+        if not bids or len(bids) == 0:
+            print(f"[{ts()}] HARD_STOP: No bids available, waiting 1s (attempt {attempts})")
+            time.sleep(1)
+            # Refresh order books
+            if window_state.get('cached_market'):
+                books = get_order_books(window_state['cached_market'])
+            continue
+
+        best_bid = float(bids[0]['price'])
+        best_bid_size = float(bids[0].get('size', 0))
+
+        if best_bid_size <= 0:
+            print(f"[{ts()}] HARD_STOP: No bid size at {best_bid*100:.0f}c, waiting 1s")
+            time.sleep(1)
+            continue
+
+        # Log if below floor (but still sell)
+        if best_bid < HARD_STOP_FLOOR:
+            print(f"[{ts()}] HARD_STOP: Best bid {best_bid*100:.0f}c below floor {HARD_STOP_FLOOR*100:.0f}c, selling anyway")
+
+        # Place FOK market sell for remaining shares
+        success, order_id, filled = place_fok_market_sell(token, remaining_shares)
+
+        if success and filled > 0:
+            # Calculate P&L for this fill
+            fill_pnl = (best_bid - entry_price) * filled
+            total_pnl += fill_pnl
+            remaining_shares -= filled
+
+            print(f"[{ts()}] HARD_STOP: Filled {filled:.0f} @ ~{best_bid*100:.0f}c, P&L: ${fill_pnl:.2f}, remaining: {remaining_shares:.0f}")
+        else:
+            print(f"[{ts()}] HARD_STOP: FOK rejected, trying again (attempt {attempts})")
+            time.sleep(0.5)
+
+    if remaining_shares > 0:
+        print(f"[{ts()}] HARD_STOP_ERROR: Failed to fully liquidate! {remaining_shares:.0f} shares stuck")
+        # Still update state with partial exit
+        window_state[f'capture_99c_filled_{side.lower()}'] = remaining_shares
+        return False, total_pnl
+
+    # Full liquidation successful
+    print()
+    print("=" * 50)
+    print(f"{'='*15} HARD STOP COMPLETE {'='*15}")
+    print(f"Total P&L: ${total_pnl:.2f}")
+    print("=" * 50)
+
+    # Log to Sheets
+    sheets_log_event("HARD_STOP_EXIT", window_state.get('window_id', ''),
+                    side=side, shares=shares, price=best_bid,
+                    pnl=total_pnl, reason="hard_stop_60c",
+                    details=f"trigger={HARD_STOP_TRIGGER*100:.0f}c")
+
+    # Telegram notification
+    msg = f"""{'='*20}
+<b>HARD STOP EXIT</b>
+{'='*20}
+Side: {side}
+Shares: {shares:.0f}
+Exit: ~{best_bid*100:.0f}c
+Entry: {entry_price*100:.0f}c
+P&L: ${total_pnl:.2f}
+<i>FOK market orders - guaranteed exit</i>"""
+    send_telegram(msg)
+
+    # Update state
+    window_state['capture_99c_exited'] = True
+    window_state['capture_99c_exit_reason'] = 'hard_stop_60c'
+    window_state[f'capture_99c_filled_{side.lower()}'] = 0
+
+    return True, total_pnl
+
+
 def cancel_order(order_id):
     try:
         clob_client.cancel(order_id)
@@ -1498,24 +1720,33 @@ def execute_bail(side, shares, token, books):
 
 
 def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason: str = "ob_reversal") -> bool:
-    """Exit 99c position early due to OB reversal or price stop.
+    """Exit 99c position early due to OB reversal.
 
     Triggered when:
     - OB imbalance is negative for 3 consecutive ticks (reason="ob_reversal")
-    - Price drops below PRICE_STOP_TRIGGER (reason="price_stop")
 
-    Sells at best bid with minimum price floor (PRICE_STOP_FLOOR) to prevent panic sells.
+    NOTE: Price-based exits are now handled by execute_hard_stop() using FOK orders.
+    This function is only used for OB-based early exits and uses limit orders.
 
     Args:
         side: "UP" or "DOWN" - which side we bet on
-        trigger_value: OB imbalance (for ob_reversal) or current price (for price_stop)
+        trigger_value: OB imbalance value
         books: Order book data
-        reason: "ob_reversal" or "price_stop"
+        reason: "ob_reversal" (price_stop is deprecated, use hard_stop)
 
     Returns:
         bool: True if exit was successful (order filled)
     """
     global window_state
+
+    # === HARD STOP FALLBACK (v1.34) ===
+    # If hard stop conditions are met, escalate to FOK market orders
+    if HARD_STOP_ENABLED:
+        should_trigger, best_bid = check_hard_stop_trigger(books, side)
+        if should_trigger:
+            print(f"[{ts()}] EARLY_EXIT: Escalating to HARD STOP (best_bid={best_bid*100:.0f}c)")
+            success, pnl = execute_hard_stop(side, books)
+            return success
 
     shares = window_state.get(f'capture_99c_filled_{side.lower()}', 0)
     if shares <= 0:
@@ -1530,8 +1761,10 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
 
     best_bid = float(bids[0]['price'])
 
-    if best_bid < PRICE_STOP_FLOOR:
-        print(f"[{ts()}] ABORT_EXIT: Bid {best_bid*100:.0f}c below floor {PRICE_STOP_FLOOR*100:.0f}c")
+    # Use hard stop floor instead of legacy floor
+    effective_floor = HARD_STOP_FLOOR if HARD_STOP_ENABLED else PRICE_STOP_FLOOR
+    if best_bid < effective_floor:
+        print(f"[{ts()}] ABORT_EXIT: Bid {best_bid*100:.0f}c below floor {effective_floor*100:.0f}c")
         return False
 
     exit_price = best_bid
@@ -3142,9 +3375,10 @@ def main():
                         sheets_log_event("CAPTURE_FILL", slug, side=side, shares=filled,
                                         price=fill_price, pnl=actual_pnl)
 
-                # === 99c PRICE STOP-LOSS CHECK ===
-                # Exit immediately if our side's price drops below trigger
-                if (PRICE_STOP_ENABLED and
+                # === 60¢ HARD STOP CHECK (v1.34) ===
+                # Exit immediately using FOK market orders if best bid <= 60¢
+                # Uses best BID (not ask) to ensure real liquidity exists
+                if (HARD_STOP_ENABLED and
                     window_state.get('capture_99c_fill_notified') and
                     not window_state.get('capture_99c_exited') and
                     not window_state.get('capture_99c_hedged') and
@@ -3152,16 +3386,12 @@ def main():
 
                     capture_side = window_state.get('capture_99c_side')
 
-                    # Get current price for our side
-                    if capture_side == "UP":
-                        our_price = float(books['up_asks'][0]['price']) if books.get('up_asks') else 1.0
-                    else:
-                        our_price = float(books['down_asks'][0]['price']) if books.get('down_asks') else 1.0
+                    # Check if hard stop should trigger (based on best bid)
+                    should_trigger, best_bid = check_hard_stop_trigger(books, capture_side)
 
-                    # Trigger price stop if below threshold
-                    if our_price <= PRICE_STOP_TRIGGER:
-                        print(f"[{ts()}] 🛑 PRICE STOP: {capture_side} at {our_price*100:.0f}c <= {PRICE_STOP_TRIGGER*100:.0f}c trigger")
-                        execute_99c_early_exit(capture_side, our_price, books, reason="price_stop")
+                    if should_trigger:
+                        print(f"[{ts()}] 🛑 HARD STOP: {capture_side} best bid at {best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c trigger")
+                        execute_hard_stop(capture_side, books)
 
                 # === 99c OB-BASED EARLY EXIT CHECK ===
                 # Exit early if OB shows sellers dominating for 3 consecutive ticks
