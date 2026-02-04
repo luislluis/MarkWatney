@@ -128,27 +128,42 @@ class SupabaseLogger:
 
     def log_event(self, event_type: str, window_id: str = "", side: str = "",
                   shares: float = 0, price: float = 0, pnl: float = 0,
-                  details: str = ""):
-        """Log a trading event to Supabase."""
+                  details: str = "", **kwargs):
+        """Log a trading event to Supabase (non-blocking).
+
+        Extra kwargs are serialized to JSON and appended to details.
+        """
         if not self.enabled or not self.client:
             return False
 
-        try:
-            data = {
-                "Timestamp": datetime.now(PST).isoformat(),
-                "Event": event_type,
-                "Window ID": window_id,
-                "Side": side,
-                "Shares": str(shares) if shares else None,
-                "Price": str(price) if price else None,
-                "PnL": str(pnl) if pnl else None,
-                "Details": details[:500] if details else None
-            }
-            self.client.table(EVENTS_TABLE).insert(data).execute()
-            return True
-        except Exception as e:
-            print(f"[SUPABASE] Failed to log event: {e}")
-            return False
+        # Merge extra kwargs into details (for compatibility with sheets_log_event)
+        import json as json_module
+        if kwargs:
+            extra = {k: v for k, v in kwargs.items() if v is not None}
+            if extra:
+                extra_str = json_module.dumps(extra)
+                details = f"{details} | {extra_str}" if details else extra_str
+
+        data = {
+            "Timestamp": datetime.now(PST).isoformat(),
+            "Event": event_type,
+            "Window ID": window_id,
+            "Side": side,
+            "Shares": str(shares) if shares else None,
+            "Price": str(price) if price else None,
+            "PnL": str(pnl) if pnl else None,
+            "Details": details[:500] if details else None
+        }
+
+        # Run in background thread to avoid blocking trading loop
+        def _do_log():
+            try:
+                self.client.table(EVENTS_TABLE).insert(data).execute()
+            except Exception as e:
+                print(f"[SUPABASE] Failed to log event: {e}")
+
+        threading.Thread(target=_do_log, daemon=True).start()
+        return True
 
     def buffer_activity(self, action: str, window_id: str = "", details: dict = None):
         """Buffer an activity for batch upload."""

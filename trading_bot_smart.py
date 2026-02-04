@@ -43,30 +43,15 @@ PST = ZoneInfo("America/Los_Angeles")
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor
 
-# Google Sheets logging
-try:
-    from sheets_logger import (sheets_log_event, sheets_log_window, init_sheets_logger,
-                               buffer_tick as sheets_buffer_tick,
-                               maybe_flush_ticks as sheets_maybe_flush_ticks,
-                               flush_ticks as sheets_flush_ticks)
-    SHEETS_LOGGER_AVAILABLE = True
-except ImportError:
-    SHEETS_LOGGER_AVAILABLE = False
-    sheets_log_event = lambda *args, **kwargs: False
-    sheets_log_window = lambda *args, **kwargs: False
-    init_sheets_logger = lambda: None
-    sheets_buffer_tick = lambda *args, **kwargs: None
-    sheets_maybe_flush_ticks = lambda ttl=None: False
-    sheets_flush_ticks = lambda: False
-
-# Supabase logging
+# Supabase logging (single source of truth - replaces Google Sheets)
 try:
     from supabase_logger import (init_supabase_logger,
                                  buffer_tick as supabase_buffer_tick,
                                  maybe_flush_ticks as supabase_maybe_flush_ticks,
                                  flush_ticks as supabase_flush_ticks,
                                  buffer_activity as supabase_buffer_activity,
-                                 flush_activities as supabase_flush_activities)
+                                 flush_activities as supabase_flush_activities,
+                                 log_event as supabase_log_event)
     SUPABASE_LOGGER_AVAILABLE = True
 except ImportError:
     SUPABASE_LOGGER_AVAILABLE = False
@@ -76,10 +61,10 @@ except ImportError:
     supabase_flush_ticks = lambda: False
     supabase_buffer_activity = lambda *args, **kwargs: None
     supabase_flush_activities = lambda: False
+    supabase_log_event = lambda *args, **kwargs: False
 
-# Unified tick functions (send to both Google Sheets and Supabase)
+# Unified logging functions
 def buffer_tick(*args, **kwargs):
-    sheets_buffer_tick(*args, **kwargs)
     supabase_buffer_tick(*args, **kwargs)
 
 def maybe_flush_ticks(ttl: float = None):
@@ -88,16 +73,17 @@ def maybe_flush_ticks(ttl: float = None):
     Args:
         ttl: Time to close (seconds). If < 60, skip flush to protect critical trading period.
     """
-    sheets_maybe_flush_ticks(ttl)
     supabase_maybe_flush_ticks(ttl)
-    # Also flush activities with ticks
     if ttl is None or ttl >= 60:
         supabase_flush_activities()
 
 def flush_ticks():
-    sheets_flush_ticks()
     supabase_flush_ticks()
     supabase_flush_activities()
+
+def log_event(event_type: str, window_id: str = "", **kwargs):
+    """Log a trading event to Supabase."""
+    return supabase_log_event(event_type, window_id=window_id, **kwargs)
 
 # Setup file logging (tee to console and file)
 import sys
@@ -859,7 +845,7 @@ def _send_pair_outcome_notification():
         print("╚════════════════════════════════════════════════════════════╝")
         print()
         notify_profit_pair(up_shares, avg_up, down_shares, avg_down)
-        sheets_log_event("PROFIT_PAIR", window_state.get('window_id', ''),
+        log_event("PROFIT_PAIR", window_state.get('window_id', ''),
                         up_shares=min_shares, up_price=avg_up,
                         down_shares=min_shares, down_price=avg_down,
                         pnl=profit)
@@ -876,7 +862,7 @@ def _send_pair_outcome_notification():
         print("└────────────────────────────────────────────────────────────┘")
         print()
         notify_loss_avoid_pair(up_shares, avg_up, down_shares, avg_down)
-        sheets_log_event("LOSS_AVOID", window_state.get('window_id', ''),
+        log_event("LOSS_AVOID", window_state.get('window_id', ''),
                         up_shares=min_shares, up_price=avg_up,
                         down_shares=min_shares, down_price=avg_down,
                         pnl=-loss)
@@ -1377,7 +1363,7 @@ def execute_hard_stop(side: str, books: dict) -> tuple:
     print("=" * 50)
 
     # Log to Sheets
-    sheets_log_event("HARD_STOP_EXIT", window_state.get('window_id', ''),
+    log_event("HARD_STOP_EXIT", window_state.get('window_id', ''),
                     side=side, shares=shares, price=best_bid,
                     pnl=total_pnl, reason="hard_stop_60c",
                     details=f"trigger={HARD_STOP_TRIGGER*100:.0f}c")
@@ -1814,7 +1800,7 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
     else:
         details = f"OB={trigger_value:.2f}"
 
-    sheets_log_event(event_type, window_state.get('window_id', ''),
+    log_event(event_type, window_state.get('window_id', ''),
                     side=side, shares=filled, price=exit_price,
                     pnl=pnl, reason=reason, details=details)
 
@@ -2067,7 +2053,7 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
             window_state['capture_99c_filled_down'] = shares
         print(f"🔭 99c CAPTURE: Order placed, watching for fill... (${shares * 0.01:.2f} potential profit)")
         print()
-        sheets_log_event("CAPTURE_99C", window_state.get('window_id', ''),
+        log_event("CAPTURE_99C", window_state.get('window_id', ''),
                         side=side, ask_price=current_ask, shares=shares,
                         confidence=confidence, penalty=penalty, ttl=ttc)
         return True
@@ -2148,7 +2134,7 @@ def check_99c_capture_hedge(books, ttc):
 
                 # LOG-02: Log hedge event with full signal breakdown
                 danger_result = window_state.get('danger_result', {})
-                sheets_log_event("99C_HEDGE", window_state.get('window_id', ''),
+                log_event("99C_HEDGE", window_state.get('window_id', ''),
                                bet_side=bet_side, hedge_side=opposite_side,
                                hedge_price=opposite_ask, combined=combined,
                                pnl=-abs(total_loss),  # Record loss in PnL column
@@ -2304,7 +2290,7 @@ def check_and_place_arb(books, ttc):
         window_state['state'] = STATE_PAIRING
         window_state['pairing_start_time'] = time.time()
         window_state['best_distance_seen'] = float('inf')
-        sheets_log_event("PAIRING_ENTRY", window_state.get('window_id', ''), imbalance=imb, reason="imbalance_detected")
+        log_event("PAIRING_ENTRY", window_state.get('window_id', ''), imbalance=imb, reason="imbalance_detected")
         return False
 
     if ttc <= PAIR_DEADLINE_SECONDS:
@@ -2495,7 +2481,7 @@ def check_and_place_arb(books, ttc):
 
         print(f"📝 ORDER {first_side}: ✅ {q} shares @ {first_bid*100:.0f}c")
         window_state['first_order_time'] = time.time()  # Track when first leg was placed
-        sheets_log_event("ARB_ORDER", window_state.get('window_id', ''), side=first_side, price=first_bid, shares=q,
+        log_event("ARB_ORDER", window_state.get('window_id', ''), side=first_side, price=first_bid, shares=q,
                         locked_profit=locked_profit)
 
         # Wait for fill
@@ -2509,7 +2495,7 @@ def check_and_place_arb(books, ttc):
                 first_filled = True
                 first_fill_shares = status['filled']
                 print(f"✅ {first_side} FILLED: {first_fill_shares} shares")
-                sheets_log_event("ARB_FILL", window_state.get('window_id', ''), side=first_side, shares=first_fill_shares, price=first_bid)
+                log_event("ARB_FILL", window_state.get('window_id', ''), side=first_side, shares=first_fill_shares, price=first_bid)
                 window_state['arb_placed_this_window'] = True  # Prevent duplicate arb attempts after first fill
                 break
             if i % 5 == 4:
@@ -2540,7 +2526,7 @@ def check_and_place_arb(books, ttc):
             window_state['pairing_start_time'] = time.time()
             window_state['best_distance_seen'] = float('inf')
             window_state['arb_placed_this_window'] = True  # Prevent new arb attempts
-            sheets_log_event("PAIRING_ENTRY", window_state.get('window_id', ''),
+            log_event("PAIRING_ENTRY", window_state.get('window_id', ''),
                            imbalance=first_fill_shares, reason="second_order_failed")
             return False  # Main loop will call run_pairing_mode()
         else:
@@ -2834,7 +2820,7 @@ def run_pairing_mode(books, ttc):
                 execute_bail(filled_side, missing_shares, filled_token, books)
                 # Calculate P&L: (entry - exit) * shares (negative = loss)
                 bail_pnl = -((filled_price - bail_price) * missing_shares)
-                sheets_log_event("EARLY_BAIL", window_state.get('window_id', ''),
+                log_event("EARLY_BAIL", window_state.get('window_id', ''),
                                 side=filled_side, shares=missing_shares, price=bail_price,
                                 pnl=bail_pnl,
                                 reason="5_second_rule", time_in_pairing=time_in_pairing)
@@ -2866,7 +2852,7 @@ def run_pairing_mode(books, ttc):
                     execute_bail(filled_side, missing_shares, filled_token, books)
                     # Calculate P&L: (entry - exit) * shares (negative = loss)
                     bail_pnl = -((filled_price - price) * missing_shares)
-                    sheets_log_event("EARLY_BAIL", window_state.get('window_id', ''),
+                    log_event("EARLY_BAIL", window_state.get('window_id', ''),
                                     side=filled_side, shares=missing_shares, price=price,
                                     pnl=bail_pnl,
                                     reason="market_reversal")
@@ -2891,7 +2877,7 @@ def run_pairing_mode(books, ttc):
                         execute_bail(filled_side, missing_shares, filled_token, books)
                         # Calculate P&L: (entry - exit) * shares (negative = loss)
                         bail_pnl = -((filled_price - price) * missing_shares)
-                        sheets_log_event("EARLY_BAIL", window_state.get('window_id', ''),
+                        log_event("EARLY_BAIL", window_state.get('window_id', ''),
                                         side=filled_side, shares=missing_shares, price=price,
                                         pnl=bail_pnl,
                                         reason="ob_reversal", ob_imbalance=filled_side_imb)
@@ -2912,7 +2898,7 @@ def run_pairing_mode(books, ttc):
                     execute_bail(filled_side, missing_shares, filled_token, books)
                     # Calculate P&L: (entry - exit) * shares (negative = loss)
                     bail_pnl = -((filled_price - price) * missing_shares)
-                    sheets_log_event("EARLY_BAIL", window_state.get('window_id', ''),
+                    log_event("EARLY_BAIL", window_state.get('window_id', ''),
                                     side=filled_side, shares=missing_shares, price=price,
                                     pnl=bail_pnl,
                                     reason="bail_cheaper_than_hedge")
@@ -2927,7 +2913,7 @@ def run_pairing_mode(books, ttc):
                         wait_and_sync_position()
                         imb_check = get_imbalance()
                         if imb_check == 0:
-                            sheets_log_event("EARLY_HEDGE", window_state.get('window_id', ''),
+                            log_event("EARLY_HEDGE", window_state.get('window_id', ''),
                                             side=missing_side, shares=missing_shares, price=price,
                                             reason="hedge_within_tolerance")
                             window_state['pending_hedge_order_id'] = None
@@ -3070,7 +3056,7 @@ def run_pairing_mode(books, ttc):
         # Use execute_bail for consistent sell handling
         execute_bail(excess_side, excess_shares, excess_token, books)
         window_state['state'] = STATE_DONE
-        sheets_log_event("HARD_FLATTEN", window_state.get('window_id', ''),
+        log_event("HARD_FLATTEN", window_state.get('window_id', ''),
                         side=excess_side, shares=excess_shares, ttl=ttc)
 
 # ============================================================================
@@ -3113,12 +3099,6 @@ def main():
 
     print("Initializing Telegram...")
     init_telegram()
-
-    print("Initializing Google Sheets logger...")
-    if SHEETS_LOGGER_AVAILABLE:
-        init_sheets_logger()
-    else:
-        print("  Sheets logger: DISABLED (module not found)")
 
     print("Initializing Supabase logger...")
     if SUPABASE_LOGGER_AVAILABLE:
@@ -3216,7 +3196,7 @@ def main():
                                 # Log outcome to Sheets/Supabase for dashboard tracking
                                 entry_price = window_state.get('capture_99c_fill_price', 0.99)
                                 event_type = "CAPTURE_99C_WIN" if sniper_won else "CAPTURE_99C_LOSS"
-                                sheets_log_event(event_type, last_slug,
+                                log_event(event_type, last_slug,
                                     side=sniper_side,
                                     shares=sniper_shares,
                                     price=entry_price,
@@ -3227,8 +3207,6 @@ def main():
                                         "hedged": window_state.get('capture_99c_hedged', False)
                                     }))
 
-                        # Log window end to Google Sheets
-                        sheets_log_window(window_state)
                         flush_ticks()  # Flush any remaining tick data
 
                         # Check for claimable positions after window closes
@@ -3266,7 +3244,7 @@ def main():
                     print("=" * 100)
 
                     # Log window start to Google Sheets
-                    sheets_log_event("WINDOW_START", slug, session_windows=session_stats['windows'])
+                    log_event("WINDOW_START", slug, session_windows=session_stats['windows'])
 
                 if not cached_market:
                     cached_market = get_market_data(slug)
@@ -3386,7 +3364,7 @@ def main():
                         window_state['capture_99c_fill_notified'] = True
                         # Send Telegram notification
                         notify_99c_fill(side, filled, peak_conf * 100 if peak_conf else 95, remaining_secs)
-                        sheets_log_event("CAPTURE_FILL", slug, side=side, shares=filled,
+                        log_event("CAPTURE_FILL", slug, side=side, shares=filled,
                                         price=fill_price, pnl=actual_pnl)
 
                 # === 60¢ HARD STOP CHECK (v1.34) ===
@@ -3544,7 +3522,7 @@ def main():
                 print(f"[{ts()}] Error: {e}")
                 import traceback
                 traceback.print_exc()
-                sheets_log_event("ERROR", slug if slug else "unknown",
+                log_event("ERROR", slug if slug else "unknown",
                                 error_type="MAIN_LOOP", message=str(e)[:200])
                 time.sleep(0.5)
 
