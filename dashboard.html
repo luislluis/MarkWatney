@@ -665,18 +665,8 @@
       console.log('[STATUS]', status);
     }
 
-    // Debug: show realtime status on page for mobile debugging
     function debugLog(msg) {
       console.log('[DEBUG]', msg);
-      const footer = document.querySelector('.footer');
-      let debugEl = document.getElementById('debug-log');
-      if (!debugEl) {
-        debugEl = document.createElement('p');
-        debugEl.id = 'debug-log';
-        debugEl.style.cssText = 'font-size:10px;color:var(--text-muted);margin-top:8px;font-family:monospace;word-break:break-all;';
-        footer.appendChild(debugEl);
-      }
-      debugEl.textContent = msg;
     }
 
     function startBackupPolling() {
