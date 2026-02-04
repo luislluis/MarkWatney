@@ -481,9 +481,9 @@
 
     <!-- Footer -->
     <footer class="footer">
-      <p class="footer-text">
+      <p class="footer-text" id="connectionStatus">
         <span class="status-dot"></span>
-        Auto-refresh every 60s
+        Connecting...
       </p>
     </footer>
   </div>
@@ -651,29 +651,104 @@
       }
     }
 
-    // Pause refresh when tab is hidden
+    // Connection state
     let refreshInterval;
+    let realtimeChannel = null;
+    let isRealtimeConnected = false;
+    const BACKUP_POLL_MS = 300000; // 5 minutes backup polling
 
-    function startRefresh() {
-      refreshInterval = setInterval(loadData, CONFIG.refreshMs);
+    const statusEl = document.getElementById('connectionStatus');
+
+    function updateStatus(status, isLive = false) {
+      const dotClass = isLive ? 'status-dot' : 'status-dot';
+      const dotStyle = isLive ? '' : 'style="background: var(--yellow-primary);"';
+      statusEl.innerHTML = `<span class="${dotClass}" ${dotStyle}></span>${status}`;
+    }
+
+    function startBackupPolling() {
+      stopRefresh();
+      refreshInterval = setInterval(loadData, BACKUP_POLL_MS);
     }
 
     function stopRefresh() {
-      clearInterval(refreshInterval);
+      if (refreshInterval) {
+        clearInterval(refreshInterval);
+        refreshInterval = null;
+      }
     }
 
+    // Supabase Realtime subscription
+    function setupRealtime() {
+      if (realtimeChannel) {
+        db.removeChannel(realtimeChannel);
+      }
+
+      updateStatus('Connecting...');
+
+      realtimeChannel = db
+        .channel('polybot-live')
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'Polymarket Bot Log - Events'
+          },
+          (payload) => {
+            console.log('[REALTIME] New event:', payload.new?.Event);
+            // Flash the status to show activity
+            updateStatus('⚡ Update received', true);
+            loadData();
+            setTimeout(() => {
+              if (isRealtimeConnected) {
+                updateStatus('Live', true);
+              }
+            }, 1000);
+          }
+        )
+        .subscribe((status) => {
+          console.log('[REALTIME] Status:', status);
+
+          if (status === 'SUBSCRIBED') {
+            isRealtimeConnected = true;
+            updateStatus('Live', true);
+            // Use slower backup polling since realtime is working
+            startBackupPolling();
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            isRealtimeConnected = false;
+            updateStatus('Polling (realtime unavailable)');
+            // Fall back to faster polling
+            stopRefresh();
+            refreshInterval = setInterval(loadData, 10000); // 10s fallback
+          } else if (status === 'CLOSED') {
+            isRealtimeConnected = false;
+            updateStatus('Reconnecting...');
+            // Try to reconnect after a delay
+            setTimeout(setupRealtime, 5000);
+          }
+        });
+    }
+
+    // Handle tab visibility
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         stopRefresh();
       } else {
         loadData();
-        startRefresh();
+        if (isRealtimeConnected) {
+          startBackupPolling();
+        } else {
+          setupRealtime();
+        }
       }
     });
 
-    // Initial load
-    loadData();
-    startRefresh();
+    // Initial load and setup
+    loadData().then(() => {
+      setupRealtime();
+    }).catch(() => {
+      setupRealtime();
+    });
   </script>
 </body>
 </html>
