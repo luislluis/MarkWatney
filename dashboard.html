@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Polybot Terminal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    :root {
+      --bg-primary: #0a0a0b;
+      --bg-secondary: #111113;
+      --bg-card: rgba(17, 17, 19, 0.8);
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-glow: rgba(52, 211, 153, 0.3);
+      --text-primary: #f4f4f5;
+      --text-secondary: #71717a;
+      --text-muted: #52525b;
+      --green-primary: #34d399;
+      --green-glow: rgba(52, 211, 153, 0.15);
+      --green-dark: #059669;
+      --red-primary: #f87171;
+      --red-glow: rgba(248, 113, 113, 0.15);
+      --yellow-primary: #fbbf24;
+      --gold-accent: #d4af37;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Outfit', -apple-system, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Animated gradient background */
+    .bg-mesh {
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 20% -20%, rgba(52, 211, 153, 0.08), transparent),
+        radial-gradient(ellipse 60% 40% at 80% 100%, rgba(52, 211, 153, 0.05), transparent),
+        var(--bg-primary);
+      z-index: -1;
+    }
+
+    /* Subtle noise texture */
+    .noise {
+      position: fixed;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+      opacity: 0.02;
+      pointer-events: none;
+      z-index: -1;
+    }
+
+    .container {
+      max-width: 420px;
+      margin: 0 auto;
+      padding: 20px 16px 32px;
+      position: relative;
+    }
+
+    /* Header */
+    .header {
+      margin-bottom: 24px;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 4px;
+    }
+
+    .logo-icon {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, var(--green-primary), var(--green-dark));
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      box-shadow: 0 4px 12px rgba(52, 211, 153, 0.3);
+    }
+
+    .logo-text {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      background: linear-gradient(135deg, var(--text-primary) 0%, var(--text-secondary) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .date {
+      font-size: 13px;
+      color: var(--text-muted);
+      font-weight: 400;
+      padding-left: 42px;
+    }
+
+    /* Status indicator */
+    .status-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      background: var(--green-primary);
+      border-radius: 50%;
+      margin-right: 6px;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.4); }
+      50% { opacity: 0.8; box-shadow: 0 0 0 4px rgba(52, 211, 153, 0); }
+    }
+
+    /* Cards */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 16px;
+      padding: 1px;
+      background: linear-gradient(135deg, rgba(255,255,255,0.1), rgba(255,255,255,0));
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      pointer-events: none;
+    }
+
+    /* Summary Grid */
+    .summary-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .stat-card {
+      padding: 20px 16px;
+      text-align: center;
+    }
+
+    .stat-card.primary {
+      background: linear-gradient(135deg, rgba(52, 211, 153, 0.08), rgba(52, 211, 153, 0.02));
+      border-color: var(--border-glow);
+    }
+
+    .stat-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -1px;
+      line-height: 1;
+      margin-bottom: 6px;
+    }
+
+    .stat-value.positive { color: var(--green-primary); }
+    .stat-value.negative { color: var(--red-primary); }
+    .stat-value.neutral { color: var(--text-muted); }
+
+    .stat-label {
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+
+    .stat-detail {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .stat-roi {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      font-weight: 600;
+      margin-top: 6px;
+    }
+
+    .stat-roi.positive { color: var(--green-primary); }
+    .stat-roi.negative { color: var(--red-primary); }
+
+    /* Section Headers */
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+      padding: 0 4px;
+    }
+
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: var(--text-secondary);
+    }
+
+    .section-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-muted);
+      background: rgba(255,255,255,0.05);
+      padding: 3px 8px;
+      border-radius: 4px;
+    }
+
+    /* Trade List */
+    .trades-card {
+      padding: 4px;
+      margin-bottom: 20px;
+    }
+
+    .trade-item {
+      display: flex;
+      align-items: center;
+      padding: 12px;
+      border-radius: 10px;
+      transition: background 0.2s ease;
+    }
+
+    .trade-item:hover {
+      background: rgba(255,255,255,0.02);
+    }
+
+    .trade-status {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      margin-right: 12px;
+      flex-shrink: 0;
+    }
+
+    .trade-status.win {
+      background: var(--green-glow);
+      color: var(--green-primary);
+    }
+
+    .trade-status.loss {
+      background: var(--red-glow);
+      color: var(--red-primary);
+    }
+
+    .trade-status.pending {
+      background: rgba(251, 191, 36, 0.1);
+      color: var(--yellow-primary);
+    }
+
+    .trade-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .trade-pair {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 2px;
+    }
+
+    .trade-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .trade-pnl {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      font-weight: 600;
+      text-align: right;
+      margin-left: 12px;
+    }
+
+    .trade-pnl.positive { color: var(--green-primary); }
+    .trade-pnl.negative { color: var(--red-primary); }
+    .trade-pnl.pending { color: var(--yellow-primary); font-size: 11px; }
+
+    /* History */
+    .history-card {
+      padding: 4px;
+    }
+
+    .history-item {
+      display: grid;
+      grid-template-columns: 1fr auto auto auto;
+      gap: 12px;
+      align-items: center;
+      padding: 14px 12px;
+      border-radius: 10px;
+      transition: background 0.2s ease;
+    }
+
+    .history-item:hover {
+      background: rgba(255,255,255,0.02);
+    }
+
+    .history-date {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .history-pnl {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .history-pnl.positive { color: var(--green-primary); }
+    .history-pnl.negative { color: var(--red-primary); }
+
+    .history-record {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .history-roi {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      font-weight: 500;
+      min-width: 50px;
+      text-align: right;
+    }
+
+    .history-roi.positive { color: var(--green-primary); }
+    .history-roi.negative { color: var(--red-primary); }
+
+    /* Footer */
+    .footer {
+      text-align: center;
+      margin-top: 24px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .footer-text {
+      font-size: 11px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    /* Error Banner */
+    .error-banner {
+      background: rgba(248, 113, 113, 0.1);
+      border: 1px solid rgba(248, 113, 113, 0.2);
+      border-radius: 10px;
+      padding: 12px 16px;
+      margin-bottom: 16px;
+      font-size: 13px;
+      color: var(--red-primary);
+      display: none;
+    }
+
+    .error-banner.visible {
+      display: block;
+    }
+
+    /* Loading state */
+    .loading {
+      color: var(--text-muted);
+      font-size: 13px;
+      text-align: center;
+      padding: 20px;
+    }
+
+    /* Empty state */
+    .empty-state {
+      color: var(--text-muted);
+      font-size: 13px;
+      text-align: center;
+      padding: 24px;
+    }
+
+    /* Animations */
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .animate-in {
+      animation: fadeIn 0.4s ease-out forwards;
+    }
+
+    .delay-1 { animation-delay: 0.1s; opacity: 0; }
+    .delay-2 { animation-delay: 0.2s; opacity: 0; }
+    .delay-3 { animation-delay: 0.3s; opacity: 0; }
+  </style>
+</head>
+<body>
+  <div class="bg-mesh"></div>
+  <div class="noise"></div>
+
+  <div class="container">
+    <!-- Header -->
+    <header class="header animate-in">
+      <div class="logo">
+        <div class="logo-icon">⚡</div>
+        <span class="logo-text">POLYBOT</span>
+      </div>
+      <p class="date" id="date"><span class="status-dot"></span>Loading...</p>
+    </header>
+
+    <!-- Error Banner -->
+    <div class="error-banner" id="error">
+      <span id="errorMsg">Error loading data</span>
+    </div>
+
+    <!-- Summary Cards -->
+    <div class="summary-grid animate-in delay-1">
+      <div class="card stat-card primary">
+        <div class="stat-label">Today's P&L</div>
+        <div class="stat-value neutral" id="todayPnl">--</div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-label">Win Rate</div>
+        <div class="stat-value neutral" id="winRate">--</div>
+        <div class="stat-detail" id="record">--</div>
+        <div class="stat-roi" id="roi"></div>
+      </div>
+    </div>
+
+    <!-- Recent Trades -->
+    <div class="animate-in delay-2">
+      <div class="section-header">
+        <span class="section-title">Recent Trades</span>
+        <span class="section-badge">LIVE</span>
+      </div>
+      <div class="card trades-card" id="trades">
+        <p class="loading">Loading trades...</p>
+      </div>
+    </div>
+
+    <!-- Daily History -->
+    <div class="animate-in delay-3">
+      <div class="section-header">
+        <span class="section-title">Daily History</span>
+      </div>
+      <div class="card history-card" id="history">
+        <p class="loading">Loading history...</p>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <p class="footer-text">
+        <span class="status-dot"></span>
+        Auto-refresh every 60s
+      </p>
+    </footer>
+  </div>
+
+  <script>
+    // Configuration
+    const CONFIG = {
+      supabaseUrl: 'https://qszosdrmnoglrkttdevz.supabase.co',
+      supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFzem9zZHJtbm9nbHJrdHRkZXZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxOTg1NTYsImV4cCI6MjA4NDc3NDU1Nn0.-Ebe2icoMqIiL8NlVX93IJGVBCAmpfxk9S7U8ABsStA',
+      refreshMs: 60000,
+      maxTrades: 10,
+      maxHistoryDays: 7
+    };
+
+    const db = window.supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabaseAnonKey);
+
+    // Cache DOM elements
+    const el = {
+      date: document.getElementById('date'),
+      error: document.getElementById('error'),
+      errorMsg: document.getElementById('errorMsg'),
+      todayPnl: document.getElementById('todayPnl'),
+      winRate: document.getElementById('winRate'),
+      record: document.getElementById('record'),
+      roi: document.getElementById('roi'),
+      trades: document.getElementById('trades'),
+      history: document.getElementById('history')
+    };
+
+    // Helpers
+    const fmtPnl = (n) => (n >= 0 ? '+' : '') + '$' + n.toFixed(2);
+    const fmtPrice = (n) => Math.round(parseFloat(n) * 100) + '¢';
+    const parsePnl = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+    const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+    const getLocalDate = () => new Date().toLocaleDateString('en-CA');
+
+    function showError(msg) {
+      el.error.classList.add('visible');
+      el.errorMsg.textContent = msg;
+    }
+
+    function hideError() {
+      el.error.classList.remove('visible');
+    }
+
+    async function loadData() {
+      try {
+        const { data: summary, error: summaryError } = await db
+          .from('daily_summary')
+          .select('*')
+          .order('trade_date', { ascending: false })
+          .limit(CONFIG.maxHistoryDays);
+
+        if (summaryError) throw new Error('Failed to load summary: ' + summaryError.message);
+
+        const { data: trades, error: tradesError } = await db
+          .from('trade_details')
+          .select('*')
+          .order('timestamp', { ascending: false })
+          .limit(CONFIG.maxTrades);
+
+        if (tradesError) throw new Error('Failed to load trades: ' + tradesError.message);
+
+        hideError();
+        renderDashboard(summary ?? [], trades ?? []);
+      } catch (error) {
+        console.error('Dashboard error:', error);
+        showError(error.message + ' - will retry');
+      }
+    }
+
+    function renderDashboard(summary, trades) {
+      const today = getLocalDate();
+
+      // Update date display
+      const dateStr = new Date().toLocaleDateString('en-US', {
+        weekday: 'long', month: 'short', day: 'numeric'
+      });
+      el.date.innerHTML = `<span class="status-dot"></span>${dateStr}`;
+
+      // Today's summary
+      const todayData = summary.find(d => d.trade_date === today);
+      if (todayData) {
+        const pnl = parsePnl(todayData.total_pnl);
+        el.todayPnl.textContent = fmtPnl(pnl);
+        el.todayPnl.className = 'stat-value ' + (pnl >= 0 ? 'positive' : 'negative');
+
+        el.winRate.textContent = (todayData.win_rate_pct ?? 0) + '%';
+        el.winRate.className = 'stat-value ' + ((todayData.win_rate_pct ?? 0) >= 50 ? 'positive' : 'neutral');
+
+        const pending = todayData.pending ?? 0;
+        const recordText = (todayData.wins ?? 0) + 'W / ' + (todayData.losses ?? 0) + 'L';
+        el.record.textContent = pending > 0 ? recordText + ' (' + pending + ' pending)' : recordText;
+
+        const roiPct = todayData.roi_pct ?? 0;
+        el.roi.textContent = (roiPct > 0 ? '+' : '') + roiPct + '% ROI';
+        el.roi.className = 'stat-roi ' + (roiPct >= 0 ? 'positive' : 'negative');
+      } else {
+        el.todayPnl.textContent = '$0.00';
+        el.todayPnl.className = 'stat-value neutral';
+        el.winRate.textContent = '--';
+        el.winRate.className = 'stat-value neutral';
+        el.record.textContent = 'No trades yet';
+        el.roi.textContent = '';
+      }
+
+      // Recent trades
+      if (trades.length > 0) {
+        const tradesHtml = trades.map(t => {
+          const status = t.status || 'PENDING';
+          const pnl = parsePnl(t.profit_loss);
+          const isPending = status === 'PENDING';
+          const isWin = status === 'WIN';
+          const price = fmtPrice(t.entry_price ?? 0.99);
+          const time = new Date(t.timestamp).toLocaleTimeString('en-US', {
+            hour: 'numeric', minute: '2-digit', hour12: true
+          });
+          const side = escapeHtml(t.side ?? '?');
+          const shares = parseInt(t.shares) || 0;
+
+          const statusClass = isPending ? 'pending' : (isWin ? 'win' : 'loss');
+          const statusIcon = isPending ? '◷' : (isWin ? '✓' : '✗');
+          const pnlClass = isPending ? 'pending' : (isWin ? 'positive' : 'negative');
+          const pnlText = isPending ? 'pending' : fmtPnl(pnl);
+
+          return `
+            <div class="trade-item">
+              <div class="trade-status ${statusClass}">${statusIcon}</div>
+              <div class="trade-info">
+                <div class="trade-pair">${side} ${shares}@${price}</div>
+                <div class="trade-meta">${time}</div>
+              </div>
+              <div class="trade-pnl ${pnlClass}">${pnlText}</div>
+            </div>
+          `;
+        }).join('');
+        el.trades.innerHTML = tradesHtml;
+      } else {
+        el.trades.innerHTML = '<p class="empty-state">No trades yet</p>';
+      }
+
+      // Daily history
+      if (summary.length > 0) {
+        const historyHtml = summary.map(d => {
+          const pnl = parsePnl(d.total_pnl);
+          const date = new Date(d.trade_date + 'T12:00:00').toLocaleDateString('en-US', {
+            month: 'short', day: 'numeric'
+          });
+          const wins = d.wins ?? 0;
+          const losses = d.losses ?? 0;
+          const roiPct = d.roi_pct ?? 0;
+
+          return `
+            <div class="history-item">
+              <span class="history-date">${escapeHtml(date)}</span>
+              <span class="history-pnl ${pnl >= 0 ? 'positive' : 'negative'}">${fmtPnl(pnl)}</span>
+              <span class="history-record">${wins}W/${losses}L</span>
+              <span class="history-roi ${roiPct >= 0 ? 'positive' : 'negative'}">${roiPct > 0 ? '+' : ''}${roiPct}%</span>
+            </div>
+          `;
+        }).join('');
+        el.history.innerHTML = historyHtml;
+      } else {
+        el.history.innerHTML = '<p class="empty-state">No history yet</p>';
+      }
+    }
+
+    // Pause refresh when tab is hidden
+    let refreshInterval;
+
+    function startRefresh() {
+      refreshInterval = setInterval(loadData, CONFIG.refreshMs);
+    }
+
+    function stopRefresh() {
+      clearInterval(refreshInterval);
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        stopRefresh();
+      } else {
+        loadData();
+        startRefresh();
+      }
+    });
+
+    // Initial load
+    loadData();
+    startRefresh();
+  </script>
+</body>
+</html>
