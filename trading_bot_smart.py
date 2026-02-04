@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.36",
-    "codename": "No Harm No Foul",
-    "date": "2026-02-03",
-    "changes": "Place 99c bids even when ask >= 99c - if doesn't fill, no loss"
+    "version": "v1.37",
+    "codename": "Data Driven",
+    "date": "2026-02-04",
+    "changes": "Log CAPTURE_99C_WIN/LOSS events for Supabase dashboard tracking"
 }
 
 import os
@@ -3212,6 +3212,20 @@ def main():
                             # Only send notification if we know the result
                             if sniper_won is not None:
                                 notify_99c_resolution(sniper_side, sniper_shares, sniper_won, sniper_pnl)
+
+                                # Log outcome to Sheets/Supabase for dashboard tracking
+                                entry_price = window_state.get('capture_99c_fill_price', 0.99)
+                                event_type = "CAPTURE_99C_WIN" if sniper_won else "CAPTURE_99C_LOSS"
+                                sheets_log_event(event_type, last_slug,
+                                    side=sniper_side,
+                                    shares=sniper_shares,
+                                    price=entry_price,
+                                    pnl=sniper_pnl,
+                                    details=json.dumps({
+                                        "outcome": "WIN" if sniper_won else "LOSS",
+                                        "settlement_price": 1.00 if sniper_won else 0.00,
+                                        "hedged": window_state.get('capture_99c_hedged', False)
+                                    }))
 
                         # Log window end to Google Sheets
                         sheets_log_window(window_state)

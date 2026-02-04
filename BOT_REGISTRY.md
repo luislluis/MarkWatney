@@ -1,10 +1,11 @@
 # Polybot Version Registry
 
-## Current Version: v1.36 "No Harm No Foul"
+## Current Version: v1.37 "Data Driven"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.36 | 2026-02-03 PST | No Harm No Foul | Place 99c bids even when ask >= 99c - if doesn't fill, no loss | Active |
+| v1.37 | 2026-02-04 PST | Data Driven | Log CAPTURE_99C_WIN/LOSS events for Supabase dashboard tracking | Active |
+| v1.36 | 2026-02-03 PST | No Harm No Foul | Place 99c bids even when ask >= 99c - if doesn't fill, no loss | Archived |
 | v1.35 | 2026-02-03 PST | Six Shooter | Increase 99c capture to 6 shares ($6 max spend) | Archived |
 | v1.34 | 2026-02-03 PST | Iron Exit | 60¢ hard stop: FOK market orders for guaranteed emergency exit | Archived |
 | v1.33 | 2026-01-28 PST | Phoenix Feed | RTDS WebSocket: Real-time BTC prices from Polymarket's Chainlink stream | Archived |
