@@ -660,9 +660,23 @@
     const statusEl = document.getElementById('connectionStatus');
 
     function updateStatus(status, isLive = false) {
-      const dotClass = isLive ? 'status-dot' : 'status-dot';
       const dotStyle = isLive ? '' : 'style="background: var(--yellow-primary);"';
-      statusEl.innerHTML = `<span class="${dotClass}" ${dotStyle}></span>${status}`;
+      statusEl.innerHTML = `<span class="status-dot" ${dotStyle}></span>${status}`;
+      console.log('[STATUS]', status);
+    }
+
+    // Debug: show realtime status on page for mobile debugging
+    function debugLog(msg) {
+      console.log('[DEBUG]', msg);
+      const footer = document.querySelector('.footer');
+      let debugEl = document.getElementById('debug-log');
+      if (!debugEl) {
+        debugEl = document.createElement('p');
+        debugEl.id = 'debug-log';
+        debugEl.style.cssText = 'font-size:10px;color:var(--text-muted);margin-top:8px;font-family:monospace;word-break:break-all;';
+        footer.appendChild(debugEl);
+      }
+      debugEl.textContent = msg;
     }
 
     function startBackupPolling() {
@@ -684,6 +698,7 @@
       }
 
       updateStatus('Connecting...');
+      debugLog('Setting up realtime...');
 
       realtimeChannel = db
         .channel('polybot-live')
@@ -696,7 +711,7 @@
           },
           (payload) => {
             console.log('[REALTIME] New event:', payload.new?.Event);
-            // Flash the status to show activity
+            debugLog('Event: ' + (payload.new?.Event || 'unknown'));
             updateStatus('⚡ Update received', true);
             loadData();
             setTimeout(() => {
@@ -706,24 +721,24 @@
             }, 1000);
           }
         )
-        .subscribe((status) => {
-          console.log('[REALTIME] Status:', status);
+        .subscribe((status, err) => {
+          console.log('[REALTIME] Status:', status, err);
+          debugLog('Realtime: ' + status + (err ? ' - ' + err.message : ''));
 
           if (status === 'SUBSCRIBED') {
             isRealtimeConnected = true;
             updateStatus('Live', true);
-            // Use slower backup polling since realtime is working
+            debugLog('Connected! Listening for events...');
             startBackupPolling();
           } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
             isRealtimeConnected = false;
             updateStatus('Polling (realtime unavailable)');
-            // Fall back to faster polling
+            debugLog('Error: ' + (err?.message || status));
             stopRefresh();
-            refreshInterval = setInterval(loadData, 10000); // 10s fallback
+            refreshInterval = setInterval(loadData, 10000);
           } else if (status === 'CLOSED') {
             isRealtimeConnected = false;
             updateStatus('Reconnecting...');
-            // Try to reconnect after a delay
             setTimeout(setupRealtime, 5000);
           }
         });
