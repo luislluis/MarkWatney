@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.35",
-    "codename": "Six Shooter",
+    "version": "v1.36",
+    "codename": "No Harm No Foul",
     "date": "2026-02-03",
-    "changes": "Increase 99c capture to 6 shares ($6 max spend)"
+    "changes": "Place 99c bids even when ask >= 99c - if doesn't fill, no loss"
 }
 
 import os
@@ -353,7 +353,7 @@ CAPTURE_99C_MAX_SPEND = 6.00       # Max $6 per window on this strategy (6 share
 CAPTURE_99C_BID_PRICE = 0.99       # Place bid at 99c
 CAPTURE_99C_MIN_TIME = 10          # Need at least 10 seconds to settle order
 CAPTURE_99C_MIN_CONFIDENCE = 0.95  # Only bet when 95%+ confident
-CAPTURE_99C_MAX_ASK = 0.99         # Don't capture if ask >= 99c (avoids reversal traps)
+CAPTURE_99C_MAX_ASK = 1.01         # Allow placing bids even when ask is at 99-100c (if doesn't fill, no harm)
 
 # Time penalties: (max_time_remaining, penalty)
 # Confidence = ask_price - time_penalty
