@@ -549,6 +549,26 @@
       el.error.classList.remove('visible');
     }
 
+    // Check market resolution for a slug via Polymarket events API
+    async function resolveMarket(slug, side, price, shares) {
+      try {
+        const resp = await fetch(`https://gamma-api.polymarket.com/events?slug=${slug}`);
+        if (!resp.ok) return null;
+        const events = await resp.json();
+        const market = events?.[0]?.markets?.[0];
+        if (!market) return null;
+        const outcomes = market.outcomes || [];  // ["Up", "Down"]
+        const prices = market.outcomePrices ? JSON.parse(market.outcomePrices) : [];
+        const sideIndex = outcomes.findIndex(o => o.toUpperCase() === side);
+        if (sideIndex < 0 || !prices[sideIndex]) return null;
+        const won = parseFloat(prices[sideIndex]) > 0.9;
+        return {
+          status: won ? 'WIN' : 'LOSS',
+          profit_loss: won ? shares * (1 - price) : shares * -price
+        };
+      } catch { return null; }
+    }
+
     async function loadData() {
       try {
         // Source 1: Polymarket API - actual fill prices (primary)
@@ -618,6 +638,23 @@
           });
         }
 
+        // Resolve PENDING trades by checking Polymarket events API
+        // Only for trades whose window has closed (> 15 min old)
+        const now = Date.now();
+        const pendingTrades = trades.filter(t => t.status === 'PENDING' && (now - new Date(t.timestamp).getTime()) > 20 * 60 * 1000);
+        if (pendingTrades.length > 0) {
+          console.log(`[DASHBOARD] Resolving ${pendingTrades.length} pending trades via Polymarket API`);
+          const resolutions = await Promise.all(
+            pendingTrades.map(t => resolveMarket(t.window_id, t.side, t.entry_price, t.shares))
+          );
+          pendingTrades.forEach((t, i) => {
+            if (resolutions[i]) {
+              t.status = resolutions[i].status;
+              t.profit_loss = resolutions[i].profit_loss;
+            }
+          });
+        }
+
         // Sort by timestamp descending
         trades.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
@@ -638,6 +675,7 @@
           const pending = windowIds.size - wins - losses;
           const totalPnl = dayTrades.reduce((s, t) => s + t.profit_loss, 0);
           const totalCost = dayTrades.reduce((s, t) => s + t.shares * t.entry_price, 0);
+          const avgTradeValue = windowIds.size > 0 ? totalCost / windowIds.size : 0;
           const resolved = wins + losses;
           return {
             trade_date: date,
@@ -645,7 +683,7 @@
             wins, losses, pending,
             win_rate_pct: resolved > 0 ? Math.round(wins / resolved * 1000) / 10 : 0,
             total_pnl: totalPnl,
-            roi_pct: totalCost > 0 ? Math.round(totalPnl / totalCost * 1000) / 10 : 0
+            roi_pct: avgTradeValue > 0 ? Math.round(totalPnl / avgTradeValue * 1000) / 10 : 0
           };
         }).sort((a, b) => b.trade_date.localeCompare(a.trade_date));
 
