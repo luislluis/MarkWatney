@@ -512,7 +512,7 @@
       supabaseUrl: 'https://qszosdrmnoglrkttdevz.supabase.co',
       supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFzem9zZHJtbm9nbHJrdHRkZXZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxOTg1NTYsImV4cCI6MjA4NDc3NDU1Nn0.-Ebe2icoMqIiL8NlVX93IJGVBCAmpfxk9S7U8ABsStA',
       refreshMs: 60000,
-      maxTrades: 10,
+      maxTrades: 50,
       maxHistoryDays: 7
     };
 
@@ -550,27 +550,33 @@
 
     async function loadData() {
       try {
-        // Query raw events table for CAPTURE_FILL + WIN/LOSS events
-        // This replaces the SQL views (trade_details + daily_summary)
-        // CAPTURE_FILL = order actually filled (not just placed)
-        // CAPTURE_99C_WIN/LOSS = outcome after window closes
+        // Query ALL relevant event types from raw events table
+        // Hybrid strategy: CAPTURE_FILL (preferred) + CAPTURE_99C (fallback) + outcomes
+        // - CAPTURE_FILL = order actually filled (newer bot versions only)
+        // - CAPTURE_99C = order placed (older bot versions, only valid if WIN/LOSS exists)
+        // - CAPTURE_99C_WIN/LOSS = outcome after window closes (proves order filled)
         const { data: events, error: eventsError } = await db
           .from('Polymarket Bot Log - Events')
           .select('*')
-          .in('Event', ['CAPTURE_FILL', 'CAPTURE_99C_WIN', 'CAPTURE_99C_LOSS'])
+          .in('Event', ['CAPTURE_FILL', 'CAPTURE_99C', 'CAPTURE_99C_WIN', 'CAPTURE_99C_LOSS'])
           .order('Timestamp', { ascending: false })
-          .limit(500);
+          .limit(1000);
 
         if (eventsError) throw new Error('Failed to load events: ' + eventsError.message);
 
-        // Build outcome lookup by Window ID
-        const outcomes = {};
-        const fills = [];
+        // Separate events by type
+        const outcomes = {};  // Window ID -> { status, profit_loss }
+        const fillsByWid = {}; // Window ID -> CAPTURE_FILL event
+        const ordersByWid = {}; // Window ID -> CAPTURE_99C event
+
         for (const e of (events ?? [])) {
           const wid = e['Window ID'];
           if (e.Event === 'CAPTURE_FILL') {
-            fills.push(e);
+            fillsByWid[wid] = e;
+          } else if (e.Event === 'CAPTURE_99C') {
+            ordersByWid[wid] = e;
           } else {
+            // WIN or LOSS
             outcomes[wid] = {
               status: e.Event === 'CAPTURE_99C_WIN' ? 'WIN' : 'LOSS',
               profit_loss: parseFloat(e.PnL) || 0
@@ -578,11 +584,18 @@
           }
         }
 
-        // Build trade_details from fills + outcomes (like the SQL JOIN)
-        const trades = fills.map(f => {
-          const wid = f['Window ID'];
+        // Build trades using hybrid strategy:
+        // 1. Use CAPTURE_FILL where available (has accurate fill price)
+        // 2. Fall back to CAPTURE_99C if a WIN/LOSS outcome exists (proves it filled)
+        // 3. Exclude CAPTURE_99C with no outcome and no FILL (truly unfilled)
+        const trades = [];
+        const seenWindows = new Set();
+
+        // First pass: all CAPTURE_FILL windows
+        for (const [wid, f] of Object.entries(fillsByWid)) {
+          seenWindows.add(wid);
           const out = outcomes[wid];
-          return {
+          trades.push({
             timestamp: f.Timestamp,
             window_id: wid,
             side: f.Side,
@@ -590,8 +603,27 @@
             entry_price: parseFloat(f.Price) || 0.99,
             status: out?.status || 'PENDING',
             profit_loss: out?.profit_loss || 0
-          };
-        });
+          });
+        }
+
+        // Second pass: CAPTURE_99C windows that have a WIN/LOSS but NO CAPTURE_FILL
+        for (const [wid, o] of Object.entries(ordersByWid)) {
+          if (seenWindows.has(wid)) continue; // already have FILL data
+          if (!outcomes[wid]) continue; // no outcome = truly unfilled, skip
+          seenWindows.add(wid);
+          trades.push({
+            timestamp: o.Timestamp,
+            window_id: wid,
+            side: o.Side,
+            shares: parseFloat(o.Shares) || 0,
+            entry_price: 0.99, // Use 99c (bid price), not the ask price logged in CAPTURE_99C
+            status: outcomes[wid].status,
+            profit_loss: outcomes[wid].profit_loss
+          });
+        }
+
+        // Sort all trades by timestamp descending
+        trades.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
         // Build daily_summary by aggregating trades by date (EST)
         const dateGroups = {};
@@ -618,7 +650,7 @@
             wins, losses, pending,
             win_rate_pct: resolved > 0 ? Math.round(wins / resolved * 1000) / 10 : 0,
             total_pnl: totalPnl,
-            roi_pct: totalCost > 0 ? Math.round(totalPnl / (totalCost / windowIds.size) * 1000) / 10 : 0
+            roi_pct: totalCost > 0 ? Math.round(totalPnl / totalCost * 1000) / 10 : 0
           };
         }).sort((a, b) => b.trade_date.localeCompare(a.trade_date));
 
