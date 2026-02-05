@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.43",
-    "codename": "Steady Falcon",
+    "version": "v1.44",
+    "codename": "Silent Puma",
     "date": "2026-02-05",
-    "changes": "Fix: OB EXIT sell uses actual API position (5.9995) not tracked (6.0) to avoid 'not enough balance' rejections. Remove unused strategy_signals imports."
+    "changes": "Remove: 5-SEC RULE auto-bail from pairing mode (legacy v1.10 code that should no longer fire)"
 }
 
 import os
@@ -270,7 +270,6 @@ BAIL_LOSS_THRESHOLD = 0.05         # Bail if position down >5%
 # ===========================================
 # EARLY BAIL - MINIMIZE EXPOSURE (v1.10)
 # ===========================================
-PAIR_WINDOW_SECONDS = 5            # If second leg doesn't fill in 5s, bail immediately
 EARLY_HEDGE_TIMEOUT = 30           # (legacy) Try hedging for 30s before evaluating bail
 EARLY_BAIL_MAX_LOSS = 0.05         # 5c max loss per share triggers early decision
 EARLY_BAIL_CHECK_INTERVAL = 10     # (legacy) Re-check every 10s after EARLY_HEDGE_TIMEOUT
@@ -2733,7 +2732,7 @@ def run_pairing_mode(books, ttc):
     best_ask = float(asks[0]['price'])
 
     # ===========================================
-    # EARLY BAIL LOGIC v1.10 - 5-SECOND RULE
+    # EARLY BAIL LOGIC - REVERSAL DETECTION
     # ===========================================
     if window_state.get('pairing_start_time'):
         time_in_pairing = time.time() - window_state['pairing_start_time']
@@ -2746,40 +2745,13 @@ def run_pairing_mode(books, ttc):
             window_state['best_distance_seen'] = current_distance
             best_ever = current_distance
 
-        # --- 5-SECOND RULE (v1.10) ---
-        # Most successful pairs happen within 5 seconds. After that, bail immediately.
-        if time_in_pairing >= PAIR_WINDOW_SECONDS and not window_state.get('five_sec_bail_triggered'):
-            window_state['five_sec_bail_triggered'] = True  # Only try once
-
-            # Get best available bail price
-            if filled_side == "UP":
-                bail_bids = books.get('up_bids', [])
-            else:
-                bail_bids = books.get('down_bids', [])
-
-            if bail_bids:
-                bail_price = float(bail_bids[0]['price'])
-                bail_loss = (filled_price - bail_price) * 100  # Loss in cents
-
-                print(f"⏱️ 5-SEC RULE: {time_in_pairing:.1f}s elapsed, second leg didn't fill")
-                print(f"🛑 IMMEDIATE_BAIL: Selling {missing_shares} {filled_side} @ {bail_price*100:.0f}c (loss: {bail_loss:.0f}c)")
-
-                execute_bail(filled_side, missing_shares, filled_token, books)
-                # Calculate P&L: (entry - exit) * shares (negative = loss)
-                bail_pnl = -((filled_price - bail_price) * missing_shares)
-                log_event("EARLY_BAIL", window_state.get('window_id', ''),
-                                side=filled_side, shares=missing_shares, price=bail_price,
-                                pnl=bail_pnl,
-                                reason="5_second_rule", time_in_pairing=time_in_pairing)
-                window_state['state'] = STATE_DONE
-                return
-
-        # --- MARKET REVERSAL DETECTION (within 5-second window) ---
-        # Can trigger early bail BEFORE the 5-second rule if market moves against us
+        # --- MARKET REVERSAL DETECTION ---
+        # Detect sudden market moves against our position and bail early
         entry_market = window_state.get('pairing_entry_market', {})
-        time_since_entry = time.time() - entry_market.get('time', time.time())
 
-        if time_since_entry <= PAIR_WINDOW_SECONDS and entry_market:
+        if entry_market:
+            time_since_entry = time.time() - entry_market.get('time', time.time())
+
             # Calculate market move against our position
             if filled_side == "UP":
                 entry_bid = entry_market.get('up_bid', 0.50)
