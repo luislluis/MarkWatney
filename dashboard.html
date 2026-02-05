@@ -850,15 +850,17 @@
             table: 'Polymarket Bot Log - Events'
           },
           (payload) => {
-            console.log('[REALTIME] New event:', payload.new?.Event);
-            debugLog('Event: ' + (payload.new?.Event || 'unknown'));
-            updateStatus('⚡ Update received', true);
-            loadData();
-            setTimeout(() => {
-              if (isRealtimeConnected) {
-                updateStatus('Live', true);
-              }
-            }, 1000);
+            const evt = payload.new?.Event || '';
+            console.log('[REALTIME] New event:', evt);
+            if (['CAPTURE_FILL', 'CAPTURE_99C_WIN', 'CAPTURE_99C_LOSS'].includes(evt)) {
+              updateStatus('⚡ Update received', true);
+              loadData();
+              setTimeout(() => {
+                if (isRealtimeConnected) {
+                  updateStatus('Live', true);
+                }
+              }, 1000);
+            }
           }
         )
         .subscribe((status, err) => {
