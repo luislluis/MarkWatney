@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.42",
-    "codename": "Crystal Dashboard",
+    "version": "v1.43",
+    "codename": "True Price",
     "date": "2026-02-05",
-    "changes": "Fix: Dashboard shows correct data - use CAPTURE_FILL not CAPTURE_99C, log bid price not ask price"
+    "changes": "Fix: Log actual Polymarket execution price in CAPTURE_FILL, not limit order price"
 }
 
 import os
@@ -1444,6 +1444,26 @@ def get_order_status(order_id):
     except Exception as e:
         print(f"[{ts()}] ORDER_STATUS_ERROR: {order_id[:8]}... - {e}")
     return {'filled': 0, 'original': 0, 'is_filled': False, 'fully_filled': False, 'price': 0, 'status': 'ERROR'}
+
+def get_verified_fill_price(slug, side, fallback_price):
+    """Query Polymarket /trades API for actual execution price (not limit order price)."""
+    try:
+        resp = requests.get(
+            "https://data-api.polymarket.com/trades",
+            params={"user": WALLET_ADDRESS, "limit": 20, "side": "BUY"},
+            timeout=5
+        )
+        resp.raise_for_status()
+        for t in resp.json():
+            if t.get("slug") == slug and t.get("outcome", "").upper() == side:
+                verified = float(t.get("price", 0))
+                if verified > 0:
+                    if abs(verified - fallback_price) > 0.001:
+                        print(f"[{ts()}] PRICE_VERIFY: {slug} {side} order={fallback_price:.2f} actual={verified:.2f}")
+                    return verified
+    except Exception as e:
+        print(f"[{ts()}] PRICE_VERIFY_ERROR: {e}")
+    return fallback_price
 
 def check_both_orders_fast(up_order_id, down_order_id):
     with ThreadPoolExecutor(max_workers=2) as ex:
@@ -3412,10 +3432,9 @@ def main():
                     if status.get('filled', 0) > 0:
                         filled = status['filled']
                         side = window_state['capture_99c_side']
-                        # Get actual fill price from order status (default to 0.99 if not available)
-                        fill_price = status.get('price', 0.99)
-                        if fill_price <= 0:
-                            fill_price = 0.99  # Fallback if price not returned
+                        # Get actual execution price from Polymarket API (not limit order price)
+                        order_price = status.get('price', 0.99) or 0.99
+                        fill_price = get_verified_fill_price(slug, side, order_price)
                         # Calculate actual P&L based on real fill price
                         actual_pnl = filled * (1.00 - fill_price)
                         # Store fill price for later reference
