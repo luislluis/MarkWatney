@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.41",
-    "codename": "Precise Counter",
+    "version": "v1.42",
+    "codename": "Crystal Dashboard",
     "date": "2026-02-05",
-    "changes": "Fix: Query actual position from API before selling to prevent 'not enough balance' errors"
+    "changes": "Fix: Dashboard shows correct data - use CAPTURE_FILL not CAPTURE_99C, log bid price not ask price"
 }
 
 import os
@@ -2077,7 +2077,7 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
         print(f"🔭 99c CAPTURE: Order placed, watching for fill... (${shares * 0.01:.2f} potential profit)")
         print()
         log_event("CAPTURE_99C", window_state.get('window_id', ''),
-                        side=side, price=current_ask, shares=shares,
+                        side=side, price=CAPTURE_99C_BID_PRICE, shares=shares,
                         confidence=confidence, penalty=penalty, ttl=ttc)
         return True
     else:

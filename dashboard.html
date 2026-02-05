@@ -550,24 +550,80 @@
 
     async function loadData() {
       try {
-        const { data: summary, error: summaryError } = await db
-          .from('daily_summary')
+        // Query raw events table for CAPTURE_FILL + WIN/LOSS events
+        // This replaces the SQL views (trade_details + daily_summary)
+        // CAPTURE_FILL = order actually filled (not just placed)
+        // CAPTURE_99C_WIN/LOSS = outcome after window closes
+        const { data: events, error: eventsError } = await db
+          .from('Polymarket Bot Log - Events')
           .select('*')
-          .order('trade_date', { ascending: false })
-          .limit(CONFIG.maxHistoryDays);
+          .in('Event', ['CAPTURE_FILL', 'CAPTURE_99C_WIN', 'CAPTURE_99C_LOSS'])
+          .order('Timestamp', { ascending: false })
+          .limit(500);
 
-        if (summaryError) throw new Error('Failed to load summary: ' + summaryError.message);
+        if (eventsError) throw new Error('Failed to load events: ' + eventsError.message);
 
-        const { data: trades, error: tradesError } = await db
-          .from('trade_details')
-          .select('*')
-          .order('timestamp', { ascending: false })
-          .limit(CONFIG.maxTrades);
+        // Build outcome lookup by Window ID
+        const outcomes = {};
+        const fills = [];
+        for (const e of (events ?? [])) {
+          const wid = e['Window ID'];
+          if (e.Event === 'CAPTURE_FILL') {
+            fills.push(e);
+          } else {
+            outcomes[wid] = {
+              status: e.Event === 'CAPTURE_99C_WIN' ? 'WIN' : 'LOSS',
+              profit_loss: parseFloat(e.PnL) || 0
+            };
+          }
+        }
 
-        if (tradesError) throw new Error('Failed to load trades: ' + tradesError.message);
+        // Build trade_details from fills + outcomes (like the SQL JOIN)
+        const trades = fills.map(f => {
+          const wid = f['Window ID'];
+          const out = outcomes[wid];
+          return {
+            timestamp: f.Timestamp,
+            window_id: wid,
+            side: f.Side,
+            shares: parseFloat(f.Shares) || 0,
+            entry_price: parseFloat(f.Price) || 0.99,
+            status: out?.status || 'PENDING',
+            profit_loss: out?.profit_loss || 0
+          };
+        });
+
+        // Build daily_summary by aggregating trades by date (EST)
+        const dateGroups = {};
+        for (const t of trades) {
+          const d = new Date(t.timestamp).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+          if (!dateGroups[d]) dateGroups[d] = [];
+          dateGroups[d].push(t);
+        }
+
+        const summary = Object.entries(dateGroups).map(([date, dayTrades]) => {
+          const windowIds = new Set(dayTrades.map(t => t.window_id));
+          const winIds = new Set(dayTrades.filter(t => t.status === 'WIN').map(t => t.window_id));
+          const lossIds = new Set(dayTrades.filter(t => t.status === 'LOSS').map(t => t.window_id));
+          const resolvedIds = new Set([...winIds, ...lossIds]);
+          const wins = winIds.size;
+          const losses = lossIds.size;
+          const pending = windowIds.size - resolvedIds.size;
+          const totalPnl = dayTrades.reduce((s, t) => s + t.profit_loss, 0);
+          const totalCost = dayTrades.reduce((s, t) => s + t.shares * t.entry_price, 0);
+          const resolved = wins + losses;
+          return {
+            trade_date: date,
+            total_trades: windowIds.size,
+            wins, losses, pending,
+            win_rate_pct: resolved > 0 ? Math.round(wins / resolved * 1000) / 10 : 0,
+            total_pnl: totalPnl,
+            roi_pct: totalCost > 0 ? Math.round(totalPnl / (totalCost / windowIds.size) * 1000) / 10 : 0
+          };
+        }).sort((a, b) => b.trade_date.localeCompare(a.trade_date));
 
         hideError();
-        renderDashboard(summary ?? [], trades ?? []);
+        renderDashboard(summary.slice(0, CONFIG.maxHistoryDays), trades.slice(0, CONFIG.maxTrades));
       } catch (error) {
         console.error('Dashboard error:', error);
         showError(error.message + ' - will retry');
