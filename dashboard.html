@@ -583,7 +583,7 @@
       try {
         const { data, error } = await db
           .from('Polymarket Bot Log - Events')
-          .select('"Timestamp","Details"')
+          .select('Timestamp,Details')
           .eq('Event', 'BALANCE_SNAPSHOT')
           .order('Timestamp', { ascending: true })
           .limit(90);
