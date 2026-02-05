@@ -260,12 +260,11 @@ def flush_activities() -> bool:
     return True
 
 
-# Test function
+# Test function - requires SUPABASE_KEY env var to be set
 if __name__ == "__main__":
-    import os
-    os.environ["SUPABASE_KEY"] = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFzem9zZHJtbm9nbHJrdHRkZXZ6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2OTE5ODU1NiwiZXhwIjoyMDg0Nzc0NTU2fQ.Mu1VuL7Y-FI-LDycHbAfgcqjSYFufAqjwHiSoo8aUzs"
-
     if init_supabase_logger():
         buffer_tick("test-window", 100, "TEST", 0.45, 0.55, 0, 0, 87000, 0.5, -0.5, 0, "test tick")
         flush_ticks()
-        print("✓ Test complete!")
+        print("Test complete!")
+    else:
+        print("Set SUPABASE_KEY env var to run test")
