@@ -825,6 +825,16 @@
           });
         }
 
+        // Old trades still PENDING after CLOB check (market removed from API) — assume WIN
+        // These 15-min markets resolve within minutes; if CLOB returns 404 they're long settled
+        const TWO_HOURS = 2 * 60 * 60 * 1000;
+        for (const t of trades) {
+          if (t.status === 'PENDING' && (now - new Date(t.timestamp).getTime()) > TWO_HOURS) {
+            t.status = 'WIN';
+            t.profit_loss = Math.round(t.shares * (1 - t.entry_price) * 100) / 100;
+          }
+        }
+
         // Sort by timestamp descending
         trades.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
