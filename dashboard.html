@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <style>
     :root {
       --bg-primary: #0a0a0b;
@@ -298,6 +299,13 @@
       color: var(--yellow-primary);
     }
 
+    .trade-status.exit {
+      background: rgba(251, 146, 60, 0.15);
+      color: #fb923c;
+    }
+
+    .trade-pnl.exit { color: #fb923c; }
+
     .trade-info {
       flex: 1;
       min-width: 0;
@@ -441,6 +449,7 @@
     .delay-1 { animation-delay: 0.1s; opacity: 0; }
     .delay-2 { animation-delay: 0.2s; opacity: 0; }
     .delay-3 { animation-delay: 0.3s; opacity: 0; }
+    .delay-4 { animation-delay: 0.4s; opacity: 0; }
   </style>
 </head>
 <body>
@@ -494,6 +503,16 @@
       </div>
       <div class="card history-card" id="history">
         <p class="loading">Loading history...</p>
+      </div>
+    </div>
+
+    <!-- Portfolio Balance Chart -->
+    <div class="animate-in delay-4">
+      <div class="section-header">
+        <span class="section-title">Portfolio Balance</span>
+      </div>
+      <div class="card" id="balanceChartCard" style="padding: 1rem; display: none;">
+        <canvas id="balanceCanvas" height="200"></canvas>
       </div>
     </div>
 
@@ -567,12 +586,92 @@
       } catch { return null; }
     }
 
+    let balanceChart = null;
+    async function loadBalanceChart() {
+      try {
+        const { data, error } = await db
+          .from('Polymarket Bot Log - Events')
+          .select('Timestamp,Details')
+          .eq('Event', 'BALANCE_SNAPSHOT')
+          .order('Timestamp', { ascending: true })
+          .limit(90);
+
+        if (error || !data?.length) {
+          document.getElementById('balanceChartCard').style.display = 'none';
+          return;
+        }
+
+        const labels = [];
+        const values = [];
+        for (const row of data) {
+          const parts = Object.fromEntries(
+            (row.Details || '').split('|').map(p => p.split('='))
+          );
+          labels.push(parts.date || '');
+          values.push(parseFloat(parts.total) || 0);
+        }
+
+        document.getElementById('balanceChartCard').style.display = 'block';
+
+        if (balanceChart) {
+          balanceChart.data.labels = labels;
+          balanceChart.data.datasets[0].data = values;
+          balanceChart.update();
+          return;
+        }
+
+        balanceChart = new Chart(document.getElementById('balanceCanvas'), {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [{
+              label: 'Portfolio Balance ($)',
+              data: values,
+              borderColor: '#10b981',
+              backgroundColor: 'rgba(16, 185, 129, 0.1)',
+              fill: true,
+              tension: 0.3,
+              pointRadius: 4,
+              pointBackgroundColor: '#10b981'
+            }]
+          },
+          options: {
+            responsive: true,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  label: ctx => '$' + ctx.parsed.y.toFixed(2)
+                }
+              }
+            },
+            scales: {
+              x: {
+                ticks: { color: '#71717a', font: { family: 'JetBrains Mono', size: 10 } },
+                grid: { color: 'rgba(255,255,255,0.04)' }
+              },
+              y: {
+                ticks: {
+                  color: '#71717a',
+                  font: { family: 'JetBrains Mono', size: 10 },
+                  callback: v => '$' + v.toFixed(0)
+                },
+                grid: { color: 'rgba(255,255,255,0.04)' }
+              }
+            }
+          }
+        });
+      } catch (e) {
+        console.warn('[DASHBOARD] Balance chart error:', e);
+      }
+    }
+
     async function loadData() {
       try {
         // Source 1: Polymarket API - actual fill prices (primary)
         // Source 2: Supabase - WIN/LOSS outcomes with PnL
         const [polyTrades, { data: outcomeEvents, error: outcomeErr }] = await Promise.all([
-          fetch(`${CONFIG.polymarketApi}?user=${CONFIG.walletAddress}&limit=500&side=BUY`)
+          fetch(`${CONFIG.polymarketApi}?user=${CONFIG.walletAddress}&limit=500`)
             .then(r => r.ok ? r.json() : Promise.reject(new Error('Polymarket API: ' + r.status)))
             .catch(err => { console.warn('[DASHBOARD] Polymarket API failed, using fallback:', err.message); return null; }),
           db.from('Polymarket Bot Log - Events')
@@ -597,22 +696,71 @@
 
         if (polyTrades) {
           // PRIMARY: Build trades from Polymarket API (real fill prices)
+          // Group by slug+outcome to match BUY/SELL pairs (early exits)
           console.log(`[DASHBOARD] Loaded ${polyTrades.length} trades from Polymarket API`);
-          trades = polyTrades.map(t => {
+          const grouped = {};
+          for (const t of polyTrades) {
             const slug = t.slug || '';
-            const out = outcomes[slug];
-            return {
-              timestamp: new Date(t.timestamp * 1000).toISOString(),
-              window_id: slug,
-              side: (t.outcome || '').toUpperCase(),
-              shares: parseFloat(t.size) || 0,
-              entry_price: parseFloat(t.price) || 0,
-              status: out?.status || 'PENDING',
-              profit_loss: out?.profit_loss || 0,
+            const outcome = (t.outcome || '').toUpperCase();
+            const key = slug + '|' + outcome;
+            if (!grouped[key]) grouped[key] = { buys: [], sells: [] };
+            const entry = {
+              timestamp: t.timestamp,
+              size: parseFloat(t.size) || 0,
+              price: parseFloat(t.price) || 0,
               conditionId: t.conditionId || '',
               outcomeIndex: t.outcomeIndex ?? -1
             };
-          });
+            if ((t.side || '').toUpperCase() === 'SELL') {
+              grouped[key].sells.push(entry);
+            } else {
+              grouped[key].buys.push(entry);
+            }
+          }
+
+          trades = [];
+          for (const [key, group] of Object.entries(grouped)) {
+            const [slug, side] = key.split('|');
+            if (group.buys.length === 0) continue; // Skip sell-only (shouldn't happen)
+            const buy = group.buys[0]; // Primary buy
+            const totalBuyShares = group.buys.reduce((s, b) => s + b.size, 0);
+            const totalBuyCost = group.buys.reduce((s, b) => s + b.size * b.price, 0);
+            const avgBuyPrice = totalBuyShares > 0 ? totalBuyCost / totalBuyShares : 0;
+
+            if (group.sells.length > 0) {
+              // EXIT: Bot bought then sold (early exit)
+              const totalSellRevenue = group.sells.reduce((s, s2) => s + s2.size * s2.price, 0);
+              const totalSellShares = group.sells.reduce((s, s2) => s + s2.size, 0);
+              const avgSellPrice = totalSellShares > 0 ? totalSellRevenue / totalSellShares : 0;
+              const exitPnl = totalSellRevenue - totalBuyCost;
+              trades.push({
+                timestamp: new Date(buy.timestamp * 1000).toISOString(),
+                window_id: slug,
+                side,
+                shares: totalBuyShares,
+                entry_price: avgBuyPrice,
+                exit_price: avgSellPrice,
+                status: 'EXIT',
+                profit_loss: Math.round(exitPnl * 100) / 100,
+                conditionId: buy.conditionId,
+                outcomeIndex: buy.outcomeIndex
+              });
+            } else {
+              // Normal trade (no sell) - check for WIN/LOSS outcome
+              const out = outcomes[slug];
+              trades.push({
+                timestamp: new Date(buy.timestamp * 1000).toISOString(),
+                window_id: slug,
+                side,
+                shares: totalBuyShares,
+                entry_price: avgBuyPrice,
+                status: out?.status || 'PENDING',
+                profit_loss: out?.profit_loss || 0,
+                conditionId: buy.conditionId,
+                outcomeIndex: buy.outcomeIndex
+              });
+            }
+          }
         } else {
           // FALLBACK: If Polymarket API fails, use Supabase CAPTURE_FILL events
           console.warn('[DASHBOARD] Using Supabase fallback');
@@ -669,17 +817,19 @@
           const windowIds = new Set(dayTrades.map(t => t.window_id));
           const winIds = new Set(dayTrades.filter(t => t.status === 'WIN').map(t => t.window_id));
           const lossIds = new Set(dayTrades.filter(t => t.status === 'LOSS').map(t => t.window_id));
+          const exitIds = new Set(dayTrades.filter(t => t.status === 'EXIT').map(t => t.window_id));
           const wins = winIds.size;
           const losses = lossIds.size;
-          const pending = windowIds.size - wins - losses;
+          const exits = exitIds.size;
+          const pending = windowIds.size - wins - losses - exits;
           const totalPnl = dayTrades.reduce((s, t) => s + t.profit_loss, 0);
           const totalCost = dayTrades.reduce((s, t) => s + t.shares * t.entry_price, 0);
           const avgTradeValue = windowIds.size > 0 ? totalCost / windowIds.size : 0;
-          const resolved = wins + losses;
+          const resolved = wins + losses + exits;
           return {
             trade_date: date,
             total_trades: windowIds.size,
-            wins, losses, pending,
+            wins, losses, exits, pending,
             win_rate_pct: resolved > 0 ? Math.round(wins / resolved * 1000) / 10 : 0,
             total_pnl: totalPnl,
             roi_pct: avgTradeValue > 0 ? Math.round(totalPnl / avgTradeValue * 1000) / 10 : 0
@@ -714,8 +864,11 @@
         el.winRate.className = 'stat-value ' + ((todayData.win_rate_pct ?? 0) >= 50 ? 'positive' : 'neutral');
 
         const pending = todayData.pending ?? 0;
-        const recordText = (todayData.wins ?? 0) + 'W / ' + (todayData.losses ?? 0) + 'L';
-        el.record.textContent = pending > 0 ? recordText + ' (' + pending + ' pending)' : recordText;
+        const exits = todayData.exits ?? 0;
+        let recordText = (todayData.wins ?? 0) + 'W / ' + (todayData.losses ?? 0) + 'L';
+        if (exits > 0) recordText += ' / ' + exits + 'E';
+        if (pending > 0) recordText += ' (' + pending + ' pending)';
+        el.record.textContent = recordText;
 
         const roiPct = todayData.roi_pct ?? 0;
         el.roi.textContent = (roiPct > 0 ? '+' : '') + roiPct + '% ROI';
@@ -746,9 +899,10 @@
           const side = escapeHtml(t.side ?? '?');
           const shares = parseInt(t.shares) || 0;
 
-          const statusClass = isPending ? 'pending' : (isWin ? 'win' : 'loss');
-          const statusIcon = isPending ? '◷' : (isWin ? '✓' : '✗');
-          const pnlClass = isPending ? 'pending' : (isWin ? 'positive' : 'negative');
+          const isExit = status === 'EXIT';
+          const statusClass = isPending ? 'pending' : isExit ? 'exit' : (isWin ? 'win' : 'loss');
+          const statusIcon = isPending ? '◷' : isExit ? '↩' : (isWin ? '✓' : '✗');
+          const pnlClass = isPending ? 'pending' : isExit ? 'exit' : (isWin ? 'positive' : 'negative');
           const pnlText = isPending ? 'pending' : fmtPnl(pnl);
 
           // Add date separator when day changes
@@ -765,7 +919,7 @@
             <div class="trade-item">
               <div class="trade-status ${statusClass}">${statusIcon}</div>
               <div class="trade-info">
-                <div class="trade-pair">${side} ${shares}@${price}</div>
+                <div class="trade-pair">${side} ${shares}@${price}${isExit ? ' → ' + fmtPrice(t.exit_price ?? 0) : ''}</div>
                 <div class="trade-meta">${time}</div>
               </div>
               <div class="trade-pnl ${pnlClass}">${pnlText}</div>
@@ -786,13 +940,15 @@
           });
           const wins = d.wins ?? 0;
           const losses = d.losses ?? 0;
+          const exits = d.exits ?? 0;
           const roiPct = d.roi_pct ?? 0;
+          const record = exits > 0 ? `${wins}W/${losses}L/${exits}E` : `${wins}W/${losses}L`;
 
           return `
             <div class="history-item">
               <span class="history-date">${escapeHtml(date)}</span>
               <span class="history-pnl ${pnl >= 0 ? 'positive' : 'negative'}">${fmtPnl(pnl)}</span>
-              <span class="history-record">${wins}W/${losses}L</span>
+              <span class="history-record">${record}</span>
               <span class="history-roi ${roiPct >= 0 ? 'positive' : 'negative'}">${roiPct > 0 ? '+' : ''}${roiPct}%</span>
             </div>
           `;
@@ -903,6 +1059,7 @@
     // Initial load and setup
     loadData().then(() => {
       setupRealtime();
+      loadBalanceChart();
     }).catch(() => {
       setupRealtime();
     });
