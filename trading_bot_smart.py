@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.37",
-    "codename": "Data Driven",
-    "date": "2026-02-04",
-    "changes": "Log CAPTURE_99C_WIN/LOSS events for Supabase dashboard tracking"
+    "version": "v1.41",
+    "codename": "Precise Counter",
+    "date": "2026-02-05",
+    "changes": "Fix: Query actual position from API before selling to prevent 'not enough balance' errors"
 }
 
 import os
@@ -492,6 +492,9 @@ sniper_stats = {
     'trades': []  # List of {window_id, side, shares, won, pnl}
 }
 
+# Pending 99c resolutions to retry (when market hasn't settled yet)
+pending_99c_resolutions = []  # List of {slug, side, shares, entry_price, timestamp}
+
 def get_imbalance():
     """Calculate current imbalance (includes all shares)"""
     if not window_state:
@@ -774,23 +777,31 @@ def check_99c_outcome(side, slug):
         # Find the winning outcome
         winning_side = None
         for market in markets:
-            outcome = market.get('outcome', '')
-            winner_str = market.get('winner', '')
+            # Check if market is resolved via outcomePrices
+            # API returns: outcomes=["Up", "Down"], outcomePrices=["1", "0"]
+            # Price of 1.0 means that outcome won
+            outcomes_str = market.get('outcomes', '[]')
+            prices_str = market.get('outcomePrices', '[]')
 
-            # Check if this market has resolved with a winner
-            if winner_str == 'true' or market.get('winning_outcome'):
-                winning_side = outcome.upper()  # "Up" -> "UP", "Down" -> "DOWN"
+            if isinstance(outcomes_str, str):
+                outcomes_list = json.loads(outcomes_str)
+            else:
+                outcomes_list = outcomes_str
+
+            if isinstance(prices_str, str):
+                prices_list = json.loads(prices_str)
+            else:
+                prices_list = prices_str
+
+            # Find which outcome has price = 1.0 (the winner)
+            if outcomes_list and prices_list and len(outcomes_list) == len(prices_list):
+                for outcome, price in zip(outcomes_list, prices_list):
+                    if float(price) > 0.9:  # Winner has price ~1.0
+                        winning_side = outcome.upper()
+                        break
+
+            if winning_side:
                 break
-
-            # Also check resolution_source or other fields
-            if market.get('resolved') and market.get('outcome_prices'):
-                prices = market.get('outcome_prices', '[]')
-                if isinstance(prices, str):
-                    prices = json.loads(prices)
-                # Winner has price = 1.0
-                if prices and float(prices[0]) > 0.9:
-                    winning_side = outcome.upper()
-                    break
 
         if winning_side:
             # Compare our side with winning side
@@ -1287,7 +1298,19 @@ def execute_hard_stop(side: str, books: dict) -> tuple:
     """
     global window_state
 
-    shares = window_state.get(f'capture_99c_filled_{side.lower()}', 0)
+    # Query ACTUAL position from API (not tracked amount) to avoid "not enough balance" errors
+    tracked_shares = window_state.get(f'capture_99c_filled_{side.lower()}', 0)
+    api_pos = verify_position_from_api()
+
+    if api_pos is not None:
+        actual_shares = api_pos[0] if side == 'UP' else api_pos[1]
+        if abs(actual_shares - tracked_shares) > 0.01 and actual_shares > 0:
+            print(f"[{ts()}] HARD_STOP: Position mismatch - API={actual_shares:.4f} tracked={tracked_shares:.4f}, using API value")
+        shares = actual_shares if actual_shares > 0 else tracked_shares
+    else:
+        print(f"[{ts()}] HARD_STOP: API unavailable, using tracked shares={tracked_shares}")
+        shares = tracked_shares
+
     if shares <= 0:
         print(f"[{ts()}] HARD_STOP: No shares to sell for {side}")
         return False, 0.0
@@ -2054,7 +2077,7 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
         print(f"🔭 99c CAPTURE: Order placed, watching for fill... (${shares * 0.01:.2f} potential profit)")
         print()
         log_event("CAPTURE_99C", window_state.get('window_id', ''),
-                        side=side, ask_price=current_ask, shares=shares,
+                        side=side, price=current_ask, shares=shares,
                         confidence=confidence, penalty=penalty, ttl=ttc)
         return True
     else:
@@ -3171,23 +3194,28 @@ def main():
                                 print(f"[{ts()}] 99c SNIPER RESULT: HEDGED (loss avoided) P&L=${sniper_pnl:.2f}")
                             else:
                                 # Query Polymarket API for actual settlement result
-                                try:
-                                    # Use last_slug (the window that just ended) to check outcome
-                                    sniper_won = check_99c_outcome(sniper_side, last_slug)
-                                    if sniper_won is None:
-                                        # Can't determine yet - market hasn't resolved
-                                        # Don't send notification, let sync script handle it later
-                                        print(f"[{ts()}] 99c SNIPER RESULT: PENDING (market not resolved yet)")
-                                        # Skip notification - will be handled by dashboard sync
+                                # Retry up to 6 times (30 seconds total) waiting for market resolution
+                                sniper_won = None
+                                for retry in range(6):
+                                    try:
+                                        sniper_won = check_99c_outcome(sniper_side, last_slug)
+                                        if sniper_won is not None:
+                                            sniper_pnl = sniper_shares * 0.01 if sniper_won else -sniper_shares * 0.99
+                                            print(f"[{ts()}] 99c SNIPER RESULT: {'WIN' if sniper_won else 'LOSS'} P&L=${sniper_pnl:.2f}")
+                                            break
+                                        else:
+                                            if retry < 5:
+                                                print(f"[{ts()}] 99c SNIPER: Market not resolved, retrying in 5s... ({retry+1}/6)")
+                                                time.sleep(5)
+                                            else:
+                                                print(f"[{ts()}] 99c SNIPER RESULT: PENDING after 30s - will resolve on next window")
+                                                sniper_pnl = 0
+                                    except Exception as e:
+                                        print(f"[{ts()}] 99c SNIPER RESULT ERROR (retry {retry+1}): {e}")
+                                        if retry < 5:
+                                            time.sleep(5)
                                         sniper_won = None
                                         sniper_pnl = 0
-                                    else:
-                                        sniper_pnl = sniper_shares * 0.01 if sniper_won else -sniper_shares * 0.99
-                                        print(f"[{ts()}] 99c SNIPER RESULT: {'WIN' if sniper_won else 'LOSS'} P&L=${sniper_pnl:.2f}")
-                                except Exception as e:
-                                    print(f"[{ts()}] 99c SNIPER RESULT ERROR: {e}")
-                                    sniper_won = None
-                                    sniper_pnl = 0
 
                             # Only send notification if we know the result
                             if sniper_won is not None:
@@ -3206,6 +3234,17 @@ def main():
                                         "settlement_price": 1.00 if sniper_won else 0.00,
                                         "hedged": window_state.get('capture_99c_hedged', False)
                                     }))
+                            else:
+                                # Add to pending list to retry on next window
+                                entry_price = window_state.get('capture_99c_fill_price', 0.99)
+                                pending_99c_resolutions.append({
+                                    'slug': last_slug,
+                                    'side': sniper_side,
+                                    'shares': sniper_shares,
+                                    'entry_price': entry_price,
+                                    'timestamp': time.time()
+                                })
+                                print(f"[{ts()}] 99c SNIPER: Added to pending queue for later resolution")
 
                         flush_ticks()  # Flush any remaining tick data
 
@@ -3233,6 +3272,37 @@ def main():
                     print("=" * 100)
                     print(f"[{ts()}] NEW WINDOW: {slug}")
                     print(f"[{ts()}] Session: {session_stats['windows']} windows | {session_stats['paired']} paired | PnL: ${session_stats['pnl']:.2f}")
+
+                    # Resolve any pending 99c outcomes from previous windows
+                    if pending_99c_resolutions:
+                        resolved = []
+                        for pending in pending_99c_resolutions[:]:  # Iterate over copy
+                            try:
+                                result = check_99c_outcome(pending['side'], pending['slug'])
+                                if result is not None:
+                                    pnl = pending['shares'] * 0.01 if result else -pending['shares'] * 0.99
+                                    event_type = "CAPTURE_99C_WIN" if result else "CAPTURE_99C_LOSS"
+                                    log_event(event_type, pending['slug'],
+                                        side=pending['side'],
+                                        shares=pending['shares'],
+                                        price=pending['entry_price'],
+                                        pnl=pnl,
+                                        details=json.dumps({
+                                            "outcome": "WIN" if result else "LOSS",
+                                            "settlement_price": 1.00 if result else 0.00,
+                                            "hedged": False,
+                                            "delayed_resolution": True
+                                        }))
+                                    notify_99c_resolution(pending['side'], pending['shares'], result, pnl)
+                                    print(f"[{ts()}] ✅ RESOLVED PENDING 99c: {pending['slug']} {'WIN' if result else 'LOSS'} ${pnl:+.2f}")
+                                    resolved.append(pending)
+                            except Exception as e:
+                                print(f"[{ts()}] PENDING_RESOLVE_ERROR: {e}")
+                        # Remove resolved items
+                        for item in resolved:
+                            pending_99c_resolutions.remove(item)
+                        if pending_99c_resolutions:
+                            print(f"[{ts()}] ⏳ Still pending: {len(pending_99c_resolutions)} unresolved 99c trades")
 
                     # Check gas balance and alert if low
                     gas_balance = check_gas_and_alert()
@@ -3362,6 +3432,11 @@ def main():
                             peak_conf, _ = calculate_99c_confidence(current_ask, remaining_secs)
                             window_state['capture_99c_peak_confidence'] = peak_conf
                         window_state['capture_99c_fill_notified'] = True
+                        # Update tracked shares with ACTUAL filled amount (not requested)
+                        if side == 'UP':
+                            window_state['capture_99c_filled_up'] = filled
+                        else:
+                            window_state['capture_99c_filled_down'] = filled
                         # Send Telegram notification
                         notify_99c_fill(side, filled, peak_conf * 100 if peak_conf else 95, remaining_secs)
                         log_event("CAPTURE_FILL", slug, side=side, shares=filled,
