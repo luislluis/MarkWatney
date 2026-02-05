@@ -511,7 +511,8 @@
     const CONFIG = {
       supabaseUrl: 'https://qszosdrmnoglrkttdevz.supabase.co',
       supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFzem9zZHJtbm9nbHJrdHRkZXZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxOTg1NTYsImV4cCI6MjA4NDc3NDU1Nn0.-Ebe2icoMqIiL8NlVX93IJGVBCAmpfxk9S7U8ABsStA',
-      refreshMs: 60000,
+      walletAddress: '0x636796704404959f5Ae9BEfEb2B3880eadf6960a',
+      polymarketApi: 'https://data-api.polymarket.com/trades',
       maxTrades: 50,
       maxHistoryDays: 7
     };
@@ -550,82 +551,77 @@
 
     async function loadData() {
       try {
-        // Query ALL relevant event types from raw events table
-        // Hybrid strategy: CAPTURE_FILL (preferred) + CAPTURE_99C (fallback) + outcomes
-        // - CAPTURE_FILL = order actually filled (newer bot versions only)
-        // - CAPTURE_99C = order placed (older bot versions, only valid if WIN/LOSS exists)
-        // - CAPTURE_99C_WIN/LOSS = outcome after window closes (proves order filled)
-        const { data: events, error: eventsError } = await db
-          .from('Polymarket Bot Log - Events')
-          .select('*')
-          .in('Event', ['CAPTURE_FILL', 'CAPTURE_99C', 'CAPTURE_99C_WIN', 'CAPTURE_99C_LOSS'])
-          .order('Timestamp', { ascending: false })
-          .limit(1000);
+        // Source 1: Polymarket API - actual fill prices (primary)
+        // Source 2: Supabase - WIN/LOSS outcomes with PnL
+        const [polyTrades, { data: outcomeEvents, error: outcomeErr }] = await Promise.all([
+          fetch(`${CONFIG.polymarketApi}?user=${CONFIG.walletAddress}&limit=500&side=BUY`)
+            .then(r => r.ok ? r.json() : Promise.reject(new Error('Polymarket API: ' + r.status)))
+            .catch(err => { console.warn('[DASHBOARD] Polymarket API failed, using fallback:', err.message); return null; }),
+          db.from('Polymarket Bot Log - Events')
+            .select('"Event","Window ID","PnL"')
+            .in('Event', ['CAPTURE_99C_WIN', 'CAPTURE_99C_LOSS'])
+            .order('Timestamp', { ascending: false })
+            .limit(500)
+        ]);
 
-        if (eventsError) throw new Error('Failed to load events: ' + eventsError.message);
+        if (outcomeErr) throw new Error('Supabase: ' + outcomeErr.message);
 
-        // Separate events by type
-        const outcomes = {};  // Window ID -> { status, profit_loss }
-        const fillsByWid = {}; // Window ID -> CAPTURE_FILL event
-        const ordersByWid = {}; // Window ID -> CAPTURE_99C event
+        // Build outcome lookup: Window ID -> { status, pnl }
+        const outcomes = {};
+        for (const e of (outcomeEvents ?? [])) {
+          outcomes[e['Window ID']] = {
+            status: e.Event === 'CAPTURE_99C_WIN' ? 'WIN' : 'LOSS',
+            profit_loss: parseFloat(e.PnL) || 0
+          };
+        }
 
-        for (const e of (events ?? [])) {
-          const wid = e['Window ID'];
-          if (e.Event === 'CAPTURE_FILL') {
-            fillsByWid[wid] = e;
-          } else if (e.Event === 'CAPTURE_99C') {
-            ordersByWid[wid] = e;
-          } else {
-            // WIN or LOSS
-            outcomes[wid] = {
-              status: e.Event === 'CAPTURE_99C_WIN' ? 'WIN' : 'LOSS',
-              profit_loss: parseFloat(e.PnL) || 0
+        let trades;
+
+        if (polyTrades) {
+          // PRIMARY: Build trades from Polymarket API (real fill prices)
+          console.log(`[DASHBOARD] Loaded ${polyTrades.length} trades from Polymarket API`);
+          trades = polyTrades.map(t => {
+            const slug = t.slug || '';
+            const out = outcomes[slug];
+            return {
+              timestamp: new Date(t.timestamp * 1000).toISOString(),
+              window_id: slug,
+              side: (t.outcome || '').toUpperCase(),
+              shares: parseFloat(t.size) || 0,
+              entry_price: parseFloat(t.price) || 0,
+              status: out?.status || 'PENDING',
+              profit_loss: out?.profit_loss || 0
             };
-          }
-        }
-
-        // Build trades using hybrid strategy:
-        // 1. Use CAPTURE_FILL where available (has accurate fill price)
-        // 2. Fall back to CAPTURE_99C if a WIN/LOSS outcome exists (proves it filled)
-        // 3. Exclude CAPTURE_99C with no outcome and no FILL (truly unfilled)
-        const trades = [];
-        const seenWindows = new Set();
-
-        // First pass: all CAPTURE_FILL windows
-        for (const [wid, f] of Object.entries(fillsByWid)) {
-          seenWindows.add(wid);
-          const out = outcomes[wid];
-          trades.push({
-            timestamp: f.Timestamp,
-            window_id: wid,
-            side: f.Side,
-            shares: parseFloat(f.Shares) || 0,
-            entry_price: parseFloat(f.Price) || 0.99,
-            status: out?.status || 'PENDING',
-            profit_loss: out?.profit_loss || 0
+          });
+        } else {
+          // FALLBACK: If Polymarket API fails, use Supabase CAPTURE_FILL events
+          console.warn('[DASHBOARD] Using Supabase fallback');
+          const { data: fills, error: fillErr } = await db
+            .from('Polymarket Bot Log - Events')
+            .select('*')
+            .eq('Event', 'CAPTURE_FILL')
+            .order('Timestamp', { ascending: false })
+            .limit(500);
+          if (fillErr) throw new Error('Supabase fallback: ' + fillErr.message);
+          trades = (fills ?? []).map(f => {
+            const wid = f['Window ID'];
+            const out = outcomes[wid];
+            return {
+              timestamp: f.Timestamp,
+              window_id: wid,
+              side: f.Side,
+              shares: parseFloat(f.Shares) || 0,
+              entry_price: parseFloat(f.Price) || 0.99,
+              status: out?.status || 'PENDING',
+              profit_loss: out?.profit_loss || 0
+            };
           });
         }
 
-        // Second pass: CAPTURE_99C windows that have a WIN/LOSS but NO CAPTURE_FILL
-        for (const [wid, o] of Object.entries(ordersByWid)) {
-          if (seenWindows.has(wid)) continue; // already have FILL data
-          if (!outcomes[wid]) continue; // no outcome = truly unfilled, skip
-          seenWindows.add(wid);
-          trades.push({
-            timestamp: o.Timestamp,
-            window_id: wid,
-            side: o.Side,
-            shares: parseFloat(o.Shares) || 0,
-            entry_price: 0.99, // Use 99c (bid price), not the ask price logged in CAPTURE_99C
-            status: outcomes[wid].status,
-            profit_loss: outcomes[wid].profit_loss
-          });
-        }
-
-        // Sort all trades by timestamp descending
+        // Sort by timestamp descending
         trades.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
-        // Build daily_summary by aggregating trades by date (EST)
+        // Build daily summary by aggregating trades by date (EST)
         const dateGroups = {};
         for (const t of trades) {
           const d = new Date(t.timestamp).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
@@ -637,10 +633,9 @@
           const windowIds = new Set(dayTrades.map(t => t.window_id));
           const winIds = new Set(dayTrades.filter(t => t.status === 'WIN').map(t => t.window_id));
           const lossIds = new Set(dayTrades.filter(t => t.status === 'LOSS').map(t => t.window_id));
-          const resolvedIds = new Set([...winIds, ...lossIds]);
           const wins = winIds.size;
           const losses = lossIds.size;
-          const pending = windowIds.size - resolvedIds.size;
+          const pending = windowIds.size - wins - losses;
           const totalPnl = dayTrades.reduce((s, t) => s + t.profit_loss, 0);
           const totalCost = dayTrades.reduce((s, t) => s + t.shares * t.entry_price, 0);
           const resolved = wins + losses;
@@ -785,9 +780,7 @@
       console.log('[STATUS]', status);
     }
 
-    function debugLog(msg) {
-      console.log('[DEBUG]', msg);
-    }
+    const debugLog = (msg) => console.log('[DEBUG]', msg);
 
     function startBackupPolling() {
       stopRefresh();

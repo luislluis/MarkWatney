@@ -6,10 +6,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/root/polymarket_bot
-Environment="GOOGLE_SHEETS_SPREADSHEET_ID=1fxGKxKxj2RAL0hwtqjaOWdmnwqg6RcKseYYP-cCKp74"
-Environment="GOOGLE_SHEETS_CREDENTIALS_FILE=/root/.google_sheets_credentials.json"
-Environment="SUPABASE_URL=https://qszosdrmnoglrkttdevz.supabase.co"
-Environment="SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFzem9zZHJtbm9nbHJrdHRkZXZ6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2OTE5ODU1NiwiZXhwIjoyMDg0Nzc0NTU2fQ.Mu1VuL7Y-FI-LDycHbAfgcqjSYFufAqjwHiSoo8aUzs"
+EnvironmentFile=/root/.env
 ExecStart=/usr/bin/python3 /root/polymarket_bot/trading_bot_smart.py
 Restart=always
 RestartSec=10
