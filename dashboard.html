@@ -450,6 +450,26 @@
     .delay-2 { animation-delay: 0.2s; opacity: 0; }
     .delay-3 { animation-delay: 0.3s; opacity: 0; }
     .delay-4 { animation-delay: 0.4s; opacity: 0; }
+
+    /* Desktop layout */
+    @media (min-width: 768px) {
+      .container {
+        max-width: 900px;
+        padding: 24px 24px 32px;
+      }
+      .summary-grid {
+        gap: 16px;
+      }
+      .main-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+        align-items: start;
+      }
+      .main-grid > * {
+        min-width: 0;
+      }
+    }
   </style>
 </head>
 <body>
@@ -485,34 +505,37 @@
       </div>
     </div>
 
-    <!-- Recent Trades -->
-    <div class="animate-in delay-2">
-      <div class="section-header">
-        <span class="section-title">Recent Trades</span>
-        <span class="section-badge">LIVE</span>
+    <div class="main-grid">
+      <!-- Recent Trades -->
+      <div class="animate-in delay-2">
+        <div class="section-header">
+          <span class="section-title">Recent Trades</span>
+          <span class="section-badge">LIVE</span>
+        </div>
+        <div class="card trades-card" id="trades">
+          <p class="loading">Loading trades...</p>
+        </div>
       </div>
-      <div class="card trades-card" id="trades">
-        <p class="loading">Loading trades...</p>
-      </div>
-    </div>
 
-    <!-- Daily History -->
-    <div class="animate-in delay-3">
-      <div class="section-header">
-        <span class="section-title">Daily History</span>
-      </div>
-      <div class="card history-card" id="history">
-        <p class="loading">Loading history...</p>
-      </div>
-    </div>
+      <!-- Right column: Daily History + Balance Chart -->
+      <div>
+        <div class="animate-in delay-3">
+          <div class="section-header">
+            <span class="section-title">Daily History</span>
+          </div>
+          <div class="card history-card" id="history">
+            <p class="loading">Loading history...</p>
+          </div>
+        </div>
 
-    <!-- Portfolio Balance Chart -->
-    <div class="animate-in delay-4">
-      <div class="section-header">
-        <span class="section-title">Portfolio Balance</span>
-      </div>
-      <div class="card" id="balanceChartCard" style="padding: 1rem; display: none;">
-        <canvas id="balanceCanvas" height="200"></canvas>
+        <div class="animate-in delay-4" style="margin-top: 20px;">
+          <div class="section-header">
+            <span class="section-title">Portfolio Balance</span>
+          </div>
+          <div class="card" id="balanceChartCard" style="padding: 1rem; display: none;">
+            <canvas id="balanceCanvas" height="200"></canvas>
+          </div>
+        </div>
       </div>
     </div>
 
