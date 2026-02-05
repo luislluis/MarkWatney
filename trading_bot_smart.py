@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.42",
-    "codename": "Crystal Dashboard",
+    "version": "v1.43",
+    "codename": "Steady Falcon",
     "date": "2026-02-05",
-    "changes": "Fix: Dashboard shows correct data - use CAPTURE_FILL not CAPTURE_99C, log bid price not ask price"
+    "changes": "Fix: OB EXIT sell uses actual API position (5.9995) not tracked (6.0) to avoid 'not enough balance' rejections. Remove unused strategy_signals imports."
 }
 
 import os
@@ -159,21 +159,6 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 
 # ============================================================================
-# SMART STRATEGY IMPORTS
-# ============================================================================
-try:
-    from strategy_signals import (
-        get_tracker, get_signal, update_btc_price,
-        get_momentum, get_volatility, get_position_size_multiplier,
-        CONFIDENCE_MIN_TRADE, BTCPriceTracker
-    )
-    STRATEGY_SIGNALS_AVAILABLE = True
-    print("Smart strategy signals: ENABLED")
-except ImportError:
-    STRATEGY_SIGNALS_AVAILABLE = False
-    print("WARNING: strategy_signals.py not found - using basic strategy")
-
-# ============================================================================
 # CONSTANTS
 # ============================================================================
 
@@ -247,11 +232,6 @@ ARB_ENABLED = False                # Disable ARB strategy, 99c sniper only
 # ===========================================
 # SMART STRATEGY SETTINGS (NEW)
 # ===========================================
-USE_SMART_SIGNALS = False          # Disabled - trade on divergence alone
-SMART_SIGNAL_MIN_CONFIDENCE = 55   # Minimum confidence to trade (0-100)
-SMART_SIGNAL_SKIP_CHOPPY = True    # Skip trading in choppy markets
-USE_CONFIDENCE_SIZING = True       # Adjust position size by confidence
-
 # ===========================================
 # ORDER BOOK IMBALANCE SETTINGS
 # ===========================================
@@ -259,8 +239,6 @@ USE_ORDERBOOK_SIGNALS = True       # Enable order book imbalance analysis
 ORDERBOOK_MIN_SIGNAL_STRENGTH = "MODERATE"  # Minimum: WEAK, MODERATE, STRONG
 ORDERBOOK_REQUIRE_TREND = False    # Require sustained trend confirmation
 ORDERBOOK_LOG_ALWAYS = True        # Always show imbalance in status log
-SMART_SIGNAL_LOG_ALWAYS = True     # Log signals even when not trading
-
 # ===========================================
 # BUG FIXES - ORDER & POSITION HANDLING
 # ===========================================
@@ -412,8 +390,6 @@ session_counters = {
     "profit_pairs": 0,
     "loss_avoid_pairs": 0,
     "hard_flattens": 0,
-    "smart_skips": 0,  # NEW: Track how many trades skipped by smart signals
-    "smart_trades": 0,  # NEW: Track smart signal approved trades
 }
 
 last_pair_type = None
@@ -463,7 +439,6 @@ def reset_window_state(slug):
         "pairing_attempts": 0,
         "telegram_notified": False,
         "arb_placed_this_window": False,
-        "smart_signal_confidence": 0,  # NEW: Track confidence of winning signal
         "capture_99c_used": False,     # 99c capture: only once per window
         "capture_99c_order": None,     # 99c capture: order ID
         "capture_99c_side": None,      # 99c capture: UP or DOWN
@@ -659,8 +634,6 @@ def notify_profit_pair(up_shares, avg_up, down_shares, avg_down):
 
     pair_total = avg_up + avg_down
     edge = 1.00 - pair_total
-    conf = window_state.get('smart_signal_confidence', 0)
-
     msg = f"""🟩 <b>PROFIT PAIR</b>
 BTC 15m window
 UP {up_shares} @ {avg_up:.2f}
@@ -1757,7 +1730,20 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
             success, pnl = execute_hard_stop(side, books)
             return success
 
-    shares = window_state.get(f'capture_99c_filled_{side.lower()}', 0)
+    # Query ACTUAL position from API (not tracked amount) to avoid "not enough balance" errors
+    # Same fix as execute_hard_stop() - tracked amount can be 6.0 while actual is 5.9995
+    tracked_shares = window_state.get(f'capture_99c_filled_{side.lower()}', 0)
+    api_pos = verify_position_from_api()
+
+    if api_pos is not None:
+        actual_shares = api_pos[0] if side == 'UP' else api_pos[1]
+        if abs(actual_shares - tracked_shares) > 0.01 and actual_shares > 0:
+            print(f"[{ts()}] EARLY_EXIT: Position mismatch - API={actual_shares:.4f} tracked={tracked_shares:.4f}, using API value")
+        shares = actual_shares if actual_shares > 0 else tracked_shares
+    else:
+        print(f"[{ts()}] EARLY_EXIT: API unavailable, using tracked shares={tracked_shares}")
+        shares = tracked_shares
+
     if shares <= 0:
         print(f"[{ts()}] EARLY_EXIT: No shares to sell for {side}")
         return False
@@ -2351,69 +2337,7 @@ def check_and_place_arb(books, ttc):
     cheap_side = "UP" if ask_up <= DIVERGENCE_THRESHOLD else "DOWN"
     print(f"[{ts()}] STRONG_DIVERGENCE: {cheap_side} @ {cheap_price*100:.0f}c, other @ {expensive_price*100:.0f}c")
 
-    # ===========================================
-    # SMART SIGNAL CHECK (NEW)
-    # ===========================================
     size_multiplier = 1.0
-
-    if USE_SMART_SIGNALS and STRATEGY_SIGNALS_AVAILABLE:
-        # Update BTC price
-        btc_price = get_btc_price_from_coinbase()
-        if btc_price:
-            update_btc_price(btc_price)
-
-        # Get smart signal
-        signal = get_signal(ask_up, ask_down, ttc / 60.0)
-
-        momentum = signal.momentum
-        vol = signal.volatility
-        print(f"[{ts()}] SIGNAL: {signal.direction} {signal.confidence}% | Mom: 1m={momentum.momentum_1m*100:+.1f}% 5m={momentum.momentum_5m*100:+.1f}% | {signal.reason}")
-
-        # Store confidence for Telegram notification
-        window_state['smart_signal_confidence'] = signal.confidence
-
-        # Decision: Skip if signal says don't trade
-        if not signal.should_trade:
-            _last_skip_reason = f"no momentum ({signal.confidence}%)"
-            session_counters['smart_skips'] += 1
-            log_activity("SMART_SKIP", {
-                "reason": signal.reason,
-                "confidence": signal.confidence,
-                "direction": signal.direction,
-                "up_ask": ask_up,
-                "down_ask": ask_down,
-                "ttl": ttc
-            })
-            return False
-
-        # Skip choppy markets
-        if SMART_SIGNAL_SKIP_CHOPPY and signal.volatility.is_choppy:
-            _last_skip_reason = "choppy market"
-            session_counters['smart_skips'] += 1
-            return False
-
-        # Check minimum confidence
-        if signal.confidence < SMART_SIGNAL_MIN_CONFIDENCE:
-            _last_skip_reason = f"low conf ({signal.confidence}%<{SMART_SIGNAL_MIN_CONFIDENCE}%)"
-            session_counters['smart_skips'] += 1
-            return False
-
-        # Get position size multiplier
-        if USE_CONFIDENCE_SIZING:
-            size_multiplier = get_position_size_multiplier(signal.confidence, signal.volatility)
-            print(f"[{ts()}] ✅ SMART SIGNAL APPROVED | Size multiplier: {size_multiplier:.2f}x")
-        else:
-            print(f"[{ts()}] ✅ SMART SIGNAL APPROVED")
-
-        session_counters['smart_trades'] += 1
-        log_activity("SMART_TRADE_APPROVED", {
-            "confidence": signal.confidence,
-            "direction": signal.direction,
-            "size_multiplier": size_multiplier,
-            "up_ask": ask_up,
-            "down_ask": ask_down,
-            "ttl": ttc
-        })
 
     # ===========================================
     # ORDER BOOK IMBALANCE CHECK
@@ -3133,12 +3057,8 @@ def main():
         print("  Supabase logger: DISABLED (module not found)")
     print()
 
-    print("STRATEGY: HARD HEDGE INVARIANT + SMART SIGNALS")
+    print("STRATEGY: HARD HEDGE INVARIANT")
     print(f"  - NEVER allow unequal UP/DOWN at window close")
-    print(f"  - Smart signals: {'ENABLED' if USE_SMART_SIGNALS and STRATEGY_SIGNALS_AVAILABLE else 'DISABLED'}")
-    print(f"  - Min confidence: {SMART_SIGNAL_MIN_CONFIDENCE}%")
-    print(f"  - Skip choppy: {SMART_SIGNAL_SKIP_CHOPPY}")
-    print(f"  - Confidence sizing: {USE_CONFIDENCE_SIZING}")
     print(f"  - Order book signals: {'ENABLED' if USE_ORDERBOOK_SIGNALS and ORDERBOOK_ANALYZER_AVAILABLE else 'DISABLED'}")
     if USE_ORDERBOOK_SIGNALS and ORDERBOOK_ANALYZER_AVAILABLE:
         print(f"  - Min signal strength: {ORDERBOOK_MIN_SIGNAL_STRENGTH}")
@@ -3172,12 +3092,9 @@ def main():
                             session_stats['paired'] += 1
                         session_stats['pnl'] += window_state['realized_pnl_usd']
                         # Prettier window summary
-                        total_trades = session_counters['smart_trades'] + session_counters['smart_skips']
-                        hit_rate = (session_counters['smart_trades'] / total_trades * 100) if total_trades > 0 else 0
                         print()
                         print("┌─────────────────── WINDOW COMPLETE ───────────────────┐")
                         print(f"│  ✅ Profits: {session_counters['profit_pairs']}    🟧 Loss-Avoid: {session_counters['loss_avoid_pairs']}    🔴 Flatten: {session_counters['hard_flattens']}".ljust(55) + "│")
-                        print(f"│  📊 Smart Trades: {session_counters['smart_trades']}/{total_trades} ({hit_rate:.0f}% hit rate)".ljust(55) + "│")
                         print(f"│  💵 Session PnL: ${session_stats['pnl']:.2f}".ljust(55) + "│")
                         print("└────────────────────────────────────────────────────────┘")
 
@@ -3616,7 +3533,6 @@ def main():
         print(f"🛑 Paired: {session_stats['paired']}")
         print(f"🛑 Total PnL: ${session_stats['pnl']:.2f}")
         print(f"🛑 PROFIT={session_counters['profit_pairs']} LOSS_AVOID={session_counters['loss_avoid_pairs']} FLATTEN={session_counters['hard_flattens']}")
-        print(f"🛑 SMART_SKIPS={session_counters['smart_skips']} SMART_TRADES={session_counters['smart_trades']}")
 
         if window_state:
             trades_log.append(window_state)

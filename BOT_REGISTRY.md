@@ -1,10 +1,11 @@
 # Polybot Version Registry
 
-## Current Version: v1.42 "Crystal Dashboard"
+## Current Version: v1.43 "Steady Falcon"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.42 | 2026-02-05 PST | Crystal Dashboard | Fix: Dashboard uses CAPTURE_FILL (not CAPTURE_99C) so unfilled orders don't show as pending, prices show correctly | Active |
+| v1.43 | 2026-02-05 PST | Steady Falcon | Fix: OB EXIT sell uses actual API position (5.9995) not tracked (6.0) to avoid 'not enough balance' rejections. Remove unused strategy_signals imports. | Active |
+| v1.42 | 2026-02-05 PST | Crystal Dashboard | Fix: Dashboard uses CAPTURE_FILL (not CAPTURE_99C) so unfilled orders don't show as pending, prices show correctly | Archived |
 | v1.37 | 2026-02-04 PST | Data Driven | Log CAPTURE_99C_WIN/LOSS events for Supabase dashboard tracking | Archived |
 | v1.36 | 2026-02-03 PST | No Harm No Foul | Place 99c bids even when ask >= 99c - if doesn't fill, no loss | Archived |
 | v1.35 | 2026-02-03 PST | Six Shooter | Increase 99c capture to 6 shares ($6 max spend) | Archived |
