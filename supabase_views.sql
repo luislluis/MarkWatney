@@ -42,6 +42,8 @@ LEFT JOIN outcomes out ON o.window_id = out.window_id
 ORDER BY o.timestamp DESC;
 
 -- View 2: daily_summary - Aggregates by day (EST) with pending count and ROI
+-- Fixed: Join outcomes by window_id to orders first, then aggregate by order date
+-- This ensures wins/losses are counted on the day the trade was PLACED, not resolved
 CREATE VIEW daily_summary AS
 WITH orders AS (
   SELECT
@@ -54,44 +56,38 @@ WITH orders AS (
 ),
 outcomes AS (
   SELECT
-    DATE(("Timestamp"::timestamptz AT TIME ZONE 'America/New_York')) as trade_date,
     "Window ID" as window_id,
     "Event" as event,
     CAST("PnL" AS NUMERIC) as pnl
   FROM "Polymarket Bot Log - Events"
   WHERE "Event" IN ('CAPTURE_99C_WIN', 'CAPTURE_99C_LOSS')
 ),
-daily_orders AS (
+-- Join orders with outcomes by window_id, keeping the ORDER's trade_date
+order_outcomes AS (
   SELECT
-    trade_date,
-    COUNT(DISTINCT window_id) as total_trades,
-    SUM(shares * price) as total_invested
-  FROM orders
-  GROUP BY trade_date
-),
-daily_outcomes AS (
-  SELECT
-    trade_date,
-    COUNT(DISTINCT CASE WHEN event = 'CAPTURE_99C_WIN' THEN window_id END) as wins,
-    COUNT(DISTINCT CASE WHEN event = 'CAPTURE_99C_LOSS' THEN window_id END) as losses,
-    SUM(pnl) as total_pnl
-  FROM outcomes
-  GROUP BY trade_date
+    o.trade_date,
+    o.window_id,
+    o.shares,
+    o.price,
+    out.event,
+    out.pnl
+  FROM orders o
+  LEFT JOIN outcomes out ON o.window_id = out.window_id
 )
 SELECT
-  o.trade_date,
-  o.total_trades,
-  COALESCE(out.wins, 0) as wins,
-  COALESCE(out.losses, 0) as losses,
-  o.total_trades - COALESCE(out.wins, 0) - COALESCE(out.losses, 0) as pending,
+  trade_date,
+  COUNT(DISTINCT window_id) as total_trades,
+  COUNT(DISTINCT CASE WHEN event = 'CAPTURE_99C_WIN' THEN window_id END) as wins,
+  COUNT(DISTINCT CASE WHEN event = 'CAPTURE_99C_LOSS' THEN window_id END) as losses,
+  COUNT(DISTINCT window_id) - COUNT(DISTINCT CASE WHEN event IN ('CAPTURE_99C_WIN', 'CAPTURE_99C_LOSS') THEN window_id END) as pending,
   ROUND(
-    COALESCE(out.wins, 0)::numeric /
-    NULLIF(COALESCE(out.wins, 0) + COALESCE(out.losses, 0), 0) * 100, 1
+    COUNT(DISTINCT CASE WHEN event = 'CAPTURE_99C_WIN' THEN window_id END)::numeric /
+    NULLIF(COUNT(DISTINCT CASE WHEN event IN ('CAPTURE_99C_WIN', 'CAPTURE_99C_LOSS') THEN window_id END), 0) * 100, 1
   ) as win_rate_pct,
-  COALESCE(out.total_pnl, 0) as total_pnl,
+  COALESCE(SUM(pnl), 0) as total_pnl,
   ROUND(
-    COALESCE(out.total_pnl, 0) / NULLIF(o.total_invested / o.total_trades, 0) * 100, 1
+    COALESCE(SUM(pnl), 0) / NULLIF(SUM(shares * price) / COUNT(DISTINCT window_id), 0) * 100, 1
   ) as roi_pct
-FROM daily_orders o
-LEFT JOIN daily_outcomes out ON o.trade_date = out.trade_date
-ORDER BY o.trade_date DESC;
+FROM order_outcomes
+GROUP BY trade_date
+ORDER BY trade_date DESC;
