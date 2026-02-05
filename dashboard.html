@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <style>
     :root {
       --bg-primary: #0a0a0b;
@@ -497,6 +498,16 @@
       </div>
     </div>
 
+    <!-- Portfolio Balance Chart -->
+    <div class="animate-in delay-4">
+      <div class="section-header">
+        <span class="section-title">Portfolio Balance</span>
+      </div>
+      <div class="card" id="balanceChartCard" style="padding: 1rem; display: none;">
+        <canvas id="balanceCanvas" height="200"></canvas>
+      </div>
+    </div>
+
     <!-- Footer -->
     <footer class="footer">
       <p class="footer-text" id="connectionStatus">
@@ -565,6 +576,86 @@
           profit_loss: won ? Math.round(shares * (1 - price) * 100) / 100 : Math.round(shares * -price * 100) / 100
         };
       } catch { return null; }
+    }
+
+    let balanceChart = null;
+    async function loadBalanceChart() {
+      try {
+        const { data, error } = await db
+          .from('Polymarket Bot Log - Events')
+          .select('"Timestamp","Details"')
+          .eq('Event', 'BALANCE_SNAPSHOT')
+          .order('Timestamp', { ascending: true })
+          .limit(90);
+
+        if (error || !data?.length) {
+          document.getElementById('balanceChartCard').style.display = 'none';
+          return;
+        }
+
+        const labels = [];
+        const values = [];
+        for (const row of data) {
+          const parts = Object.fromEntries(
+            (row.Details || '').split('|').map(p => p.split('='))
+          );
+          labels.push(parts.date || '');
+          values.push(parseFloat(parts.total) || 0);
+        }
+
+        document.getElementById('balanceChartCard').style.display = 'block';
+
+        if (balanceChart) {
+          balanceChart.data.labels = labels;
+          balanceChart.data.datasets[0].data = values;
+          balanceChart.update();
+          return;
+        }
+
+        balanceChart = new Chart(document.getElementById('balanceCanvas'), {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [{
+              label: 'Portfolio Balance ($)',
+              data: values,
+              borderColor: '#10b981',
+              backgroundColor: 'rgba(16, 185, 129, 0.1)',
+              fill: true,
+              tension: 0.3,
+              pointRadius: 4,
+              pointBackgroundColor: '#10b981'
+            }]
+          },
+          options: {
+            responsive: true,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  label: ctx => '$' + ctx.parsed.y.toFixed(2)
+                }
+              }
+            },
+            scales: {
+              x: {
+                ticks: { color: '#71717a', font: { family: 'JetBrains Mono', size: 10 } },
+                grid: { color: 'rgba(255,255,255,0.04)' }
+              },
+              y: {
+                ticks: {
+                  color: '#71717a',
+                  font: { family: 'JetBrains Mono', size: 10 },
+                  callback: v => '$' + v.toFixed(0)
+                },
+                grid: { color: 'rgba(255,255,255,0.04)' }
+              }
+            }
+          }
+        });
+      } catch (e) {
+        console.warn('[DASHBOARD] Balance chart error:', e);
+      }
     }
 
     async function loadData() {
@@ -903,6 +994,7 @@
     // Initial load and setup
     loadData().then(() => {
       setupRealtime();
+      loadBalanceChart();
     }).catch(() => {
       setupRealtime();
     });

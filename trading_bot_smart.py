@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.43",
-    "codename": "True Price",
+    "version": "v1.44",
+    "codename": "Ledger Line",
     "date": "2026-02-05",
-    "changes": "Fix: Log actual Polymarket execution price in CAPTURE_FILL, not limit order price"
+    "changes": "Daily portfolio balance snapshots (positions + USDC) logged at midnight EST"
 }
 
 import os
@@ -602,6 +602,57 @@ def check_eoa_gas_balance():
     except Exception as e:
         print(f"[GAS] Failed to check balance: {e}")
     return None
+
+USDC_CONTRACT = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # USDC on Polygon
+
+def get_portfolio_balance():
+    """Get total portfolio balance: positions value + USDC cash."""
+    positions_value = 0.0
+    usdc_balance = 0.0
+
+    # 1. Sum position values from Polymarket
+    try:
+        url = f"https://data-api.polymarket.com/positions?user={WALLET_ADDRESS.lower()}"
+        resp = http_session.get(url, timeout=5)
+        for pos in resp.json():
+            positions_value += float(pos.get('currentValue', 0))
+    except Exception as e:
+        print(f"[BALANCE] Position query failed: {e}")
+
+    # 2. Check USDC balance via ERC20 balanceOf
+    try:
+        addr_padded = WALLET_ADDRESS.lower().replace('0x', '').zfill(64)
+        data = f"0x70a08231{addr_padded}"
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "eth_call",
+            "params": [{"to": USDC_CONTRACT, "data": data}, "latest"],
+            "id": 1
+        }
+        response = requests.post(POLYGON_RPC, json=payload, timeout=5)
+        result = response.json().get("result")
+        if result:
+            usdc_balance = int(result, 16) / 1e6  # USDC has 6 decimals
+    except Exception as e:
+        print(f"[BALANCE] USDC query failed: {e}")
+
+    return positions_value, usdc_balance
+
+_last_balance_date = None  # Track last snapshot date (EST)
+
+def check_and_log_balance():
+    """Log daily balance snapshot on first window after midnight EST."""
+    global _last_balance_date
+    est_now = datetime.now(ZoneInfo("America/New_York"))
+    est_date = est_now.strftime("%Y-%m-%d")
+    if _last_balance_date == est_date:
+        return
+    _last_balance_date = est_date
+    pos_value, usdc_cash = get_portfolio_balance()
+    total = pos_value + usdc_cash
+    print(f"[{ts()}] 💰 Balance snapshot: ${total:.2f} (positions: ${pos_value:.2f}, USDC: ${usdc_cash:.2f})")
+    log_event("BALANCE_SNAPSHOT",
+              details=f"total={total:.2f}|positions={pos_value:.2f}|usdc={usdc_cash:.2f}|date={est_date}")
 
 def check_gas_and_alert():
     """Check gas balance and send Telegram alert if low. Called once per window."""
@@ -1448,16 +1499,19 @@ def get_order_status(order_id):
 def get_verified_fill_price(slug, side, fallback_price):
     """Query Polymarket /trades API for actual execution price (not limit order price)."""
     try:
-        resp = requests.get(
+        resp = http_session.get(
             "https://data-api.polymarket.com/trades",
             params={"user": WALLET_ADDRESS, "limit": 20, "side": "BUY"},
             timeout=5
         )
         resp.raise_for_status()
-        for t in resp.json():
+        trades = resp.json()
+        if not isinstance(trades, list):
+            return fallback_price
+        for t in trades:
             if t.get("slug") == slug and t.get("outcome", "").upper() == side:
                 verified = float(t.get("price", 0))
-                if verified > 0:
+                if 0 < verified <= 1.0:
                     if abs(verified - fallback_price) > 0.001:
                         print(f"[{ts()}] PRICE_VERIFY: {slug} {side} order={fallback_price:.2f} actual={verified:.2f}")
                     return verified
@@ -3330,6 +3384,9 @@ def main():
                         days_left = gas_balance / (47 * 0.0268)
                         gas_status = "OK" if gas_balance >= GAS_LOW_THRESHOLD else ("LOW" if gas_balance >= GAS_CRITICAL_THRESHOLD else "CRITICAL")
                         print(f"[{ts()}] ⛽ Gas: {gas_balance:.4f} MATIC ({days_left:.1f} days) [{gas_status}]")
+
+                    # Daily balance snapshot (once per EST day)
+                    check_and_log_balance()
 
                     print("=" * 100)
 
