@@ -1,10 +1,11 @@
 # Polybot Version Registry
 
-## Current Version: v1.49 "Iron Shield"
+## Current Version: v1.50 "Iron Shield II"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.49 | 2026-02-05 PST | Iron Shield | 8 exit hardening fixes: danger score exit trigger (0.8 in final 30s), empty bids triggers hard stop, API-down fallback to stale books, OB exit 0-fill protection, OB counter decay, book refresh in hard stop retry, skip API timeout in exits. | Active |
+| v1.50 | 2026-02-05 PST | Iron Shield II | Fix: FOK status case-sensitivity (matched vs MATCHED). Stop retry on not-enough-balance (shares already sold). | Active |
+| v1.49 | 2026-02-05 PST | Iron Shield | 8 exit hardening fixes: danger score exit trigger (0.8 in final 30s), empty bids triggers hard stop, API-down fallback to stale books, OB exit 0-fill protection, OB counter decay, book refresh in hard stop retry, skip API timeout in exits. | Archived |
 | v1.48 | 2026-02-05 PST | Last Second | Remove 15s dead zone: exits (HARD STOP, OB EXIT) now active until T-0. CLOSE_GUARD only blocks new entries. WINDOW COMPLETE shows after settlement with result. | Archived |
 | v1.47 | 2026-02-05 PST | Steel Gate | Fix: Stop false PAIRING_MODE entry from 99c captures. Don't set capture_99c_filled at placement, add max(0) guard on ARB imbalance calc. | Archived |
 | v1.46 | 2026-02-05 PST | Iron Lock | Fix: Lock capture_99c_used BEFORE API call to prevent duplicate order spam when API fails | Archived |

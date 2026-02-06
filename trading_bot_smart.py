@@ -15,10 +15,10 @@ STRATEGY: 99c Capture (single-side bet on near-certain winners)
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.49",
-    "codename": "Iron Shield",
+    "version": "v1.50",
+    "codename": "Iron Shield II",
     "date": "2026-02-05",
-    "changes": "8 exit hardening fixes: danger score exit trigger (0.8 in final 30s), empty bids triggers hard stop, API-down fallback to stale books, OB exit 0-fill protection, OB counter decay, book refresh in hard stop retry, skip API timeout in exits."
+    "changes": "Fix: FOK status case-sensitivity (matched vs MATCHED). Stop retry loop on not-enough-balance (shares already sold). Plus all v1.49 exit hardening."
 }
 
 import os
@@ -1091,7 +1091,7 @@ def place_fok_market_sell(token_id: str, shares: float) -> tuple:
         status = response.get("status", "UNKNOWN")
         filled = float(response.get("filledAmount", 0))
 
-        if status == "MATCHED" or filled > 0:
+        if status.upper() == "MATCHED" or filled > 0:
             print(f"[{ts()}] HARD_STOP: FOK filled {filled}/{shares} shares, order_id={order_id[:8]}...")
             log_activity("FOK_FILLED", {"order_id": order_id, "filled": filled, "requested": shares})
             return True, order_id, filled
@@ -1101,8 +1101,12 @@ def place_fok_market_sell(token_id: str, shares: float) -> tuple:
             return False, order_id, 0.0
 
     except Exception as e:
+        error_msg = str(e).lower()
         print(f"[{ts()}] HARD_STOP_ERROR: FOK order failed: {e}")
         log_activity("FOK_ERROR", {"error": str(e)})
+        # "not enough balance" means shares were already sold (prior fill succeeded)
+        if "not enough balance" in error_msg or "allowance" in error_msg:
+            return True, "", 0.0  # Signal success so retry loop stops
         return False, "", 0.0
 
 
@@ -1226,8 +1230,12 @@ def execute_hard_stop(side: str, books: dict, market_data=None) -> tuple:
             fill_pnl = (best_bid - entry_price) * filled
             total_pnl += fill_pnl
             remaining_shares -= filled
-
             print(f"[{ts()}] HARD_STOP: Filled {filled:.0f} @ ~{best_bid*100:.0f}c, P&L: ${fill_pnl:.2f}, remaining: {remaining_shares:.0f}")
+        elif success and filled == 0:
+            # "not enough balance" — shares already sold by a prior fill
+            print(f"[{ts()}] HARD_STOP: Shares already sold (balance exhausted), treating as complete")
+            remaining_shares = 0
+            break
         else:
             print(f"[{ts()}] HARD_STOP: FOK rejected, trying again (attempt {attempts})")
             time.sleep(0.5)
