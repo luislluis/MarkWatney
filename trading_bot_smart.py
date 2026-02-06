@@ -15,10 +15,10 @@ STRATEGY: 99c Capture (single-side bet on near-certain winners)
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.48",
-    "codename": "Last Second",
+    "version": "v1.49",
+    "codename": "Iron Shield",
     "date": "2026-02-05",
-    "changes": "Remove 15s dead zone: exits (HARD STOP, OB EXIT) now active until T-0. CLOSE_GUARD only blocks new entries. WINDOW COMPLETE shows after settlement with result."
+    "changes": "8 exit hardening fixes: danger score exit trigger (0.8 in final 30s), empty bids triggers hard stop, API-down fallback to stale books, OB exit 0-fill protection, OB counter decay, book refresh in hard stop retry, skip API timeout in exits."
 }
 
 import os
@@ -310,8 +310,9 @@ ENTRY_FILTER_MAX_JUMP = 0.08            # Max allowed tick-to-tick jump in past 
 ENTRY_FILTER_MAX_OPP_RECENT = 0.15      # Skip if opposing side was > this in past 30 ticks
 ENTRY_FILTER_HISTORY_SIZE = 30          # Number of ticks to keep for filtering
 
-# Danger Scoring Configuration (for smart hedge)
-DANGER_THRESHOLD = 0.40              # Hedge triggers when danger >= this
+# Danger Scoring Configuration — NOW USED AS EXIT TRIGGER
+DANGER_THRESHOLD = 1.5               # Exit triggers when danger >= this
+DANGER_THRESHOLD_FINAL = 0.8         # Lower threshold in final 30 seconds
 DANGER_WEIGHT_CONFIDENCE = 3.0       # Weight for confidence drop from peak
 DANGER_WEIGHT_IMBALANCE = 0.4        # Weight for order book imbalance against us
 DANGER_WEIGHT_VELOCITY = 2.0         # Weight for BTC price velocity against us
@@ -1124,9 +1125,11 @@ def check_hard_stop_trigger(books: dict, side: str) -> tuple:
         bids_key = f'{side.lower()}_bids'
         bids = books.get(bids_key, [])
 
-        # No bids = no trigger (can't sell into nothing)
+        # No bids = CRITICAL: market has zero liquidity, trigger emergency exit
+        # The FOK retry loop in execute_hard_stop handles "no bids" with refresh + retry
         if not bids or len(bids) == 0:
-            return False, 0.0
+            print(f"[{ts()}] HARD_STOP: NO BIDS for {side} — zero liquidity!")
+            return True, 0.0
 
         best_bid = float(bids[0]['price'])
         best_bid_size = float(bids[0].get('size', 0))
@@ -1147,7 +1150,7 @@ def check_hard_stop_trigger(books: dict, side: str) -> tuple:
         return False, 0.0
 
 
-def execute_hard_stop(side: str, books: dict) -> tuple:
+def execute_hard_stop(side: str, books: dict, market_data=None) -> tuple:
     """
     Execute emergency hard stop using FOK market orders.
     Keeps selling until position is completely flat.
@@ -1155,24 +1158,16 @@ def execute_hard_stop(side: str, books: dict) -> tuple:
     Args:
         side: "UP" or "DOWN" - which side we're liquidating
         books: Order book data
+        market_data: Market data for refreshing books (optional)
 
     Returns:
         tuple: (success, total_pnl)
     """
     global window_state
 
-    # Query ACTUAL position from API (not tracked amount) to avoid "not enough balance" errors
+    # Get position: use tracked shares directly to avoid 5s API timeout blocking exits
     tracked_shares = window_state.get(f'capture_99c_filled_{side.lower()}', 0)
-    api_pos = verify_position_from_api()
-
-    if api_pos is not None:
-        actual_shares = api_pos[0] if side == 'UP' else api_pos[1]
-        if abs(actual_shares - tracked_shares) > 0.01 and actual_shares > 0:
-            print(f"[{ts()}] HARD_STOP: Position mismatch - API={actual_shares:.4f} tracked={tracked_shares:.4f}, using API value")
-        shares = actual_shares if actual_shares > 0 else tracked_shares
-    else:
-        print(f"[{ts()}] HARD_STOP: API unavailable, using tracked shares={tracked_shares}")
-        shares = tracked_shares
+    shares = tracked_shares
 
     if shares <= 0:
         print(f"[{ts()}] HARD_STOP: No shares to sell for {side}")
@@ -1204,9 +1199,11 @@ def execute_hard_stop(side: str, books: dict) -> tuple:
         if not bids or len(bids) == 0:
             print(f"[{ts()}] HARD_STOP: No bids available, waiting 1s (attempt {attempts})")
             time.sleep(1)
-            # Refresh order books
-            if window_state.get('cached_market'):
-                books = get_order_books(window_state['cached_market'])
+            # Refresh order books using passed market data
+            if market_data:
+                refreshed = get_order_books(market_data)
+                if refreshed:
+                    books = refreshed
             continue
 
         best_bid = float(bids[0]['price'])
@@ -1234,6 +1231,11 @@ def execute_hard_stop(side: str, books: dict) -> tuple:
         else:
             print(f"[{ts()}] HARD_STOP: FOK rejected, trying again (attempt {attempts})")
             time.sleep(0.5)
+            # Refresh books before retry
+            if market_data:
+                refreshed = get_order_books(market_data)
+                if refreshed:
+                    books = refreshed
 
     if remaining_shares > 0:
         print(f"[{ts()}] HARD_STOP_ERROR: Failed to fully liquidate! {remaining_shares:.0f} shares stuck")
@@ -1620,19 +1622,9 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
             success, pnl = execute_hard_stop(side, books)
             return success
 
-    # Query ACTUAL position from API (not tracked amount) to avoid "not enough balance" errors
-    # Same fix as execute_hard_stop() - tracked amount can be 6.0 while actual is 5.9995
+    # Get position: use tracked shares directly to avoid 5s API timeout blocking exits
     tracked_shares = window_state.get(f'capture_99c_filled_{side.lower()}', 0)
-    api_pos = verify_position_from_api()
-
-    if api_pos is not None:
-        actual_shares = api_pos[0] if side == 'UP' else api_pos[1]
-        if abs(actual_shares - tracked_shares) > 0.01 and actual_shares > 0:
-            print(f"[{ts()}] EARLY_EXIT: Position mismatch - API={actual_shares:.4f} tracked={tracked_shares:.4f}, using API value")
-        shares = actual_shares if actual_shares > 0 else tracked_shares
-    else:
-        print(f"[{ts()}] EARLY_EXIT: API unavailable, using tracked shares={tracked_shares}")
-        shares = tracked_shares
+    shares = tracked_shares
 
     if shares <= 0:
         print(f"[{ts()}] EARLY_EXIT: No shares to sell for {side}")
@@ -1641,8 +1633,9 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
     # Get best bid, but enforce minimum exit price
     bids = books.get(f'{side.lower()}_bids', [])
     if not bids:
-        print(f"[{ts()}] ABORT_EXIT: No bids available for {side}")
-        return False
+        print(f"[{ts()}] NO_BIDS: Escalating to HARD STOP for {side}")
+        success, pnl = execute_hard_stop(side, books)
+        return success
 
     best_bid = float(bids[0]['price'])
 
@@ -1698,10 +1691,16 @@ P&L: ${pnl:.2f}
 <i>Exited early to cut losses</i>"""
     send_telegram(msg)
 
-    # Update state
-    window_state['capture_99c_exited'] = True
-    window_state['capture_99c_exit_reason'] = reason
-    window_state[f'capture_99c_filled_{side.lower()}'] = 0
+    # Update state — only mark as exited if we actually sold shares
+    if filled > 0:
+        window_state['capture_99c_exited'] = True
+        window_state['capture_99c_exit_reason'] = reason
+        window_state[f'capture_99c_filled_{side.lower()}'] = max(0, shares - filled)
+    else:
+        # Zero fills — do NOT mark as exited, so other exit mechanisms can still fire
+        print(f"[{ts()}] OB EXIT: 0 fills — keeping exit mechanisms active")
+        cancel_all_orders()  # Cancel the unfilled limit sell
+        return False
 
     return True
 
@@ -2819,6 +2818,8 @@ def main():
     last_slug = None
     session_stats = {"windows": 0, "paired": 0, "pnl": 0.0}
     cached_market = None
+    last_good_books = None
+    consecutive_book_failures = 0
 
     try:
         while True:
@@ -2998,8 +2999,24 @@ def main():
                 books = get_order_books(cached_market)
                 if not books:
                     error_count += 1
-                    time.sleep(0.5)
-                    continue
+                    consecutive_book_failures += 1
+                    # If we have a position and API keeps failing, use last known books for exits
+                    if (last_good_books and
+                        window_state.get('capture_99c_fill_notified') and
+                        not window_state.get('capture_99c_exited')):
+                        books = last_good_books
+                        print(f"[{ts()}] API_DOWN: Using stale books for exits (failure #{consecutive_book_failures})")
+                        # Emergency: if API down for 5+ consecutive cycles, force hard stop
+                        if consecutive_book_failures >= 5:
+                            capture_side = window_state.get('capture_99c_side')
+                            print(f"[{ts()}] API_DOWN_EMERGENCY: {consecutive_book_failures} failures, forcing exit")
+                            execute_hard_stop(capture_side, books, market_data=cached_market)
+                    else:
+                        time.sleep(0.5)
+                        continue
+                else:
+                    consecutive_book_failures = 0
+                    last_good_books = books
 
                 window_state['up_token'] = books['up_token']
                 window_state['down_token'] = books['down_token']
@@ -3119,7 +3136,7 @@ def main():
 
                     if should_trigger:
                         print(f"[{ts()}] 🛑 HARD STOP: {capture_side} best bid at {best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c trigger")
-                        execute_hard_stop(capture_side, books)
+                        execute_hard_stop(capture_side, books, market_data=cached_market)
 
                 # === 99c OB-BASED EARLY EXIT CHECK ===
                 # Exit early if OB shows sellers dominating for 3 consecutive ticks
@@ -3137,12 +3154,12 @@ def main():
                         )
                         imb = ob_result.get('up_imbalance', 0) if capture_side == "UP" else ob_result.get('down_imbalance', 0)
 
-                        # Track consecutive negative ticks
+                        # Track negative ticks with decay (decrement by 1 instead of reset to 0)
                         if imb < OB_EARLY_EXIT_THRESHOLD:
                             window_state['ob_negative_ticks'] = window_state.get('ob_negative_ticks', 0) + 1
                             print(f"[{ts()}] 99c OB WARNING: {capture_side} imb={imb:+.2f} ({window_state['ob_negative_ticks']}/3)")
                         else:
-                            window_state['ob_negative_ticks'] = 0
+                            window_state['ob_negative_ticks'] = max(0, window_state.get('ob_negative_ticks', 0) - 1)
 
                         # Trigger exit if 3 consecutive negative ticks
                         if window_state['ob_negative_ticks'] >= 3:
@@ -3190,6 +3207,18 @@ def main():
                     )
                     window_state['danger_score'] = danger_result['score']
                     window_state['danger_result'] = danger_result  # Store full result for logging
+
+                    # DANGER SCORE EXIT — use lower threshold in final 30 seconds
+                    active_threshold = DANGER_THRESHOLD_FINAL if remaining_secs <= 30 else DANGER_THRESHOLD
+                    if danger_result['score'] >= active_threshold:
+                        # Require 2 consecutive danger ticks to avoid false triggers
+                        window_state['danger_ticks'] = window_state.get('danger_ticks', 0) + 1
+                        if window_state['danger_ticks'] >= 2:
+                            print(f"[{ts()}] DANGER EXIT: score={danger_result['score']:.2f} >= {active_threshold} (2 consecutive)")
+                            capture_side = window_state.get('capture_99c_side')
+                            execute_hard_stop(capture_side, books, market_data=cached_market)
+                    else:
+                        window_state['danger_ticks'] = 0
 
                 # State machine (skip new entries during CLOSE_GUARD - exits still active above)
                 if close_guard_active:
