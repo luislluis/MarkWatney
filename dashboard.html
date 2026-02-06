@@ -566,7 +566,7 @@
       walletAddress: '0x636796704404959f5Ae9BEfEb2B3880eadf6960a',
       polymarketApi: 'https://data-api.polymarket.com/trades',
       maxTrades: 50,
-      maxHistoryDays: 90
+      historyStartDate: '2026-02-04'
     };
 
     const db = window.supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabaseAnonKey);
@@ -867,7 +867,8 @@
         }).sort((a, b) => b.trade_date.localeCompare(a.trade_date));
 
         hideError();
-        renderDashboard(summary.slice(0, CONFIG.maxHistoryDays), trades.slice(0, CONFIG.maxTrades));
+        const filteredSummary = summary.filter(s => s.trade_date >= CONFIG.historyStartDate);
+        renderDashboard(filteredSummary, trades.slice(0, CONFIG.maxTrades));
       } catch (error) {
         console.error('Dashboard error:', error);
         showError(error.message + ' - will retry');
