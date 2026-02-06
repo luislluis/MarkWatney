@@ -15,10 +15,10 @@ STRATEGY: 99c Capture (single-side bet on near-certain winners)
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.50",
-    "codename": "Iron Shield II",
+    "version": "v1.51",
+    "codename": "True North",
     "date": "2026-02-05",
-    "changes": "Fix: FOK status case-sensitivity (matched vs MATCHED). Stop retry loop on not-enough-balance (shares already sold). Plus all v1.49 exit hardening."
+    "changes": "Fix: Suppress false danger exits when BTC is safely on our side (thin books != real danger). Stop cascading hard stop re-triggers by marking exited after any hard stop attempt."
 }
 
 import os
@@ -318,6 +318,7 @@ DANGER_WEIGHT_IMBALANCE = 0.4        # Weight for order book imbalance against u
 DANGER_WEIGHT_VELOCITY = 2.0         # Weight for BTC price velocity against us
 DANGER_WEIGHT_OPPONENT = 0.5         # Weight for opponent ask price strength
 DANGER_WEIGHT_TIME = 0.3             # Weight for time decay in final 60s
+DANGER_BTC_SAFE_MARGIN = 30          # If BTC is $30+ in our favor, suppress danger exit (thin books ≠ real danger)
 
 # Bot identity
 BOT_NAME = "MarkWatney"
@@ -3019,6 +3020,9 @@ def main():
                             capture_side = window_state.get('capture_99c_side')
                             print(f"[{ts()}] API_DOWN_EMERGENCY: {consecutive_book_failures} failures, forcing exit")
                             execute_hard_stop(capture_side, books, market_data=cached_market)
+                            if not window_state.get('capture_99c_exited'):
+                                window_state['capture_99c_exited'] = True
+                                window_state['capture_99c_exit_reason'] = 'api_down_emergency'
                     else:
                         time.sleep(0.5)
                         continue
@@ -3145,6 +3149,9 @@ def main():
                     if should_trigger:
                         print(f"[{ts()}] 🛑 HARD STOP: {capture_side} best bid at {best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c trigger")
                         execute_hard_stop(capture_side, books, market_data=cached_market)
+                        if not window_state.get('capture_99c_exited'):
+                            window_state['capture_99c_exited'] = True
+                            window_state['capture_99c_exit_reason'] = 'hard_stop_60c'
 
                 # === 99c OB-BASED EARLY EXIT CHECK ===
                 # Exit early if OB shows sellers dominating for 3 consecutive ticks
@@ -3217,14 +3224,34 @@ def main():
                     window_state['danger_result'] = danger_result  # Store full result for logging
 
                     # DANGER SCORE EXIT — use lower threshold in final 30 seconds
+                    # BUT: suppress if BTC is comfortably on our side (thin books ≠ real danger)
+                    btc_safe = False
+                    if RTDS_AVAILABLE and rtds_feed and rtds_feed.is_connected():
+                        delta = rtds_feed.get_window_delta()
+                        if delta is not None:
+                            # DOWN bet wins when BTC goes down (delta < 0), UP bet wins when BTC goes up (delta > 0)
+                            if bet_side == "DOWN" and delta <= -DANGER_BTC_SAFE_MARGIN:
+                                btc_safe = True
+                            elif bet_side == "UP" and delta >= DANGER_BTC_SAFE_MARGIN:
+                                btc_safe = True
+
                     active_threshold = DANGER_THRESHOLD_FINAL if remaining_secs <= 30 else DANGER_THRESHOLD
-                    if danger_result['score'] >= active_threshold:
+                    if danger_result['score'] >= active_threshold and not btc_safe:
                         # Require 2 consecutive danger ticks to avoid false triggers
                         window_state['danger_ticks'] = window_state.get('danger_ticks', 0) + 1
                         if window_state['danger_ticks'] >= 2:
                             print(f"[{ts()}] DANGER EXIT: score={danger_result['score']:.2f} >= {active_threshold} (2 consecutive)")
                             capture_side = window_state.get('capture_99c_side')
                             execute_hard_stop(capture_side, books, market_data=cached_market)
+                            # Always mark exited after hard stop attempt (prevents cascading re-triggers)
+                            if not window_state.get('capture_99c_exited'):
+                                window_state['capture_99c_exited'] = True
+                                window_state['capture_99c_exit_reason'] = 'danger_score'
+                    elif btc_safe and danger_result['score'] >= active_threshold:
+                        # Log suppression so we can track it
+                        delta = rtds_feed.get_window_delta()
+                        print(f"[{ts()}] DANGER SUPPRESSED: score={danger_result['score']:.2f} but BTC ${delta:+.0f} safely on our side")
+                        window_state['danger_ticks'] = 0
                     else:
                         window_state['danger_ticks'] = 0
 
