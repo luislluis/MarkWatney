@@ -15,10 +15,10 @@ STRATEGY: 99c Capture (single-side bet on near-certain winners)
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.53",
-    "codename": "Dead Gate",
+    "version": "v1.54",
+    "codename": "Clean Slate",
     "date": "2026-02-06",
-    "changes": "CRITICAL: Block PAIRING_MODE when ARB disabled. Stale position API was triggering phantom imbalances, causing catastrophic losses in 99c-only mode."
+    "changes": "Strip ALL ARB/PAIRING code (~800 lines). Clean 99c sniper-only bot. No more phantom PAIRING_MODE triggers."
 }
 
 import os
@@ -157,7 +157,6 @@ signal.signal(signal.SIGINT, signal_handler)
 # ============================================================================
 
 # Price constraints
-LOCK_MAX = 0.99
 MIN_PRICE = 0.01
 TICK = 0.01
 
@@ -171,44 +170,8 @@ FAILSAFE_MAX_ORDER_COST = 10.00   # NEVER place order costing more than $10
 
 # Timing
 CLOSE_GUARD_SECONDS = 10
-PAIR_DEADLINE_SECONDS = 90        # Start forced pairing 90s before close (was 60)
-TAKER_AT_SECONDS = 20             # Allow taker completion at 20s
 HARD_FLATTEN_SECONDS = 10         # Guaranteed flat by 10s pre-close
 
-# ===========================================
-# TIMING SAFEGUARDS - PREVENT RACE CONDITIONS
-# ===========================================
-ORDER_COOLDOWN_SECONDS = 3.0
-PAIRING_LOOP_DELAY = 2.0
-FILL_CHECK_WAIT = 5.0
-POSITION_VERIFY_BEFORE_ORDER = True
-
-# TTL behavior
-TTL_1C_MS = 1000
-TTL_2C_MS = 2500
-
-# Hedge deadline
-HEDGE_DEADLINE_MS = 400
-
-# Pinned skip
-PINNED_ASK_LIMIT = 0.02
-
-# Sizing
-MIN_SHARES = 5
-MICRO_IMBALANCE_TOLERANCE = 0.5  # Accept up to 0.5 share difference as "balanced"
-
-# ===========================================
-# AGGRESSIVE COMPLETION
-# ===========================================
-AGGRESSIVE_COMPLETION_WAIT = 2.0
-AGGRESSIVE_COMPLETION_ENABLED = True
-USE_FAST_ORDER_CHECK = True
-MOMENTUM_FIRST_ENABLED = True
-ARB_ENABLED = False                # Disable ARB strategy, 99c sniper only
-
-# ===========================================
-# SMART STRATEGY SETTINGS (NEW)
-# ===========================================
 # ===========================================
 # ORDER BOOK IMBALANCE SETTINGS
 # ===========================================
@@ -219,43 +182,6 @@ ORDERBOOK_LOG_ALWAYS = True        # Always show imbalance in status log
 # ===========================================
 # BUG FIXES - ORDER & POSITION HANDLING
 # ===========================================
-ORDER_SETTLE_DELAY = 7.0           # Seconds to wait after order for blockchain settlement
-ORDER_VERIFY_RETRIES = 3           # Retries when verifying order/position
-
-# ===========================================
-# HYBRID LOSS PROTECTION - HEDGE ESCALATION
-# ===========================================
-# Time-based tolerance for hedge price (profit target is 99c combined)
-# profit_target = 99 - entry_price (gives 1c profit)
-# max_hedge = profit_target + tolerance
-HEDGE_ESCALATION = [
-    (0,   0),    # 0-2 min: No tolerance, require 1c profit (99c combined)
-    (120, 2),    # 2-5 min: Accept 1c loss (tolerance = 2c, so 101c combined)
-    (300, 3),    # 5-8 min: Accept 2c loss (tolerance = 3c, so 102c combined)
-    (480, 4),    # 8-10 min: Accept 3c loss (tolerance = 4c, so 103c combined)
-    (600, 6),    # 10+ min: Accept 5c loss (tolerance = 6c, so 105c combined)
-]
-HEDGE_PRICE_CAP = 0.50             # Never hedge above 50c
-
-# ===========================================
-# BAIL MODE - EMERGENCY EXIT
-# ===========================================
-BAIL_UNHEDGED_TIMEOUT = 120        # Bail if unhedged >2 minutes
-BAIL_TIME_REMAINING = 90           # Force bail at 90 seconds remaining (NO EXCEPTIONS)
-BAIL_LOSS_THRESHOLD = 0.05         # Bail if position down >5%
-
-# ===========================================
-# EARLY BAIL - MINIMIZE EXPOSURE (v1.10)
-# ===========================================
-EARLY_HEDGE_TIMEOUT = 30           # (legacy) Try hedging for 30s before evaluating bail
-EARLY_BAIL_MAX_LOSS = 0.05         # 5c max loss per share triggers early decision
-EARLY_BAIL_CHECK_INTERVAL = 10     # (legacy) Re-check every 10s after EARLY_HEDGE_TIMEOUT
-MARKET_REVERSAL_THRESHOLD = 0.10   # 10c move in 15s = consider immediate bail
-
-# OB-BASED EARLY BAIL (v1.9) - Detect reversals via order book before price moves
-OB_REVERSAL_THRESHOLD = -0.25      # If filled side OB imbalance < -25%, sellers dominating
-OB_REVERSAL_PRICE_CONFIRM = 0.03   # Only need 3c price drop when OB confirms reversal
-
 # ===========================================
 # 99c EARLY EXIT (OB-BASED) - Cut losses early
 # ===========================================
@@ -272,11 +198,6 @@ HARD_STOP_ENABLED = True           # Enable 60¢ hard stop
 HARD_STOP_TRIGGER = 0.60           # Exit when best bid <= 60¢
 HARD_STOP_FLOOR = 0.01             # Effectively no floor (1¢ minimum)
 HARD_STOP_USE_FOK = True           # Use Fill-or-Kill market orders
-
-# ===========================================
-# ENTRY RESTRICTIONS
-# ===========================================
-MIN_TIME_FOR_ENTRY = 300           # Never enter with <5 minutes (300s) remaining
 
 # ===========================================
 # 99c BID CAPTURE STRATEGY (CONFIDENCE-BASED)
@@ -324,8 +245,6 @@ DANGER_BTC_SAFE_MARGIN = 30          # If BTC is $30+ in our favor, suppress dan
 BOT_NAME = "MarkWatney"
 
 # States
-STATE_QUOTING = "QUOTING"
-STATE_PAIRING = "PAIRING_MODE"
 STATE_DONE = "DONE"
 
 # ============================================================================
@@ -359,7 +278,6 @@ session_counters = {
     "hard_flattens": 0,
 }
 
-last_pair_type = None
 
 # ============================================================================
 # REAL-TIME ACTIVITY LOG
@@ -392,34 +310,24 @@ def reset_window_state(slug):
         "market_id": None,
         "filled_up_shares": 0,
         "filled_down_shares": 0,
-        "avg_up_price_paid": 0.0,
-        "avg_down_price_paid": 0.0,
         "open_up_order_ids": [],
         "open_down_order_ids": [],
         "realized_pnl_usd": 0.0,
-        "state": STATE_QUOTING,
+        "state": "active",
         "up_token": None,
         "last_order_time": 0,
         "down_token": None,
-        "arb_order_time": None,
-        "current_arb_orders": None,
-        "pairing_attempts": 0,
         "telegram_notified": False,
-        "arb_placed_this_window": False,
         "capture_99c_used": False,     # 99c capture: only once per window
         "capture_99c_order": None,     # 99c capture: order ID
         "capture_99c_side": None,      # 99c capture: UP or DOWN
         "capture_99c_shares": 0,       # 99c capture: shares ordered
-        "capture_99c_filled_up": 0,    # 99c capture: filled UP shares (exclude from pairing)
-        "capture_99c_filled_down": 0,  # 99c capture: filled DOWN shares (exclude from pairing)
+        "capture_99c_filled_up": 0,    # 99c capture: filled UP shares
+        "capture_99c_filled_down": 0,  # 99c capture: filled DOWN shares
         "capture_99c_fill_notified": False,  # 99c capture: have we shown fill notification
         "capture_99c_exited": False,         # 99c capture: whether we've early-exited this position
         "ob_negative_ticks": 0,              # 99c early exit: consecutive negative OB ticks
         "started_mid_window": False,         # True if bot started mid-window (skip trading)
-        "pairing_start_time": None,          # When PAIRING_MODE was entered
-        "best_distance_seen": None,          # Best (lowest) distance from profit target (in cents)
-        "pending_hedge_order_id": None,      # Track pending hedge order to prevent duplicates
-        "pending_hedge_side": None,          # Which side the pending hedge is for (UP/DOWN)
         "danger_score": 0,                    # Current danger score (0.0-1.0)
         "capture_99c_peak_confidence": 0,     # Confidence at 99c fill time
     }
@@ -440,18 +348,7 @@ def get_imbalance():
     if not window_state:
         return 0
     raw_imb = window_state['filled_up_shares'] - window_state['filled_down_shares']
-    if abs(raw_imb) < MICRO_IMBALANCE_TOLERANCE:
-        return 0
-    return raw_imb
-
-def get_arb_imbalance():
-    """Calculate ARB imbalance (excludes 99c capture shares)"""
-    if not window_state:
-        return 0
-    arb_up = max(0, window_state['filled_up_shares'] - window_state.get('capture_99c_filled_up', 0))
-    arb_down = max(0, window_state['filled_down_shares'] - window_state.get('capture_99c_filled_down', 0))
-    raw_imb = arb_up - arb_down
-    if abs(raw_imb) < MICRO_IMBALANCE_TOLERANCE:
+    if abs(raw_imb) < 0.5:
         return 0
     return raw_imb
 
@@ -698,69 +595,6 @@ def check_99c_outcome(side, slug):
         print(f"[{ts()}] check_99c_outcome error: {e}")
         return None
 
-def _send_pair_outcome_notification():
-    """Send appropriate notification when pair completes"""
-    global last_pair_type, session_counters
-
-    if not window_state:
-        return
-
-    up_shares = window_state['filled_up_shares']
-    down_shares = window_state['filled_down_shares']
-    avg_up = window_state['avg_up_price_paid']
-    avg_down = window_state['avg_down_price_paid']
-
-    if up_shares == 0 or down_shares == 0:
-        return
-
-    # Skip if prices not recorded yet
-    if avg_up == 0 or avg_down == 0:
-        return
-
-    pair_total = avg_up + avg_down
-    min_shares = min(up_shares, down_shares)
-    total_cost = (avg_up * min_shares) + (avg_down * min_shares)
-    payout = min_shares * 1.00  # Winner pays $1
-    profit = payout - total_cost
-    profit_per_pair = 1.00 - pair_total
-
-    if pair_total <= 1.00:
-        last_pair_type = "PROFIT_PAIR"
-        session_counters['profit_pairs'] += 1
-        up_cost = avg_up * min_shares
-        dn_cost = avg_down * min_shares
-        print()
-        print("╔════════════════════════════════════════════════════════════╗")
-        print("║  💰💰💰 PROFIT LOCKED! 💰💰💰                               ║")
-        print("╠════════════════════════════════════════════════════════════╣")
-        print(f"║  UP: {min_shares:.0f} shares @ {avg_up*100:.0f}c  =  ${up_cost:.2f}".ljust(60) + "║")
-        print(f"║  DN: {min_shares:.0f} shares @ {avg_down*100:.0f}c  =  ${dn_cost:.2f}".ljust(60) + "║")
-        print("║  ────────────────────────────────────────                  ║")
-        print(f"║  Total Cost: ${total_cost:.2f}  →  Payout: ${payout:.2f}".ljust(60) + "║")
-        print(f"║  🎉 GUARANTEED PROFIT: ${profit:.2f} ({profit_per_pair*100:.0f}c per pair)".ljust(60) + "║")
-        print("╚════════════════════════════════════════════════════════════╝")
-        print()
-        log_event("PROFIT_PAIR", window_state.get('window_id', ''),
-                        up_shares=min_shares, up_price=avg_up,
-                        down_shares=min_shares, down_price=avg_down,
-                        pnl=profit)
-    else:
-        last_pair_type = "LOSS_AVOID_PAIR"
-        session_counters['loss_avoid_pairs'] += 1
-        loss = total_cost - payout
-        print()
-        print("┌────────────────────────────────────────────────────────────┐")
-        print("│  🟧 LOSS AVOIDED                                           │")
-        print("├────────────────────────────────────────────────────────────┤")
-        print(f"│  UP: {min_shares:.0f} @ {avg_up*100:.0f}c + DN: {min_shares:.0f} @ {avg_down*100:.0f}c = {pair_total*100:.0f}c".ljust(60) + "│")
-        print(f"│  Cost: ${total_cost:.2f} → Payout: ${payout:.2f} | Loss capped: ${loss:.2f}".ljust(60) + "│")
-        print("└────────────────────────────────────────────────────────────┘")
-        print()
-        log_event("LOSS_AVOID", window_state.get('window_id', ''),
-                        up_shares=min_shares, up_price=avg_up,
-                        down_shares=min_shares, down_price=avg_down,
-                        pnl=-loss)
-
 # ============================================================================
 # DATA FETCHING
 # ============================================================================
@@ -854,16 +688,6 @@ def get_btc_price_from_coinbase():
 # SHARE SIZE CALCULATION
 # ============================================================================
 
-def min_shares(price):
-    """minShares(p) = ceil(max(5, 1/p))"""
-    if price <= 0:
-        return MIN_SHARES
-    return math.ceil(max(MIN_SHARES, 1.0 / price))
-
-def calc_q(bid_up, bid_down):
-    """Calculate Q = max shares needed for both legs"""
-    return max(min_shares(bid_up), min_shares(bid_down))
-
 def floor_to_tick(price):
     """Floor price to nearest tick"""
     return round(int(price / TICK) * TICK, 2)
@@ -890,8 +714,6 @@ def log_state(ttc, books=None):
         return
     _last_log_time = now
 
-    imb = get_arb_imbalance()  # Use ARB imbalance (excludes 99c captures)
-    state = window_state['state']
     up_shares = window_state['filled_up_shares']
     down_shares = window_state['filled_down_shares']
     pnl = window_state['realized_pnl_usd']
@@ -905,27 +727,19 @@ def log_state(ttc, books=None):
             ask_down = float(books['down_asks'][0]['price'])
 
     # Determine status and reason
-    if state == STATE_PAIRING:
-        status = "PAIRING"
-        reason = f"need {'DN' if imb > 0 else 'UP'}"
-    elif up_shares > 0 or down_shares > 0:
-        if imb == 0:
-            # No ARB imbalance - either paired ARB or 99c capture
-            if window_state.get('capture_99c_fill_notified'):
-                status = "SNIPER"
-                reason = f"{window_state.get('capture_99c_side', '?')} {int(up_shares + down_shares)} shares"
-            else:
-                status = "PAIRED"
-                reason = ""
+    if window_state.get('capture_99c_fill_notified'):
+        if window_state.get('capture_99c_exited'):
+            status = "EXITED"
+            reason = window_state.get('capture_99c_exit_reason', '')
         else:
-            status = "IMBAL"
-            reason = ""
+            status = "SNIPER"
+            reason = f"{window_state.get('capture_99c_side', '?')} {int(up_shares + down_shares)} shares"
+    elif up_shares > 0 or down_shares > 0:
+        status = "FILLED"
+        reason = ""
     else:
         status = "IDLE"
-        if ttc <= PAIR_DEADLINE_SECONDS:
-            reason = "too late"
-        else:
-            reason = _last_skip_reason if _last_skip_reason else "checking..."
+        reason = _last_skip_reason if _last_skip_reason else "watching..."
 
     # Get BTC price - prefer RTDS (real-time) over Chainlink (delayed)
     btc_str = ""
@@ -1333,14 +1147,6 @@ def get_order_status(order_id):
         print(f"[{ts()}] ORDER_STATUS_ERROR: {order_id[:8]}... - {e}")
     return {'filled': 0, 'original': 0, 'is_filled': False, 'fully_filled': False, 'price': 0, 'status': 'ERROR'}
 
-def check_both_orders_fast(up_order_id, down_order_id):
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        up_future = ex.submit(get_order_status, up_order_id)
-        down_future = ex.submit(get_order_status, down_order_id)
-        up_status = up_future.result(timeout=5)
-        down_status = down_future.result(timeout=5)
-    return up_status, down_status
-
 # ============================================================================
 # POSITION VERIFICATION
 # ============================================================================
@@ -1374,81 +1180,6 @@ def verify_position_from_api():
     except Exception as e:
         print(f"[{ts()}] API_POSITION_ERROR: {e}")
         return None
-
-# ============================================================================
-# BUG FIX: VERIFIED POSITION WITH RETRY
-# ============================================================================
-
-def get_verified_position():
-    """Get position with retry and validation - Bug Fix #2"""
-    for attempt in range(ORDER_VERIFY_RETRIES):
-        api_pos = verify_position_from_api()
-        if api_pos is not None:
-            return api_pos
-        time.sleep(1.0)
-    print(f"[{ts()}] POSITION_VERIFY_FAILED after {ORDER_VERIFY_RETRIES} attempts")
-    return None
-
-def get_verified_fills():
-    """
-    DUAL-SOURCE VERIFICATION: Check BOTH order status AND position API.
-    Uses max() across all sources - fills can only increase, never decrease.
-    """
-    global window_state
-
-    # Source 1: Check order status for pending arb orders
-    order_up_filled = 0
-    order_down_filled = 0
-
-    if window_state.get('current_arb_orders'):
-        arb = window_state['current_arb_orders']
-        if arb.get('up_id'):
-            up_status = get_order_status(arb['up_id'])
-            order_up_filled = up_status.get('filled', 0)
-        if arb.get('down_id'):
-            down_status = get_order_status(arb['down_id'])
-            order_down_filled = down_status.get('filled', 0)
-
-    # Source 2: Position API
-    api_up, api_down = 0, 0
-    pos = verify_position_from_api()
-    if pos:
-        api_up, api_down = pos
-
-    # Source 3: Local tracking
-    local_up = window_state.get('filled_up_shares', 0)
-    local_down = window_state.get('filled_down_shares', 0)
-
-    # Use MAXIMUM from all sources - fills can only increase
-    verified_up = max(order_up_filled, api_up, local_up)
-    verified_down = max(order_down_filled, api_down, local_down)
-
-    # Log if sources disagree (for debugging)
-    sources_match = (order_up_filled == api_up == local_up) and (order_down_filled == api_down == local_down)
-    if not sources_match and (order_up_filled > 0 or order_down_filled > 0 or api_up > 0 or api_down > 0):
-        print(f"[{ts()}] DUAL_VERIFY: order=({order_up_filled:.1f}/{order_down_filled:.1f}) api=({api_up:.1f}/{api_down:.1f}) local=({local_up:.1f}/{local_down:.1f}) -> ({verified_up:.1f}/{verified_down:.1f})")
-
-    return verified_up, verified_down
-
-def wait_and_sync_position():
-    """Wait for order to settle and sync position - Bug Fix #3"""
-    global window_state
-    print(f"[{ts()}] Waiting {ORDER_SETTLE_DELAY}s for settlement...")
-    time.sleep(ORDER_SETTLE_DELAY)
-
-    pos = get_verified_position()
-    if pos:
-        old_up = window_state['filled_up_shares']
-        old_down = window_state['filled_down_shares']
-        window_state['filled_up_shares'] = pos[0]
-        window_state['filled_down_shares'] = pos[1]
-        if pos[0] != old_up or pos[1] != old_down:
-            print(f"[{ts()}] POSITION_SYNCED: UP={old_up}->{pos[0]} DN={old_down}->{pos[1]}")
-        else:
-            print(f"[{ts()}] Position unchanged: UP={pos[0]} DN={pos[1]}")
-
-    window_state['last_order_time'] = time.time()
-    save_trades()
 
 # ============================================================================
 # BUG FIX: ORDER DEDUPLICATION
@@ -1512,109 +1243,6 @@ def place_and_verify_order(token_id, price, size, side="BUY", bypass_price_fails
     else:
         print(f"[{ts()}] ORDER_REJECTED: {order_id} - status={status['status']}")
         return False, order_id, "REJECTED"
-
-# ============================================================================
-# HYBRID LOSS PROTECTION: HEDGE ESCALATION
-# ============================================================================
-
-def calculate_hedge_price(fill_price, seconds_since_fill):
-    """Calculate max acceptable hedge price based on escalating tolerance.
-
-    Returns:
-        tuple: (max_hedge_price, tolerance_cents)
-        - max_hedge_price: Max price we're willing to pay for hedge (decimal, e.g. 0.42)
-        - tolerance_cents: Current tolerance in cents (e.g. 2 for 2c tolerance)
-    """
-    # Profit target: 99c combined (1c profit)
-    profit_target_price = 0.99 - fill_price  # e.g., 0.99 - 0.57 = 0.42 (42c)
-
-    # Find current tolerance based on time elapsed
-    tolerance_cents = 0
-    for threshold_secs, tol_cents in HEDGE_ESCALATION:
-        if seconds_since_fill >= threshold_secs:
-            tolerance_cents = tol_cents  # e.g. 2 for 2c tolerance
-
-    # Convert tolerance to decimal
-    tolerance = tolerance_cents / 100.0
-
-    # Max hedge = profit target + tolerance
-    max_hedge = profit_target_price + tolerance
-
-    # Cap at 50c max
-    return min(max_hedge, HEDGE_PRICE_CAP), tolerance_cents
-
-def should_trigger_bail(fill_price, current_ask, seconds_since_fill, ttc, is_hedged):
-    """Check if bail mode should trigger"""
-    # If already hedged (paired), no need to bail
-    if is_hedged:
-        return False, None
-
-    # Trigger 1: Unhedged too long AND hedge would exceed cap
-    hedge_needed, _ = calculate_hedge_price(fill_price, seconds_since_fill)
-    if seconds_since_fill > BAIL_UNHEDGED_TIMEOUT and hedge_needed >= HEDGE_PRICE_CAP:
-        return True, "UNHEDGED_TIMEOUT_HIGH_HEDGE"
-
-    # Trigger 2: <90 seconds until close AND still unhedged
-    if ttc <= BAIL_TIME_REMAINING:
-        return True, "TIME_CRITICAL"
-
-    # Trigger 3: Position down >5% (current ask much higher than fill = bad)
-    if fill_price > 0:
-        # If we bought at 40c and now ask is 50c, we'd have to pay 10c more = 25% loss
-        potential_loss_pct = (current_ask - fill_price) / fill_price
-        if potential_loss_pct > BAIL_LOSS_THRESHOLD:
-            return True, f"LOSS_EXCEEDED_{int(BAIL_LOSS_THRESHOLD*100)}PCT"
-
-    return False, None
-
-def execute_bail(side, shares, token, books):
-    """Cancel orders and sell at market - Emergency Exit"""
-    global window_state, session_counters
-
-    print()
-    print("🚨" * 25)
-    print(f"🚨 BAIL MODE TRIGGERED")
-    print(f"🚨 Selling {shares} {side} shares at market")
-    print("🚨" * 25)
-
-    # Cancel all pending orders first
-    cancel_all_orders()
-
-    # Get best bid for immediate exit
-    if side == "UP":
-        bids = books.get('up_bids', [])
-    else:
-        bids = books.get('down_bids', [])
-
-    if not bids:
-        print(f"[{ts()}] BAIL_FAILED: No bids available for {side}")
-        return False
-
-    best_bid = float(bids[0]['price'])
-    print(f"[{ts()}] BAIL_SELL: {shares} {side} @ {best_bid*100:.0f}c")
-
-    # Place market sell order
-    success, order_id = place_limit_order(token, best_bid, shares, "SELL")
-
-    if success:
-        time.sleep(1.0)
-        status = get_order_status(order_id)
-        filled = status.get('filled', 0)
-        print(f"[{ts()}] BAIL_RESULT: Sold {filled}/{shares} shares")
-
-        # Update position
-        if side == "UP":
-            window_state['filled_up_shares'] -= filled
-        else:
-            window_state['filled_down_shares'] -= filled
-
-        session_counters['hard_flattens'] += 1
-        save_trades()
-        return True
-
-    print(f"[{ts()}] BAIL_ORDER_FAILED")
-    return False
-
 
 def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason: str = "ob_reversal", market_data=None) -> bool:
     """Exit 99c position early due to OB reversal.
@@ -1737,56 +1365,6 @@ P&L: ${pnl:.2f}
         return False
 
     return True
-
-
-def bail_vs_hedge_decision(filled_side, filled_price, filled_shares, books):
-    """
-    Decide whether to HEDGE (buy other side) or BAIL (sell filled side).
-    Used after EARLY_HEDGE_TIMEOUT to minimize exposure.
-
-    Returns: ("HEDGE", price) or ("BAIL", price) or ("WAIT", None)
-    """
-    other_side = "DOWN" if filled_side == "UP" else "UP"
-
-    # Get current market prices
-    if filled_side == "UP":
-        hedge_asks = books.get('down_asks', [])
-        bail_bids = books.get('up_bids', [])
-    else:
-        hedge_asks = books.get('up_asks', [])
-        bail_bids = books.get('down_bids', [])
-
-    if not hedge_asks or not bail_bids:
-        return ("WAIT", None)
-
-    hedge_ask = float(hedge_asks[0]['price'])
-    bail_bid = float(bail_bids[0]['price'])
-
-    # Calculate losses
-    # Target hedge price = 0.99 - filled_price (break-even for arb)
-    target_hedge = 0.99 - filled_price
-    hedge_loss = max(0, hedge_ask - target_hedge)  # How much worse than break-even
-    bail_loss = max(0, filled_price - bail_bid)    # How much we lose by selling
-
-    print(f"[{ts()}] BAIL_VS_HEDGE: filled {filled_side}@{filled_price*100:.0f}c | "
-          f"hedge {other_side}@{hedge_ask*100:.0f}c (loss={hedge_loss*100:.1f}c) | "
-          f"bail@{bail_bid*100:.0f}c (loss={bail_loss*100:.1f}c)")
-
-    # Decision logic:
-    # 1. If hedge is at/near target (<=2c loss), always hedge
-    if hedge_loss <= 0.02:
-        return ("HEDGE", hedge_ask)
-
-    # 2. If bail is within tolerance AND cheaper than hedge, bail
-    if bail_loss <= EARLY_BAIL_MAX_LOSS and bail_loss < hedge_loss:
-        return ("BAIL", bail_bid)
-
-    # 3. If hedge is within tolerance (even if more than bail), hedge
-    if hedge_loss <= EARLY_BAIL_MAX_LOSS:
-        return ("HEDGE", hedge_ask)
-
-    # 4. Both too expensive - wait and let normal escalation handle it
-    return ("WAIT", None)
 
 
 # ============================================================================
@@ -1928,9 +1506,9 @@ def check_99c_capture_opportunity(ask_up, ask_down, ttc):
 def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
     """
     Place a $5 order at 99c for the likely winner.
-    This is a single-side bet, not an arb.
+    This is a single-side bet on near-certain winners.
     """
-    global window_state, session_counters
+    global window_state
 
     shares = int(CAPTURE_99C_MAX_SPEND / CAPTURE_99C_BID_PRICE)  # ~5 shares
     token = window_state['up_token'] if side == 'UP' else window_state['down_token']
@@ -1955,9 +1533,7 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
         window_state['capture_99c_order'] = order_id
         window_state['capture_99c_side'] = side
         window_state['capture_99c_shares'] = shares
-        # NOTE: Do NOT set capture_99c_filled_up/down here.
-        # Setting it at placement (before fill) causes arb_imbalance = 0 - 6 = -6,
-        # triggering false PAIRING_MODE. Let the fill detection code (line ~3098) set it.
+        # NOTE: Do NOT set capture_99c_filled_up/down here — wait for fill detection.
         print(f"🔭 99c CAPTURE: Order placed, watching for fill... (${shares * 0.01:.2f} potential profit)")
         print()
         log_event("CAPTURE_99C", window_state.get('window_id', ''),
@@ -2061,727 +1637,6 @@ def calculate_danger_score(
 
 
 # ============================================================================
-# ARB QUOTING WITH SMART SIGNALS
-# ============================================================================
-
-def check_and_place_arb(books, ttc):
-    """
-    Check for arb opportunity and place orders.
-    NOW WITH SMART SIGNALS: Multi-timeframe momentum and volatility filtering.
-    """
-    global window_state, session_counters, _last_skip_reason
-
-    # ONE ARB PER WINDOW guard
-    if window_state.get('arb_placed_this_window'):
-        return False
-
-    # ENTRY TIME RESTRICTION - Never enter with <5 minutes remaining
-    if ttc < MIN_TIME_FOR_ENTRY:
-        _last_skip_reason = f"late entry ({ttc:.0f}s<{MIN_TIME_FOR_ENTRY}s)"
-        return False
-
-    # Position verification using improved function
-    api_position = get_verified_position()
-    if api_position:
-        api_up, api_down = api_position
-        local_up = window_state['filled_up_shares']
-        local_down = window_state['filled_down_shares']
-        if api_up != local_up or api_down != local_down:
-            # Use MAX - fills can only increase, never decrease (API may be stale)
-            new_up = max(local_up, api_up)
-            new_down = max(local_down, api_down)
-            print(f"🔄 PRE-ARB POSITION SYNC: local=({local_up},{local_down}) api=({api_up},{api_down}) -> ({new_up},{new_down})")
-            window_state['filled_up_shares'] = new_up
-            window_state['filled_down_shares'] = new_down
-            save_trades()
-            # Only return False if position actually changed (prevents infinite loop)
-            if new_up != local_up or new_down != local_down:
-                return False
-
-    # Use ARB imbalance (excludes 99c capture shares) - don't pair for 99c captures
-    imb = get_arb_imbalance()
-    if imb != 0:
-        print(f"[{ts()}] BLOCK_NEW_ARBS arb_imbalance={imb} -> entering PAIRING_MODE")
-        window_state['state'] = STATE_PAIRING
-        window_state['pairing_start_time'] = time.time()
-        window_state['best_distance_seen'] = float('inf')
-        log_event("PAIRING_ENTRY", window_state.get('window_id', ''), imbalance=imb, reason="imbalance_detected")
-        return False
-
-    if ttc <= PAIR_DEADLINE_SECONDS:
-        return False
-
-    up_asks = books['up_asks']
-    down_asks = books['down_asks']
-
-    if not up_asks or not down_asks:
-        return False
-
-    ask_up = float(up_asks[0]['price'])
-    ask_down = float(down_asks[0]['price'])
-
-    # Skip pinned
-    if ask_up <= PINNED_ASK_LIMIT or ask_down <= PINNED_ASK_LIMIT:
-        return False
-
-    # ===========================================
-    # STRONG DIVERGENCE CHECK
-    # Requires: cheap side <= 42c AND expensive side >= 58c
-    # ===========================================
-    cheap_price = min(ask_up, ask_down)
-    expensive_price = max(ask_up, ask_down)
-
-    # Check 1: Cheap side must be cheap enough (ARB disabled - dead code)
-    if cheap_price > 0.42:
-        return False  # Both sides near 50/50
-
-    # Check 2: Expensive side must show clear momentum
-    if expensive_price < 0.58:
-        print(f"[{ts()}] SKIP_WEAK_DIVERGENCE: {cheap_price*100:.0f}c/{expensive_price*100:.0f}c - need 58c+ on expensive side")
-        return False
-
-    cheap_side = "UP" if ask_up <= 0.42 else "DOWN"
-    print(f"[{ts()}] STRONG_DIVERGENCE: {cheap_side} @ {cheap_price*100:.0f}c, other @ {expensive_price*100:.0f}c")
-
-    size_multiplier = 1.0
-
-    # ===========================================
-    # ORDER BOOK IMBALANCE CHECK
-    # ===========================================
-    if USE_ORDERBOOK_SIGNALS and ORDERBOOK_ANALYZER_AVAILABLE and orderbook_analyzer:
-        ob_result = orderbook_analyzer.analyze(
-            books.get('up_bids', []), books.get('up_asks', []),
-            books.get('down_bids', []), books.get('down_asks', [])
-        )
-
-        signal_side = ob_result.get('signal')  # BUY_UP, BUY_DOWN, or None
-        strength = ob_result.get('strength')   # STRONG, MODERATE, WEAK, or None
-        trend = ob_result.get('trend')         # TREND_UP, TREND_DOWN, or None
-        up_imb = ob_result.get('up_imbalance', 0)
-        down_imb = ob_result.get('down_imbalance', 0)
-
-        print(f"[{ts()}] ORDERBOOK: UP={up_imb:+.2f} DN={down_imb:+.2f} | Signal: {signal_side or '-'} | Strength: {strength or '-'} | Trend: {trend or '-'}")
-
-        # Check if imbalance aligns with cheap side
-        if signal_side:
-            imbalance_direction = "UP" if signal_side == "BUY_UP" else "DOWN"
-            price_direction = cheap_side
-
-            if imbalance_direction == price_direction:
-                print(f"[{ts()}] ✅ ORDERBOOK CONFIRMS: {signal_side} aligns with cheap side ({cheap_side})")
-            else:
-                print(f"[{ts()}] ⚠️  ORDERBOOK DIVERGES: {signal_side} vs price direction ({cheap_side})")
-                # Optional: Could skip trade if orderbook disagrees
-                # if ORDERBOOK_REQUIRE_ALIGNMENT:
-                #     return False
-
-        # Check minimum strength requirement
-        strength_levels = {"WEAK": 1, "MODERATE": 2, "STRONG": 3}
-        min_strength = strength_levels.get(ORDERBOOK_MIN_SIGNAL_STRENGTH, 2)
-        current_strength = strength_levels.get(strength, 0)
-
-        if ORDERBOOK_REQUIRE_TREND and trend is None:
-            print(f"[{ts()}] ⚠️  NO TREND CONFIRMED (need {orderbook_analyzer.history_size // 6}+ consistent readings)")
-        elif strength and current_strength >= min_strength:
-            print(f"[{ts()}] ✅ ORDERBOOK STRENGTH OK: {strength} >= {ORDERBOOK_MIN_SIGNAL_STRENGTH}")
-
-    # Compute bids
-    bid_up = floor_to_tick(ask_up - TICK)
-    bid_down = floor_to_tick(ask_down - TICK)
-
-    if bid_up < MIN_PRICE or bid_up >= ask_up:
-        return False
-    if bid_down < MIN_PRICE or bid_down >= ask_down:
-        return False
-
-    total = bid_up + bid_down
-    if total > LOCK_MAX:
-        print(f"[{ts()}] NO_PAIR SUM_EXCEEDS_LOCK_MAX")
-        return False
-
-    locked_profit = 1.00 - total
-    quote_ttl_ms = TTL_2C_MS if locked_profit >= 0.02 else TTL_1C_MS
-
-    # Calculate Q with optional size multiplier
-    base_q = calc_q(bid_up, bid_down)
-    q = max(MIN_SHARES, min(FAILSAFE_MAX_SHARES, int(base_q * size_multiplier)))
-
-    print()
-    print("📝" * 25)
-    print(f"📝 ARB OPPORTUNITY FOUND")
-    print(f"📝 UP @ {bid_up*100:.0f}c + DOWN @ {bid_down*100:.0f}c = {total*100:.0f}c")
-    print(f"📝 Locked Profit: {locked_profit*100:.0f}c per share | Shares: {q}")
-    if size_multiplier != 1.0:
-        print(f"📝 (Size adjusted from {base_q} by {size_multiplier:.2f}x)")
-    print("📝" * 25)
-
-    # MOMENTUM-FIRST STRATEGY
-    if MOMENTUM_FIRST_ENABLED:
-        if bid_up >= bid_down:
-            first_side, first_token, first_bid = "UP", books['up_token'], bid_up
-            second_side, second_token, second_bid = "DOWN", books['down_token'], bid_down
-        else:
-            first_side, first_token, first_bid = "DOWN", books['down_token'], bid_down
-            second_side, second_token, second_bid = "UP", books['up_token'], bid_up
-
-        print(f"🚀 MOMENTUM-FIRST: {first_side} has momentum ({first_bid*100:.0f}c > {second_bid*100:.0f}c)")
-
-        # Place first side with verification (Bug Fix #1)
-        success_first, order_first, status_first = place_and_verify_order(first_token, first_bid, q)
-        if not success_first:
-            print(f"📝 ORDER {first_side}: ❌ FAILED ({status_first})")
-            return False
-
-        print(f"📝 ORDER {first_side}: ✅ {q} shares @ {first_bid*100:.0f}c")
-        window_state['first_order_time'] = time.time()  # Track when first leg was placed
-        log_event("ARB_ORDER", window_state.get('window_id', ''), side=first_side, price=first_bid, shares=q,
-                        locked_profit=locked_profit)
-
-        # Wait for fill
-        print(f"⏳ Waiting for {first_side} to fill...")
-        first_filled = False
-        first_fill_shares = 0
-        for i in range(25):
-            time.sleep(0.2)
-            status = get_order_status(order_first)
-            if status['filled'] >= q * 0.9:
-                first_filled = True
-                first_fill_shares = status['filled']
-                print(f"✅ {first_side} FILLED: {first_fill_shares} shares")
-                log_event("ARB_FILL", window_state.get('window_id', ''), side=first_side, shares=first_fill_shares, price=first_bid)
-                window_state['arb_placed_this_window'] = True  # Prevent duplicate arb attempts after first fill
-                break
-            if i % 5 == 4:
-                print(f"⏳ {first_side}: {status['filled']}/{q} filled...")
-
-        if not first_filled:
-            print(f"⚠️ {first_side} didn't fill - canceling")
-            cancel_all_orders()
-            return False
-
-        # Place second side with verification (Bug Fix #1)
-        print(f"🎯 {first_side} FILLED! Placing {second_side}...")
-        success_second, order_second, status_second = place_and_verify_order(second_token, second_bid, q)
-
-        if not success_second:
-            print(f"📝 ORDER {second_side}: ❌ FAILED ({status_second})")
-            # One side filled, need to track
-            if first_side == "UP":
-                window_state['filled_up_shares'] = first_fill_shares
-                window_state['avg_up_price_paid'] = first_bid
-            else:
-                window_state['filled_down_shares'] = first_fill_shares
-                window_state['avg_down_price_paid'] = first_bid
-
-            # === FIX: Enter PAIRING_MODE to complete hedge ===
-            print(f"⚠️ ONE-LEG FILL! Entering PAIRING_MODE to hedge {first_side}")
-            window_state['state'] = STATE_PAIRING
-            window_state['pairing_start_time'] = time.time()
-            window_state['best_distance_seen'] = float('inf')
-            window_state['arb_placed_this_window'] = True  # Prevent new arb attempts
-            log_event("PAIRING_ENTRY", window_state.get('window_id', ''),
-                           imbalance=first_fill_shares, reason="second_order_failed")
-            return False  # Main loop will call run_pairing_mode()
-        else:
-            print(f"📝 ORDER {second_side}: ✅ {q} shares @ {second_bid*100:.0f}c")
-
-            if first_side == "UP":
-                window_state['filled_up_shares'] = first_fill_shares
-                window_state['avg_up_price_paid'] = first_bid
-                window_state['open_up_order_ids'].append(order_first)
-                window_state['open_down_order_ids'].append(order_second)
-            else:
-                window_state['filled_down_shares'] = first_fill_shares
-                window_state['avg_down_price_paid'] = first_bid
-                window_state['open_down_order_ids'].append(order_first)
-                window_state['open_up_order_ids'].append(order_second)
-
-            success_up = True
-            success_down = True
-            order_up = order_first if first_side == "UP" else order_second
-            order_down = order_first if first_side == "DOWN" else order_second
-
-    else:
-        # Simultaneous placement
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            up_future = ex.submit(place_limit_order, books['up_token'], bid_up, q)
-            down_future = ex.submit(place_limit_order, books['down_token'], bid_down, q)
-            success_up, order_up = up_future.result(timeout=3)
-            success_down, order_down = down_future.result(timeout=3)
-
-        if success_up:
-            window_state['open_up_order_ids'].append(order_up)
-        if success_down:
-            window_state['open_down_order_ids'].append(order_down)
-
-    if success_up and success_down:
-        window_state['current_arb_orders'] = {
-            'up_id': order_up,
-            'down_id': order_down,
-            'bid_up': bid_up,
-            'bid_down': bid_down,
-            'q': q,
-            'ttl_ms': quote_ttl_ms,
-            'locked_profit': locked_profit
-        }
-        window_state['arb_order_time'] = time.time()
-        window_state['arb_placed_this_window'] = True
-
-        # AGGRESSIVE COMPLETION with position verification (Bug Fix #3)
-        if AGGRESSIVE_COMPLETION_ENABLED:
-            print(f"⏳ AGGRESSIVE COMPLETION: Waiting {ORDER_SETTLE_DELAY}s for settlement...")
-            time.sleep(ORDER_SETTLE_DELAY)
-
-            # DUAL-SOURCE VERIFICATION: Check both order status AND position API
-            verified_up, verified_down = get_verified_fills()
-            window_state['filled_up_shares'] = verified_up
-            window_state['filled_down_shares'] = verified_down
-            print(f"[{ts()}] POSITION_VERIFIED: UP={verified_up:.1f} DN={verified_down:.1f}")
-
-            up_filled = window_state['filled_up_shares'] >= q * 0.9
-            down_filled = window_state['filled_down_shares'] >= q * 0.9
-
-            if up_filled and down_filled:
-                print("💰 BOTH FILLED - PAIR COMPLETE!")
-                window_state['avg_up_price_paid'] = bid_up
-                window_state['avg_down_price_paid'] = bid_down
-                cancel_all_orders()
-                window_state['current_arb_orders'] = None
-                window_state['state'] = STATE_DONE
-                save_trades()
-                return True
-
-        return True
-    else:
-        cancel_all_orders()
-        return False
-
-# ============================================================================
-# MONITOR ARB ORDERS (simplified - keeping core logic)
-# ============================================================================
-
-def monitor_arb_orders(books):
-    """Monitor pending arb orders for fills"""
-    global window_state
-
-    if not window_state['current_arb_orders']:
-        return
-
-    arb = window_state['current_arb_orders']
-    elapsed_ms = (time.time() - window_state['arb_order_time']) * 1000
-
-    up_status = get_order_status(arb['up_id'])
-    down_status = get_order_status(arb['down_id'])
-
-    up_filled = up_status['filled']
-    down_filled = down_status['filled']
-
-    if up_filled > window_state['filled_up_shares']:
-        window_state['filled_up_shares'] = up_filled
-        window_state['avg_up_price_paid'] = arb['bid_up']
-        print(f"🔵 UP FILL! {up_filled} @ {arb['bid_up']*100:.0f}c")
-
-    if down_filled > window_state['filled_down_shares']:
-        window_state['filled_down_shares'] = down_filled
-        window_state['avg_down_price_paid'] = arb['bid_down']
-        print(f"🟠 DOWN FILL! {down_filled} @ {arb['bid_down']*100:.0f}c")
-
-    if up_filled > 0 or down_filled > 0:
-        save_trades()
-
-    imb = get_imbalance()
-
-    if up_status['fully_filled'] and down_status['fully_filled']:
-        print("💰 BOTH FILLED - PAIRED!")
-        window_state['current_arb_orders'] = None
-        window_state['state'] = STATE_DONE
-        return
-
-    if elapsed_ms > arb['ttl_ms'] and up_filled == 0 and down_filled == 0:
-        print(f"[{ts()}] TTL_EXPIRED - cancelling")
-        cancel_all_orders()
-        window_state['current_arb_orders'] = None
-        return
-
-    if elapsed_ms > HEDGE_DEADLINE_MS and imb != 0:
-        print(f"⚠️ ONE-LEG FILL! Entering PAIRING_MODE")
-        cancel_all_orders()
-        window_state['current_arb_orders'] = None
-        window_state['state'] = STATE_PAIRING
-        window_state['pairing_start_time'] = time.time()
-        window_state['best_distance_seen'] = float('inf')
-
-# ============================================================================
-# PAIRING MODE (keeping existing logic)
-# ============================================================================
-
-def run_pairing_mode(books, ttc):
-    """Execute forced completion to fix imbalance"""
-    global window_state
-
-    # ===========================================
-    # BAIL MODE TRIGGER - 90 SECONDS (NO EXCEPTIONS)
-    # ===========================================
-    if ttc <= BAIL_TIME_REMAINING:
-        imb = get_arb_imbalance()  # Exclude 99c capture shares
-        if imb != 0:
-            # Check bail conditions
-            first_order_time = window_state.get('first_order_time', time.time())
-            seconds_since_fill = time.time() - first_order_time
-            fill_price = window_state.get('avg_up_price_paid', 0) if imb > 0 else window_state.get('avg_down_price_paid', 0)
-
-            # Get current ask for the missing side
-            if imb > 0:
-                current_ask = float(books['down_asks'][0]['price']) if books.get('down_asks') else 1.0
-                excess_side = "UP"
-                excess_shares = imb
-                excess_token = window_state['up_token']
-            else:
-                current_ask = float(books['up_asks'][0]['price']) if books.get('up_asks') else 1.0
-                excess_side = "DOWN"
-                excess_shares = abs(imb)
-                excess_token = window_state['down_token']
-
-            print(f"[{ts()}] 🚨 FORCE_BAIL: {ttc:.0f}s remaining, still imbalanced (imb={imb})")
-            execute_bail(excess_side, excess_shares, excess_token, books)
-            window_state['state'] = STATE_DONE
-            return
-
-    time_since_last = time.time() - window_state.get('last_order_time', 0)
-    if time_since_last < ORDER_COOLDOWN_SECONDS:
-        return
-
-    # DUAL-SOURCE VERIFICATION before pairing
-    if POSITION_VERIFY_BEFORE_ORDER:
-        verified_up, verified_down = get_verified_fills()
-        window_state['filled_up_shares'] = verified_up
-        window_state['filled_down_shares'] = verified_down
-
-    imb = get_arb_imbalance()  # Exclude 99c capture shares
-    if imb == 0:
-        print(f"[{ts()}] PAIRING_MODE EXIT - now flat (arb balanced)")
-        window_state['state'] = STATE_QUOTING
-        return
-
-    if imb > 0:
-        missing_side, missing_shares = "DOWN", imb
-        missing_token = window_state['down_token']
-        asks = books['down_asks']
-        existing_price = window_state['avg_up_price_paid']
-        filled_side = "UP"
-        filled_token = window_state['up_token']
-        filled_price = window_state['avg_up_price_paid']
-    else:
-        missing_side, missing_shares = "UP", abs(imb)
-        missing_token = window_state['up_token']
-        asks = books['up_asks']
-        existing_price = window_state['avg_down_price_paid']
-        filled_side = "DOWN"
-        filled_token = window_state['down_token']
-        filled_price = window_state['avg_down_price_paid']
-
-    # ===========================================
-    # TRACK MARKET STATE AT PAIRING ENTRY (for reversal detection)
-    # ===========================================
-    if 'pairing_entry_market' not in window_state:
-        window_state['pairing_entry_market'] = {
-            'up_ask': float(books['up_asks'][0]['price']) if books.get('up_asks') else 0.50,
-            'down_ask': float(books['down_asks'][0]['price']) if books.get('down_asks') else 0.50,
-            'up_bid': float(books['up_bids'][0]['price']) if books.get('up_bids') else 0.50,
-            'down_bid': float(books['down_bids'][0]['price']) if books.get('down_bids') else 0.50,
-            'time': time.time()
-        }
-        print(f"[{ts()}] PAIRING_ENTRY_MARKET: UP ask={window_state['pairing_entry_market']['up_ask']*100:.0f}c | "
-              f"DOWN ask={window_state['pairing_entry_market']['down_ask']*100:.0f}c")
-
-    # ===========================================
-    # SCALE-UP LOGIC: Handle partial fills properly
-    # If missing < 5, buy 5 on missing side + extra on filled side
-    # ===========================================
-    extra_needed = 0
-    original_missing = missing_shares
-
-    if missing_shares < MIN_SHARES:
-        extra_needed = MIN_SHARES - missing_shares
-        print(f"[{ts()}] ⚠️  SCALE-UP: missing_shares {missing_shares} < {MIN_SHARES} min")
-        print(f"[{ts()}] ⚠️  SCALE-UP: Will buy {MIN_SHARES} {missing_side}, then {extra_needed} {filled_side} to re-balance")
-        missing_shares = MIN_SHARES
-
-    max_breakeven = floor_to_tick(1.00 - existing_price)
-
-    print(f"[{ts()}] PAIRING_MODE: need {missing_shares} {missing_side} @ max {max_breakeven*100:.0f}c")
-
-    cancel_all_orders()
-
-    # RE-VERIFY position after cancel to prevent duplicate orders (Bug Fix: race condition)
-    # The original order may have filled between our imbalance check and cancel
-    time.sleep(1.0)  # Brief settle time for cancel/fills to propagate
-    verified_up, verified_down = get_verified_fills()
-    window_state['filled_up_shares'] = verified_up
-    window_state['filled_down_shares'] = verified_down
-
-    # Re-check imbalance with fresh data
-    imb = get_arb_imbalance()
-    if imb == 0:
-        print(f"[{ts()}] PAIRING_MODE: Order filled during cancel - now balanced!")
-        window_state['pending_hedge_order_id'] = None
-        window_state['pending_hedge_side'] = None
-        window_state['state'] = STATE_DONE
-        _send_pair_outcome_notification()
-        return
-
-    if not asks:
-        return
-
-    best_ask = float(asks[0]['price'])
-
-    # ===========================================
-    # EARLY BAIL LOGIC - REVERSAL DETECTION
-    # ===========================================
-    if window_state.get('pairing_start_time'):
-        time_in_pairing = time.time() - window_state['pairing_start_time']
-        profit_target_price = 0.99 - existing_price
-        current_distance = (best_ask - profit_target_price) * 100  # In cents
-        best_ever = window_state.get('best_distance_seen', float('inf'))
-
-        # Update best_distance_seen
-        if current_distance < best_ever:
-            window_state['best_distance_seen'] = current_distance
-            best_ever = current_distance
-
-        # --- MARKET REVERSAL DETECTION ---
-        # Detect sudden market moves against our position and bail early
-        entry_market = window_state.get('pairing_entry_market', {})
-
-        if entry_market:
-            time_since_entry = time.time() - entry_market.get('time', time.time())
-
-            # Calculate market move against our position
-            if filled_side == "UP":
-                entry_bid = entry_market.get('up_bid', 0.50)
-                current_bid = float(books['up_bids'][0]['price']) if books.get('up_bids') else 0.50
-            else:
-                entry_bid = entry_market.get('down_bid', 0.50)
-                current_bid = float(books['down_bids'][0]['price']) if books.get('down_bids') else 0.50
-
-            market_move = entry_bid - current_bid  # Positive = market moved against us
-
-            if market_move >= MARKET_REVERSAL_THRESHOLD:
-                print(f"⚡ MARKET_REVERSAL: {market_move*100:.0f}c move against {filled_side} in {time_since_entry:.0f}s!")
-                # Immediately evaluate bail vs hedge
-                decision, price = bail_vs_hedge_decision(filled_side, filled_price, missing_shares, books)
-                if decision == "BAIL":
-                    print(f"🛑 REVERSAL_BAIL: Selling {filled_side} @ {price*100:.0f}c")
-                    execute_bail(filled_side, missing_shares, filled_token, books)
-                    # Calculate P&L: (entry - exit) * shares (negative = loss)
-                    bail_pnl = -((filled_price - price) * missing_shares)
-                    log_event("EARLY_BAIL", window_state.get('window_id', ''),
-                                    side=filled_side, shares=missing_shares, price=price,
-                                    pnl=bail_pnl,
-                                    reason="market_reversal")
-                    window_state['state'] = STATE_DONE
-                    return
-
-            # --- OB-BASED REVERSAL DETECTION (v1.9) ---
-            # If OB shows heavy selling on our filled side + small price drop, bail early
-            if ORDERBOOK_ANALYZER_AVAILABLE and orderbook_analyzer:
-                ob_result = orderbook_analyzer.analyze(
-                    books.get('up_bids', []), books.get('up_asks', []),
-                    books.get('down_bids', []), books.get('down_asks', [])
-                )
-                filled_side_imb = ob_result['up_imbalance'] if filled_side == "UP" else ob_result['down_imbalance']
-
-                # OB shows selling pressure + small price drop = bail immediately
-                if filled_side_imb < OB_REVERSAL_THRESHOLD and market_move >= OB_REVERSAL_PRICE_CONFIRM:
-                    print(f"📊 OB_REVERSAL: {filled_side} imbalance={filled_side_imb:+.2f} (<{OB_REVERSAL_THRESHOLD}) + {market_move*100:.0f}c drop")
-                    decision, price = bail_vs_hedge_decision(filled_side, filled_price, missing_shares, books)
-                    if decision == "BAIL":
-                        print(f"🛑 OB_BAIL: Selling {filled_side} @ {price*100:.0f}c (OB confirmed reversal)")
-                        execute_bail(filled_side, missing_shares, filled_token, books)
-                        # Calculate P&L: (entry - exit) * shares (negative = loss)
-                        bail_pnl = -((filled_price - price) * missing_shares)
-                        log_event("EARLY_BAIL", window_state.get('window_id', ''),
-                                        side=filled_side, shares=missing_shares, price=price,
-                                        pnl=bail_pnl,
-                                        reason="ob_reversal", ob_imbalance=filled_side_imb)
-                        window_state['state'] = STATE_DONE
-                        return
-
-        # --- EARLY BAIL EVALUATION (after 30s timeout) ---
-        if time_in_pairing >= EARLY_HEDGE_TIMEOUT and time_in_pairing < 120:
-            # Check every EARLY_BAIL_CHECK_INTERVAL seconds
-            last_check = window_state.get('last_bail_check_time', 0)
-            if time.time() - last_check >= EARLY_BAIL_CHECK_INTERVAL:
-                window_state['last_bail_check_time'] = time.time()
-
-                decision, price = bail_vs_hedge_decision(filled_side, filled_price, missing_shares, books)
-
-                if decision == "BAIL":
-                    print(f"🛑 EARLY_BAIL: Selling {filled_side} @ {price*100:.0f}c (cheaper than hedging)")
-                    execute_bail(filled_side, missing_shares, filled_token, books)
-                    # Calculate P&L: (entry - exit) * shares (negative = loss)
-                    bail_pnl = -((filled_price - price) * missing_shares)
-                    log_event("EARLY_BAIL", window_state.get('window_id', ''),
-                                    side=filled_side, shares=missing_shares, price=price,
-                                    pnl=bail_pnl,
-                                    reason="bail_cheaper_than_hedge")
-                    window_state['state'] = STATE_DONE
-                    return
-
-                elif decision == "HEDGE" and price:
-                    # Take the hedge at loss - within tolerance
-                    print(f"📈 EARLY_HEDGE: Taking {missing_side} @ {price*100:.0f}c (within {EARLY_BAIL_MAX_LOSS*100:.0f}c loss limit)")
-                    success, order_id, status_msg = place_and_verify_order(missing_token, price, missing_shares)
-                    if success:
-                        wait_and_sync_position()
-                        imb_check = get_imbalance()
-                        if imb_check == 0:
-                            log_event("EARLY_HEDGE", window_state.get('window_id', ''),
-                                            side=missing_side, shares=missing_shares, price=price,
-                                            reason="hedge_within_tolerance")
-                            window_state['pending_hedge_order_id'] = None
-                            window_state['pending_hedge_side'] = None
-                            _send_pair_outcome_notification()
-                            window_state['state'] = STATE_DONE
-                            return
-                        cancel_order(order_id)
-
-        # --- FALLBACK: 5+ min stuck with no hope ---
-        if time_in_pairing > 300 and current_distance > 20 and best_ever > 8:
-            print(f"[{ts()}] LATE_BAIL: {time_in_pairing:.0f}s elapsed, distance={current_distance:.0f}c, best_ever={best_ever:.0f}c")
-            execute_bail(filled_side, missing_shares, filled_token, books)
-            window_state['state'] = STATE_DONE
-            return
-
-    # Step 1: Post-only with hedge escalation
-    if ttc > TAKER_AT_SECONDS:
-        # Calculate hedge price based on escalation schedule
-        first_order_time = window_state.get('first_order_time', time.time())
-        seconds_since_fill = time.time() - first_order_time
-        max_hedge, tolerance_cents = calculate_hedge_price(existing_price, seconds_since_fill)
-
-        # Calculate profit target for logging
-        profit_target = 0.99 - existing_price
-
-        # Track best distance seen (for early bail logic)
-        current_distance = (best_ask - profit_target) * 100  # In cents
-        if window_state.get('best_distance_seen') is None or current_distance < window_state.get('best_distance_seen', float('inf')):
-            window_state['best_distance_seen'] = current_distance
-
-        best_distance = window_state.get('best_distance_seen', float('inf'))
-
-        # Use the better of: breakeven price, escalated hedge, or just below best ask
-        target = min(
-            floor_to_tick(1.00 - existing_price - TICK),  # Breakeven
-            floor_to_tick(max_hedge),                     # Max hedge with tolerance
-            floor_to_tick(best_ask - TICK)                # Just below ask
-        )
-
-        print(f"[{ts()}] HEDGE_CALC: entry={existing_price*100:.0f}c target={profit_target*100:.0f}c tolerance={tolerance_cents:.0f}c max_hedge={max_hedge*100:.0f}c elapsed={seconds_since_fill:.0f}s best_seen={best_distance:.0f}c")
-
-        # CHECK: Was previous hedge order filled? (Cancel race condition fix)
-        if window_state.get('pending_hedge_order_id'):
-            prev_order_id = window_state['pending_hedge_order_id']
-            order_status = get_order_status(prev_order_id)
-
-            if order_status and order_status.get('is_filled'):
-                # Previous order was filled even though we tried to cancel!
-                print(f"[{ts()}] HEDGE_ALREADY_FILLED: Previous order was matched despite cancel")
-                window_state['pending_hedge_order_id'] = None
-                window_state['pending_hedge_side'] = None
-                # Re-sync position and return - don't place duplicate
-                wait_and_sync_position()
-                return
-
-        if target >= MIN_PRICE and target < best_ask and target <= HEDGE_PRICE_CAP:
-            # Use place_and_verify_order for deduplication (Bug Fix #4)
-            success, order_id, status_msg = place_and_verify_order(missing_token, target, missing_shares)
-            if success:
-                # Track this order ID to prevent duplicates (Cancel race condition fix)
-                window_state['pending_hedge_order_id'] = order_id
-                window_state['pending_hedge_side'] = missing_side
-
-                # Use wait_and_sync_position for proper settlement (Bug Fix #3)
-                wait_and_sync_position()
-
-                # Check if we're now flat
-                imb = get_imbalance()
-                if imb == 0:
-                    # Clear tracking - position is balanced
-                    window_state['pending_hedge_order_id'] = None
-                    window_state['pending_hedge_side'] = None
-
-                    # SCALE-UP: Buy extra on filled side to re-balance
-                    if extra_needed > 0:
-                        print(f"[{ts()}] ⚠️  SCALE-UP: Buying {extra_needed} extra {filled_side} @ {filled_price*100:.0f}c")
-                        success2, order_id2, _ = place_and_verify_order(filled_token, filled_price, extra_needed)
-                        if success2:
-                            wait_and_sync_position()
-                            print(f"[{ts()}] ✅ SCALE-UP COMPLETE: Now flat with larger position")
-
-                    _send_pair_outcome_notification()
-                    window_state['state'] = STATE_DONE
-                    return
-                cancel_order(order_id)
-        elif target > HEDGE_PRICE_CAP:
-            print(f"[{ts()}] HEDGE_BLOCKED: target {target*100:.0f}c > {HEDGE_PRICE_CAP*100:.0f}c cap")
-
-    imb = get_imbalance()
-    if imb == 0:
-        window_state['pending_hedge_order_id'] = None
-        window_state['pending_hedge_side'] = None
-        _send_pair_outcome_notification()
-        window_state['state'] = STATE_DONE
-        return
-
-    # Step 2: Taker with loss protection
-    if ttc <= TAKER_AT_SECONDS and ttc > HARD_FLATTEN_SECONDS:
-        # Re-check imbalance with fresh data
-        imb = get_imbalance()
-        missing_shares = abs(imb)
-        if missing_shares >= MIN_SHARES:
-            # Loss check: Don't take if loss would exceed 3c per share
-            potential_total = existing_price + best_ask
-            per_share_loss = potential_total - 1.00
-
-            if per_share_loss > 0.03:
-                print(f"[{ts()}] TAKER_BLOCKED_MAX_LOSS: {per_share_loss*100:.0f}c per share > 3c limit")
-                print(f"[{ts()}] Would pay {existing_price*100:.0f}c + {best_ask*100:.0f}c = {potential_total*100:.0f}c (loss: {per_share_loss*100:.0f}c)")
-                # Don't take - wait for better price or hard flatten
-            else:
-                # Use place_and_verify_order (Bug Fix #1, #4)
-                success, order_id, status_msg = place_and_verify_order(missing_token, best_ask, missing_shares)
-                if success:
-                    # Use proper settlement delay (Bug Fix #3)
-                    wait_and_sync_position()
-                    cancel_order(order_id)
-
-    imb = get_imbalance()
-    if imb == 0:
-        window_state['pending_hedge_order_id'] = None
-        window_state['pending_hedge_side'] = None
-        _send_pair_outcome_notification()
-        window_state['state'] = STATE_DONE
-        return
-
-    # Step 3: Hard flatten - use execute_bail for consistent handling
-    imb = get_imbalance()
-    if ttc <= HARD_FLATTEN_SECONDS and imb != 0:
-        print(f"[{ts()}] HARD_FLATTEN triggered (T-{ttc:.0f}s, imb={imb})")
-
-        if imb > 0:
-            excess_side, excess_shares = "UP", imb
-            excess_token = window_state['up_token']
-        else:
-            excess_side, excess_shares = "DOWN", abs(imb)
-            excess_token = window_state['down_token']
-
-        # Use execute_bail for consistent sell handling
-        execute_bail(excess_side, excess_shares, excess_token, books)
-        window_state['state'] = STATE_DONE
-        log_event("HARD_FLATTEN", window_state.get('window_id', ''),
-                        side=excess_side, shares=excess_shares, ttl=ttc)
-
 # ============================================================================
 # TRADE LOGGING
 # ============================================================================
@@ -3085,30 +1940,10 @@ def main():
                         print(f"[{ts()}] STARTUP_SYNC: Found position UP={api_up} DOWN={api_down}")
                         window_state['filled_up_shares'] = api_up
                         window_state['filled_down_shares'] = api_down
-                        if api_up != api_down:
-                            window_state['state'] = STATE_PAIRING
-                            window_state['pairing_start_time'] = time.time()
-                            window_state['best_distance_seen'] = float('inf')
 
                 log_state(remaining_secs, books)
 
-                # PERIODIC ORDER HEALTH CHECK - detect fills from order status
-                if window_state.get('current_arb_orders'):
-                    arb = window_state['current_arb_orders']
-                    if arb.get('up_id'):
-                        up_status = get_order_status(arb['up_id'])
-                        if up_status.get('filled', 0) > window_state['filled_up_shares']:
-                            print(f"[{ts()}] ORDER_FILL_DETECTED: UP {up_status['filled']:.1f} shares")
-                            window_state['filled_up_shares'] = up_status['filled']
-                            window_state['avg_up_price_paid'] = arb.get('bid_up', 0)
-                    if arb.get('down_id'):
-                        down_status = get_order_status(arb['down_id'])
-                        if down_status.get('filled', 0) > window_state['filled_down_shares']:
-                            print(f"[{ts()}] ORDER_FILL_DETECTED: DOWN {down_status['filled']:.1f} shares")
-                            window_state['filled_down_shares'] = down_status['filled']
-                            window_state['avg_down_price_paid'] = arb.get('bid_down', 0)
-
-                # 99c BID CAPTURE - runs independently of arb strategy
+                # 99c BID CAPTURE - core sniper strategy
                 # Confidence-based 99c capture: only bet when confidence >= 95%
                 # Skip new entries during CLOSE_GUARD (exits still active)
                 if CAPTURE_99C_ENABLED and books and not window_state.get('capture_99c_used') and not close_guard_active:
@@ -3312,69 +2147,8 @@ def main():
                     else:
                         window_state['danger_ticks'] = 0
 
-                # State machine (skip new entries during CLOSE_GUARD - exits still active above)
-                if close_guard_active:
-                    pass
-                elif window_state['state'] == STATE_DONE:
-                    pass
-                elif window_state['state'] == STATE_PAIRING:
-                    if not ARB_ENABLED:
-                        print(f"[{ts()}] PAIRING_MODE BLOCKED: ARB disabled, resetting to QUOTING")
-                        window_state['state'] = STATE_QUOTING
-                    else:
-                        run_pairing_mode(books, remaining_secs)
-                elif window_state['state'] == STATE_QUOTING:
-                    # DUAL-SOURCE VERIFICATION: Check both order status AND position API
-                    verified_up, verified_down = get_verified_fills()
-                    window_state['filled_up_shares'] = verified_up
-                    window_state['filled_down_shares'] = verified_down
-
-                    # Calculate ARB imbalance (exclude 99c capture shares)
-                    # max(0, ...) prevents negative values when 99c shares are tracked before fills sync
-                    arb_up = max(0, window_state['filled_up_shares'] - window_state.get('capture_99c_filled_up', 0))
-                    arb_down = max(0, window_state['filled_down_shares'] - window_state.get('capture_99c_filled_down', 0))
-                    arb_imbalance = arb_up - arb_down
-
-                    if abs(arb_imbalance) > MICRO_IMBALANCE_TOLERANCE and ARB_ENABLED:
-                        # Don't trust single read - verify imbalance persists
-                        print(f"[{ts()}] Potential imbalance detected ({arb_up}/{arb_down}), verifying...")
-                        time.sleep(2)  # Wait for API to catch up
-
-                        # Re-sync from API
-                        api_position = verify_position_from_api()
-                        if api_position:
-                            api_up, api_down = api_position
-                            window_state['filled_up_shares'] = api_up
-                            window_state['filled_down_shares'] = api_down
-
-                            # Recalculate imbalance
-                            arb_up = max(0, api_up - window_state.get('capture_99c_filled_up', 0))
-                            arb_down = max(0, api_down - window_state.get('capture_99c_filled_down', 0))
-                            arb_imbalance = arb_up - arb_down
-
-                        if abs(arb_imbalance) > MICRO_IMBALANCE_TOLERANCE:
-                            print(f"🔴 ARB IMBALANCE CONFIRMED! ({arb_up}/{arb_down}) Entering PAIRING_MODE")
-                            window_state['state'] = STATE_PAIRING
-                            window_state['pairing_start_time'] = time.time()
-                            window_state['best_distance_seen'] = float('inf')
-                            cancel_all_orders()
-                            run_pairing_mode(books, remaining_secs)
-                        else:
-                            print(f"[{ts()}] Imbalance resolved after re-sync ({arb_up}/{arb_down})")
-                    elif remaining_secs <= PAIR_DEADLINE_SECONDS:
-                        window_state['state'] = STATE_DONE
-                    else:
-                        if window_state['current_arb_orders']:
-                            monitor_arb_orders(books)
-                        else:
-                            if ARB_ENABLED:
-                                check_and_place_arb(books, remaining_secs)
-
                 elapsed = time.time() - cycle_start
-                if window_state['state'] == STATE_PAIRING:
-                    time.sleep(max(0.5, PAIRING_LOOP_DELAY - elapsed))
-                else:
-                    time.sleep(max(0.1, 0.5 - elapsed))
+                time.sleep(max(0.1, 0.5 - elapsed))
 
             except Exception as e:
                 error_count += 1
