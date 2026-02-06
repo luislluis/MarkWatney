@@ -15,10 +15,10 @@ STRATEGY: 99c Capture (single-side bet on near-certain winners)
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.51",
-    "codename": "True North",
+    "version": "v1.52",
+    "codename": "Iron Veil",
     "date": "2026-02-05",
-    "changes": "Fix: Suppress false danger exits when BTC is safely on our side (thin books != real danger). Stop cascading hard stop re-triggers by marking exited after any hard stop attempt."
+    "changes": "15-agent audit hardening: BTC safety on hard stop, empty-book danger guard, position re-inflation fix, partial OB exit fix, allowance vs balance separation, realized_pnl tracking, RTDS disconnect safety, state-before-log ordering, stale books cleanup."
 }
 
 import os
@@ -1106,8 +1106,12 @@ def place_fok_market_sell(token_id: str, shares: float) -> tuple:
         print(f"[{ts()}] HARD_STOP_ERROR: FOK order failed: {e}")
         log_activity("FOK_ERROR", {"error": str(e)})
         # "not enough balance" means shares were already sold (prior fill succeeded)
-        if "not enough balance" in error_msg or "allowance" in error_msg:
+        if "not enough balance" in error_msg:
             return True, "", 0.0  # Signal success so retry loop stops
+        # "allowance" is a token approval issue — NOT the same as shares gone. Keep retrying.
+        if "allowance" in error_msg:
+            print(f"[{ts()}] HARD_STOP: Token allowance issue (not balance) — will retry")
+            return False, "", 0.0
         return False, "", 0.0
 
 
@@ -1183,6 +1187,7 @@ def execute_hard_stop(side: str, books: dict, market_data=None) -> tuple:
 
     remaining_shares = shares
     total_pnl = 0.0
+    best_bid = 0.0  # Initialize to avoid UnboundLocalError if no bids found
     attempts = 0
     max_attempts = 10  # Safety limit
 
@@ -1248,8 +1253,11 @@ def execute_hard_stop(side: str, books: dict, market_data=None) -> tuple:
 
     if remaining_shares > 0:
         print(f"[{ts()}] HARD_STOP_ERROR: Failed to fully liquidate! {remaining_shares:.0f} shares stuck")
-        # Still update state with partial exit
+        # Update state with partial exit — track sold shares in both fields
+        sold_shares = shares - remaining_shares
         window_state[f'capture_99c_filled_{side.lower()}'] = remaining_shares
+        window_state[f'filled_{side.lower()}_shares'] = remaining_shares
+        window_state['realized_pnl_usd'] = window_state.get('realized_pnl_usd', 0.0) + total_pnl
         return False, total_pnl
 
     # Full liquidation successful
@@ -1259,13 +1267,24 @@ def execute_hard_stop(side: str, books: dict, market_data=None) -> tuple:
     print(f"Total P&L: ${total_pnl:.2f}")
     print("=" * 50)
 
-    # Log to Sheets
-    log_event("HARD_STOP_EXIT", window_state.get('window_id', ''),
-                    side=side, shares=shares, price=best_bid,
-                    pnl=total_pnl, reason="hard_stop_60c",
-                    details=f"trigger={HARD_STOP_TRIGGER*100:.0f}c")
+    # CRITICAL: Update state FIRST — before log_event/telegram which can throw
+    # Zero BOTH tracking fields to prevent DUAL_VERIFY re-inflation
+    window_state['capture_99c_exited'] = True
+    window_state['capture_99c_exit_reason'] = 'hard_stop_60c'
+    window_state[f'capture_99c_filled_{side.lower()}'] = 0
+    window_state[f'filled_{side.lower()}_shares'] = 0
+    window_state['realized_pnl_usd'] = window_state.get('realized_pnl_usd', 0.0) + total_pnl
 
-    # Telegram notification
+    # Log to Sheets (non-critical — state already updated above)
+    try:
+        log_event("HARD_STOP_EXIT", window_state.get('window_id', ''),
+                        side=side, shares=shares, price=best_bid,
+                        pnl=total_pnl, reason="hard_stop_60c",
+                        details=f"trigger={HARD_STOP_TRIGGER*100:.0f}c")
+    except Exception as e:
+        print(f"[{ts()}] HARD_STOP: log_event failed (non-critical): {e}")
+
+    # Telegram notification (non-critical)
     msg = f"""{'='*20}
 <b>HARD STOP EXIT</b>
 {'='*20}
@@ -1276,11 +1295,6 @@ Entry: {entry_price*100:.0f}c
 P&L: ${total_pnl:.2f}
 <i>FOK market orders - guaranteed exit</i>"""
     send_telegram(msg)
-
-    # Update state
-    window_state['capture_99c_exited'] = True
-    window_state['capture_99c_exit_reason'] = 'hard_stop_60c'
-    window_state[f'capture_99c_filled_{side.lower()}'] = 0
 
     return True, total_pnl
 
@@ -1602,7 +1616,7 @@ def execute_bail(side, shares, token, books):
     return False
 
 
-def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason: str = "ob_reversal") -> bool:
+def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason: str = "ob_reversal", market_data=None) -> bool:
     """Exit 99c position early due to OB reversal.
 
     Triggered when:
@@ -1616,6 +1630,7 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
         trigger_value: OB imbalance value
         books: Order book data
         reason: "ob_reversal" (price_stop is deprecated, use hard_stop)
+        market_data: Market data for refreshing books in hard stop escalation
 
     Returns:
         bool: True if exit was successful (order filled)
@@ -1628,7 +1643,7 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
         should_trigger, best_bid = check_hard_stop_trigger(books, side)
         if should_trigger:
             print(f"[{ts()}] EARLY_EXIT: Escalating to HARD STOP (best_bid={best_bid*100:.0f}c)")
-            success, pnl = execute_hard_stop(side, books)
+            success, pnl = execute_hard_stop(side, books, market_data=market_data)
             return success
 
     # Get position: use tracked shares directly to avoid 5s API timeout blocking exits
@@ -1643,7 +1658,7 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
     bids = books.get(f'{side.lower()}_bids', [])
     if not bids:
         print(f"[{ts()}] NO_BIDS: Escalating to HARD STOP for {side}")
-        success, pnl = execute_hard_stop(side, books)
+        success, pnl = execute_hard_stop(side, books, market_data=market_data)
         return success
 
     best_bid = float(bids[0]['price'])
@@ -1700,11 +1715,21 @@ P&L: ${pnl:.2f}
 <i>Exited early to cut losses</i>"""
     send_telegram(msg)
 
-    # Update state — only mark as exited if we actually sold shares
+    # Update state — only mark as FULLY exited if ALL shares sold
+    # Partial fills: update remaining count but keep exit mechanisms active for the rest
     if filled > 0:
-        window_state['capture_99c_exited'] = True
-        window_state['capture_99c_exit_reason'] = reason
-        window_state[f'capture_99c_filled_{side.lower()}'] = max(0, shares - filled)
+        remaining = max(0, shares - filled)
+        window_state[f'capture_99c_filled_{side.lower()}'] = remaining
+        window_state[f'filled_{side.lower()}_shares'] = remaining
+        window_state['realized_pnl_usd'] = window_state.get('realized_pnl_usd', 0.0) + pnl
+        if remaining == 0:
+            # Fully exited — disable all exit mechanisms
+            window_state['capture_99c_exited'] = True
+            window_state['capture_99c_exit_reason'] = reason
+        else:
+            # Partial fill — keep exit mechanisms active for remaining shares
+            print(f"[{ts()}] OB EXIT: Partial fill ({filled:.0f}/{shares:.0f}), {remaining:.0f} shares still exposed")
+            cancel_all_orders()  # Cancel remainder of limit sell
     else:
         # Zero fills — do NOT mark as exited, so other exit mechanisms can still fire
         print(f"[{ts()}] OB EXIT: 0 fills — keeping exit mechanisms active")
@@ -2935,6 +2960,8 @@ def main():
                     window_state = reset_window_state(slug)
                     market_price_history.clear()  # v1.24: Clear price history for entry filter
                     cached_market = None
+                    last_good_books = None  # v1.52: Prevent stale books leaking across windows
+                    consecutive_book_failures = 0
                     last_slug = slug
                     error_count = 0
                     session_stats['windows'] += 1
@@ -3134,9 +3161,10 @@ def main():
                         log_event("CAPTURE_FILL", slug, side=side, shares=filled,
                                         price=fill_price, pnl=actual_pnl)
 
-                # === 60¢ HARD STOP CHECK (v1.34) ===
+                # === 60¢ HARD STOP CHECK (v1.34, BTC safety added v1.52) ===
                 # Exit immediately using FOK market orders if best bid <= 60¢
                 # Uses best BID (not ask) to ensure real liquidity exists
+                # BUT: suppress if BTC is safely on our side (thin books ≠ real danger)
                 if (HARD_STOP_ENABLED and
                     window_state.get('capture_99c_fill_notified') and
                     not window_state.get('capture_99c_exited')):
@@ -3147,11 +3175,25 @@ def main():
                     should_trigger, best_bid = check_hard_stop_trigger(books, capture_side)
 
                     if should_trigger:
-                        print(f"[{ts()}] 🛑 HARD STOP: {capture_side} best bid at {best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c trigger")
-                        execute_hard_stop(capture_side, books, market_data=cached_market)
-                        if not window_state.get('capture_99c_exited'):
-                            window_state['capture_99c_exited'] = True
-                            window_state['capture_99c_exit_reason'] = 'hard_stop_60c'
+                        # BTC safety check — same logic as danger score
+                        hs_btc_safe = False
+                        if RTDS_AVAILABLE and rtds_feed and rtds_feed.is_connected():
+                            hs_delta = rtds_feed.get_window_delta()
+                            if hs_delta is not None:
+                                if capture_side == "DOWN" and hs_delta <= -DANGER_BTC_SAFE_MARGIN:
+                                    hs_btc_safe = True
+                                elif capture_side == "UP" and hs_delta >= DANGER_BTC_SAFE_MARGIN:
+                                    hs_btc_safe = True
+
+                        if hs_btc_safe:
+                            hs_delta = rtds_feed.get_window_delta()
+                            print(f"[{ts()}] HARD STOP SUPPRESSED: bid={best_bid*100:.0f}c but BTC ${hs_delta:+.0f} safely on our side")
+                        else:
+                            print(f"[{ts()}] 🛑 HARD STOP: {capture_side} best bid at {best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c trigger")
+                            execute_hard_stop(capture_side, books, market_data=cached_market)
+                            if not window_state.get('capture_99c_exited'):
+                                window_state['capture_99c_exited'] = True
+                                window_state['capture_99c_exit_reason'] = 'hard_stop_60c'
 
                 # === 99c OB-BASED EARLY EXIT CHECK ===
                 # Exit early if OB shows sellers dominating for 3 consecutive ticks
@@ -3179,7 +3221,7 @@ def main():
                         # Trigger exit if 3 consecutive negative ticks
                         if window_state['ob_negative_ticks'] >= 3:
                             print(f"[{ts()}] 🚨 99c OB EXIT TRIGGERED: {capture_side} imb={imb:+.2f}")
-                            execute_99c_early_exit(capture_side, imb, books, reason="ob_reversal")
+                            execute_99c_early_exit(capture_side, imb, books, reason="ob_reversal", market_data=cached_market)
 
                 # Calculate danger score (used for logging/monitoring)
                 # Skip if we already exited early
@@ -3188,11 +3230,20 @@ def main():
                     bet_side = window_state.get('capture_99c_side')
 
                     # Get current confidence (same calculation as original entry)
+                    # GUARD: If no asks on our side, skip danger score entirely — empty book
+                    # produces current_ask=0 which causes catastrophic false confidence drop
                     if bet_side == "UP":
-                        current_ask = float(books['up_asks'][0]['price']) if books.get('up_asks') else 0
+                        our_asks = books.get('up_asks', [])
                     else:
-                        current_ask = float(books['down_asks'][0]['price']) if books.get('down_asks') else 0
-                    current_confidence, _ = calculate_99c_confidence(current_ask, remaining_secs)
+                        our_asks = books.get('down_asks', [])
+
+                    if not our_asks:
+                        # No asks = MMs pulled quotes, NOT necessarily danger. Skip danger calc.
+                        current_ask = 0
+                        current_confidence = window_state.get('capture_99c_peak_confidence', 0.95)
+                    else:
+                        current_ask = float(our_asks[0]['price'])
+                        current_confidence, _ = calculate_99c_confidence(current_ask, remaining_secs)
 
                     # Get order book imbalance for our side
                     our_imbalance = 0.0
@@ -3225,8 +3276,10 @@ def main():
 
                     # DANGER SCORE EXIT — use lower threshold in final 30 seconds
                     # BUT: suppress if BTC is comfortably on our side (thin books ≠ real danger)
+                    # AND: skip entirely if RTDS is disconnected (can't verify BTC safety)
                     btc_safe = False
-                    if RTDS_AVAILABLE and rtds_feed and rtds_feed.is_connected():
+                    rtds_connected = RTDS_AVAILABLE and rtds_feed and rtds_feed.is_connected()
+                    if rtds_connected:
                         delta = rtds_feed.get_window_delta()
                         if delta is not None:
                             # DOWN bet wins when BTC goes down (delta < 0), UP bet wins when BTC goes up (delta > 0)
@@ -3236,7 +3289,11 @@ def main():
                                 btc_safe = True
 
                     active_threshold = DANGER_THRESHOLD_FINAL if remaining_secs <= 30 else DANGER_THRESHOLD
-                    if danger_result['score'] >= active_threshold and not btc_safe:
+                    if not rtds_connected and danger_result['score'] >= active_threshold:
+                        # RTDS disconnected — can't verify BTC safety, don't trust danger score
+                        print(f"[{ts()}] DANGER SKIP: score={danger_result['score']:.2f} but RTDS disconnected, cannot verify BTC")
+                        window_state['danger_ticks'] = 0
+                    elif danger_result['score'] >= active_threshold and not btc_safe:
                         # Require 2 consecutive danger ticks to avoid false triggers
                         window_state['danger_ticks'] = window_state.get('danger_ticks', 0) + 1
                         if window_state['danger_ticks'] >= 2:

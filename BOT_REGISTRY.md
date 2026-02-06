@@ -1,10 +1,11 @@
 # Polybot Version Registry
 
-## Current Version: v1.51 "True North"
+## Current Version: v1.52 "Iron Veil"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.51 | 2026-02-05 PST | True North | Fix: Suppress false danger exits when BTC safely on our side ($30+ margin). Stop cascading hard stop re-triggers (mark exited after any attempt). | Active |
+| v1.52 | 2026-02-05 PST | Iron Veil | 15-agent audit hardening: BTC safety on hard stop, empty-book danger guard, position re-inflation fix, partial OB exit fix, allowance/balance separation, realized_pnl tracking, RTDS disconnect safety, state-before-log ordering, stale books cleanup. | Active |
+| v1.51 | 2026-02-05 PST | True North | Fix: Suppress false danger exits when BTC safely on our side ($30+ margin). Stop cascading hard stop re-triggers (mark exited after any attempt). | Archived |
 | v1.50 | 2026-02-05 PST | Iron Shield II | Fix: FOK status case-sensitivity (matched vs MATCHED). Stop retry on not-enough-balance (shares already sold). | Archived |
 | v1.49 | 2026-02-05 PST | Iron Shield | 8 exit hardening fixes: danger score exit trigger (0.8 in final 30s), empty bids triggers hard stop, API-down fallback to stale books, OB exit 0-fill protection, OB counter decay, book refresh in hard stop retry, skip API timeout in exits. | Archived |
 | v1.48 | 2026-02-05 PST | Last Second | Remove 15s dead zone: exits (HARD STOP, OB EXIT) now active until T-0. CLOSE_GUARD only blocks new entries. WINDOW COMPLETE shows after settlement with result. | Archived |
