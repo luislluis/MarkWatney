@@ -2767,7 +2767,7 @@ def main():
     global window_state, trades_log, error_count, clob_client
 
     print("=" * 100)
-    print(f"MARKWATNEY POLYBOT v{BOT_VERSION['version']} '{BOT_VERSION['codename']}'")
+    print(f"MARKWATNEY POLYBOT {BOT_VERSION['version']} '{BOT_VERSION['codename']}'")
     print("=" * 100)
     print()
 
