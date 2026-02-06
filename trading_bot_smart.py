@@ -15,10 +15,10 @@ STRATEGY: 99c Capture (single-side bet on near-certain winners)
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.52",
-    "codename": "Iron Veil",
-    "date": "2026-02-05",
-    "changes": "15-agent audit hardening: BTC safety on hard stop, empty-book danger guard, position re-inflation fix, partial OB exit fix, allowance vs balance separation, realized_pnl tracking, RTDS disconnect safety, state-before-log ordering, stale books cleanup."
+    "version": "v1.53",
+    "codename": "Dead Gate",
+    "date": "2026-02-06",
+    "changes": "CRITICAL: Block PAIRING_MODE when ARB disabled. Stale position API was triggering phantom imbalances, causing catastrophic losses in 99c-only mode."
 }
 
 import os
@@ -3318,7 +3318,11 @@ def main():
                 elif window_state['state'] == STATE_DONE:
                     pass
                 elif window_state['state'] == STATE_PAIRING:
-                    run_pairing_mode(books, remaining_secs)
+                    if not ARB_ENABLED:
+                        print(f"[{ts()}] PAIRING_MODE BLOCKED: ARB disabled, resetting to QUOTING")
+                        window_state['state'] = STATE_QUOTING
+                    else:
+                        run_pairing_mode(books, remaining_secs)
                 elif window_state['state'] == STATE_QUOTING:
                     # DUAL-SOURCE VERIFICATION: Check both order status AND position API
                     verified_up, verified_down = get_verified_fills()
@@ -3331,7 +3335,7 @@ def main():
                     arb_down = max(0, window_state['filled_down_shares'] - window_state.get('capture_99c_filled_down', 0))
                     arb_imbalance = arb_up - arb_down
 
-                    if abs(arb_imbalance) > MICRO_IMBALANCE_TOLERANCE:
+                    if abs(arb_imbalance) > MICRO_IMBALANCE_TOLERANCE and ARB_ENABLED:
                         # Don't trust single read - verify imbalance persists
                         print(f"[{ts()}] Potential imbalance detected ({arb_up}/{arb_down}), verifying...")
                         time.sleep(2)  # Wait for API to catch up

@@ -1,10 +1,11 @@
 # Polybot Version Registry
 
-## Current Version: v1.52 "Iron Veil"
+## Current Version: v1.53 "Dead Gate"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.52 | 2026-02-05 PST | Iron Veil | 15-agent audit hardening: BTC safety on hard stop, empty-book danger guard, position re-inflation fix, partial OB exit fix, allowance/balance separation, realized_pnl tracking, RTDS disconnect safety, state-before-log ordering, stale books cleanup. | Active |
+| v1.53 | 2026-02-06 PST | Dead Gate | CRITICAL: Block PAIRING_MODE when ARB disabled. Stale position API triggered phantom imbalances causing ~$6 loss in 99c-only mode. Two gates: entry check + state handler guard. | Active |
+| v1.52 | 2026-02-05 PST | Iron Veil | 15-agent audit hardening: BTC safety on hard stop, empty-book danger guard, position re-inflation fix, partial OB exit fix, allowance/balance separation, realized_pnl tracking, RTDS disconnect safety, state-before-log ordering, stale books cleanup. | Archived |
 | v1.51 | 2026-02-05 PST | True North | Fix: Suppress false danger exits when BTC safely on our side ($30+ margin). Stop cascading hard stop re-triggers (mark exited after any attempt). | Archived |
 | v1.50 | 2026-02-05 PST | Iron Shield II | Fix: FOK status case-sensitivity (matched vs MATCHED). Stop retry on not-enough-balance (shares already sold). | Archived |
 | v1.49 | 2026-02-05 PST | Iron Shield | 8 exit hardening fixes: danger score exit trigger (0.8 in final 30s), empty bids triggers hard stop, API-down fallback to stale books, OB exit 0-fill protection, OB counter decay, book refresh in hard stop retry, skip API timeout in exits. | Archived |
