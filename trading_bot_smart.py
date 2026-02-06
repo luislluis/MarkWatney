@@ -1,30 +1,24 @@
 #!/usr/bin/env python3
 """
-CHATGPT POLY BOT - SMART STRATEGY VERSION
-==========================================
-BTC 15-minute Up/Down markets with MULTI-TIMEFRAME SIGNAL ANALYSIS.
+POLYBOT - 99c SNIPER
+====================
+BTC 15-minute Up/Down markets on Polymarket.
 
-CRITICAL: Never allow unequal UP/DOWN shares at window resolution.
-- If imbalanced, enter PAIRING_MODE immediately
-- Block new arb quotes until flat
-- Forced completion with escalating steps
-- HARD_FLATTEN as last resort
-
-SMART STRATEGY ADDITIONS:
-- Multi-timeframe momentum (1m, 5m, 15m)
-- Volatility filtering (skip choppy markets)
-- Confidence scoring for trade quality
-- Dynamic position sizing based on signal strength
+STRATEGY: 99c Capture (single-side bet on near-certain winners)
+- Places 99c bid when confidence >= 95%
+- Confidence = ask_price - time_penalty
+- OB-based early exit when order book reverses
+- 60c hard stop (FOK market orders) as emergency exit
 """
 
 # ===========================================
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.44",
-    "codename": "Silent Puma",
+    "version": "v1.45",
+    "codename": "Granite Wolf",
     "date": "2026-02-05",
-    "changes": "Remove: 5-SEC RULE auto-bail from pairing mode (legacy v1.10 code that should no longer fire)"
+    "changes": "Audit cleanup: Remove dead ARB constants, hedge system, stale CHATGPT references. Fix effective_floor crash bug. Rename to MarkWatney."
 }
 
 import os
@@ -193,28 +187,11 @@ POSITION_VERIFY_BEFORE_ORDER = True
 TTL_1C_MS = 1000
 TTL_2C_MS = 2500
 
-# Loss cap (test mode)
-MAX_WINDOW_LOSS_USD = 0.10
-
 # Hedge deadline
 HEDGE_DEADLINE_MS = 400
 
 # Pinned skip
 PINNED_ASK_LIMIT = 0.02
-
-# ===========================================
-# DIVERGENCE THRESHOLD - WAIT FOR CLEAR TREND
-# ===========================================
-# Require BOTH conditions:
-# - Cheap side must be <= 42c (strong conviction)
-# - Expensive side must be >= 58c (clear momentum)
-DIVERGENCE_THRESHOLD = 0.42       # Cheap side must be <= 42c
-MIN_EXPENSIVE_SIDE_PRICE = 0.58   # Expensive side must be >= 58c
-
-# ===========================================
-# LOSS MINIMIZATION
-# ===========================================
-MAX_PER_TRADE_LOSS = 0.03         # 3c max loss per share (3%)
 
 # Sizing
 MIN_SHARES = 5
@@ -286,13 +263,6 @@ OB_EARLY_EXIT_ENABLED = True       # Enable/disable early exit feature
 OB_EARLY_EXIT_THRESHOLD = -0.30    # Exit when sellers > 30% (OB imbalance < -0.30)
 
 # ===========================================
-# 99c PRICE STOP-LOSS - Hard price floor exit (LEGACY - DISABLED)
-# ===========================================
-PRICE_STOP_ENABLED = False         # DISABLED - replaced by HARD_STOP below
-PRICE_STOP_TRIGGER = 0.80          # (legacy) Exit when our side's price <= 80c
-PRICE_STOP_FLOOR = 0.50            # (legacy) Never sell below 50c
-
-# ===========================================
 # 60¢ HARD STOP - FOK Market Orders (v1.34)
 # ===========================================
 # Guaranteed emergency exit using Fill-or-Kill market orders.
@@ -331,10 +301,6 @@ CAPTURE_99C_TIME_PENALTIES = [
 # Velocity tracking for danger score
 VELOCITY_WINDOW_SECONDS = 5  # Rolling window for BTC price velocity
 
-# 99c Capture Hedge Protection
-CAPTURE_99C_HEDGE_ENABLED = False       # DISABLED: Was triggering on end-of-window price death (50c/1c)
-CAPTURE_99C_HEDGE_THRESHOLD = 0.85      # (Legacy) Hedge if confidence drops below 85%
-
 # 99c Entry Filters (v1.24 - based on tick data analysis)
 # These filters prevent entering on volatile/spiking markets that lead to losses
 ENTRY_FILTER_ENABLED = True             # Enable smart entry filtering
@@ -353,7 +319,7 @@ DANGER_WEIGHT_OPPONENT = 0.5         # Weight for opponent ask price strength
 DANGER_WEIGHT_TIME = 0.3             # Weight for time decay in final 60s
 
 # Bot identity
-BOT_NAME = "ChatGPT-Smart"
+BOT_NAME = "MarkWatney"
 
 # States
 STATE_QUOTING = "QUOTING"
@@ -397,7 +363,7 @@ last_pair_type = None
 # REAL-TIME ACTIVITY LOG
 # ============================================================================
 
-BOT_ID = "CHATGPT-SMART"
+BOT_ID = "MARKWATNEY"
 ACTIVITY_LOG_FILE = os.path.expanduser("~/activity_log.jsonl")
 
 def log_activity(action, details=None):
@@ -445,8 +411,6 @@ def reset_window_state(slug):
         "capture_99c_filled_up": 0,    # 99c capture: filled UP shares (exclude from pairing)
         "capture_99c_filled_down": 0,  # 99c capture: filled DOWN shares (exclude from pairing)
         "capture_99c_fill_notified": False,  # 99c capture: have we shown fill notification
-        "capture_99c_hedged": False,         # 99c capture: whether we've hedged this position
-        "capture_99c_hedge_price": 0,        # 99c capture: price paid for hedge
         "capture_99c_exited": False,         # 99c capture: whether we've early-exited this position
         "ob_negative_ticks": 0,              # 99c early exit: consecutive negative OB ticks
         "started_mid_window": False,         # True if bot started mid-window (skip trading)
@@ -624,59 +588,6 @@ Send MATIC to:
 
     return balance
 
-def notify_profit_pair(up_shares, avg_up, down_shares, avg_down):
-    """PROFIT_PAIR notification"""
-    global window_state
-    if window_state.get('telegram_notified'):
-        return
-    window_state['telegram_notified'] = True
-
-    pair_total = avg_up + avg_down
-    edge = 1.00 - pair_total
-    msg = f"""🟩 <b>PROFIT PAIR</b>
-BTC 15m window
-UP {up_shares} @ {avg_up:.2f}
-DOWN {down_shares} @ {avg_down:.2f}
-Total = {pair_total:.2f}
-Edge = +{edge:.2f}
-Signal confidence: {conf}%
-Status: SAFE"""
-    send_telegram(msg)
-
-def notify_loss_avoid_pair(up_shares, avg_up, down_shares, avg_down):
-    """LOSS_AVOID_PAIR notification"""
-    global window_state
-    if window_state.get('telegram_notified'):
-        return
-    window_state['telegram_notified'] = True
-
-    pair_total = avg_up + avg_down
-    edge = 1.00 - pair_total
-
-    msg = f"""🟧 <b>LOSS-AVOID PAIR</b>
-BTC 15m window
-UP {up_shares} @ {avg_up:.2f}
-DOWN {down_shares} @ {avg_down:.2f}
-Total = {pair_total:.2f}
-Giveback = {edge:.2f}
-Status: RISK ELIMINATED"""
-    send_telegram(msg)
-
-def notify_hard_flatten(side, shares, pnl_impact):
-    """HARD_FLATTEN notification"""
-    global window_state
-    if window_state.get('telegram_notified'):
-        return
-    window_state['telegram_notified'] = True
-
-    msg = f"""🟥 <b>HARD FLATTEN</b>
-BTC 15m window
-Excess side: {side}
-Shares closed: {shares}
-Realized PnL impact: {pnl_impact:.2f}
-Reason: Risk control"""
-    send_telegram(msg)
-
 def notify_99c_fill(side, shares, confidence, ttc):
     """Telegram notification when 99c sniper order fills"""
     msg = f"""🎯 <b>99c SNIPER FILLED</b>
@@ -827,7 +738,6 @@ def _send_pair_outcome_notification():
         print(f"║  🎉 GUARANTEED PROFIT: ${profit:.2f} ({profit_per_pair*100:.0f}c per pair)".ljust(60) + "║")
         print("╚════════════════════════════════════════════════════════════╝")
         print()
-        notify_profit_pair(up_shares, avg_up, down_shares, avg_down)
         log_event("PROFIT_PAIR", window_state.get('window_id', ''),
                         up_shares=min_shares, up_price=avg_up,
                         down_shares=min_shares, down_price=avg_down,
@@ -844,7 +754,6 @@ def _send_pair_outcome_notification():
         print(f"│  Cost: ${total_cost:.2f} → Payout: ${payout:.2f} | Loss capped: ${loss:.2f}".ljust(60) + "│")
         print("└────────────────────────────────────────────────────────────┘")
         print()
-        notify_loss_avoid_pair(up_shares, avg_up, down_shares, avg_down)
         log_event("LOSS_AVOID", window_state.get('window_id', ''),
                         up_shares=min_shares, up_price=avg_up,
                         down_shares=min_shares, down_price=avg_down,
@@ -964,16 +873,6 @@ def floor_to_tick(price):
 def ts():
     return datetime.now(PST).strftime("%H:%M:%S")
 
-def get_mode_display(ttc):
-    imb = get_arb_imbalance()  # Use ARB imbalance (excludes 99c captures)
-    if imb != 0 and ttc <= PAIR_DEADLINE_SECONDS:
-        return "RISK"
-    if last_pair_type == "PROFIT_PAIR":
-        return "PROFIT"
-    elif last_pair_type in ("LOSS_AVOID_PAIR", "HARD_FLATTEN"):
-        return "SAFE"
-    return "IDLE"
-
 _last_log_time = 0
 _last_skip_reason = ""
 
@@ -993,7 +892,6 @@ def log_state(ttc, books=None):
     state = window_state['state']
     up_shares = window_state['filled_up_shares']
     down_shares = window_state['filled_down_shares']
-    mode = get_mode_display(ttc)
     pnl = window_state['realized_pnl_usd']
 
     # Get current prices
@@ -1022,14 +920,7 @@ def log_state(ttc, books=None):
             reason = ""
     else:
         status = "IDLE"
-        # Figure out why we're idle
-        cheap = min(ask_up, ask_down)
-        expensive = max(ask_up, ask_down)
-        if cheap > DIVERGENCE_THRESHOLD:
-            reason = f"no diverge ({cheap*100:.0f}c>{DIVERGENCE_THRESHOLD*100:.0f}c)"
-        elif expensive < MIN_EXPENSIVE_SIDE_PRICE:
-            reason = f"weak ({expensive*100:.0f}c<{MIN_EXPENSIVE_SIDE_PRICE*100:.0f}c)"
-        elif ttc <= PAIR_DEADLINE_SECONDS:
+        if ttc <= PAIR_DEADLINE_SECONDS:
             reason = "too late"
         else:
             reason = _last_skip_reason if _last_skip_reason else "checking..."
@@ -1081,7 +972,7 @@ def log_state(ttc, books=None):
 
     # Build danger score indicator if applicable (LOG-03)
     danger_str = ""
-    if window_state.get('capture_99c_fill_notified') and not window_state.get('capture_99c_hedged'):
+    if window_state.get('capture_99c_fill_notified') and not window_state.get('capture_99c_exited'):
         ds = window_state.get('danger_score', 0)
         danger_str = f" | D:{ds:.2f}"
 
@@ -1098,7 +989,7 @@ def log_state(ttc, books=None):
 
     # Get danger score if holding 99c position (LOG-01)
     danger_for_log = None
-    if window_state.get('capture_99c_fill_notified') and not window_state.get('capture_99c_hedged'):
+    if window_state.get('capture_99c_fill_notified') and not window_state.get('capture_99c_exited'):
         danger_for_log = window_state.get('danger_score')
 
     # Buffer tick for Google Sheets (batched upload)
@@ -1755,34 +1646,25 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
 
     best_bid = float(bids[0]['price'])
 
-    # Use hard stop floor instead of legacy floor
-    effective_floor = HARD_STOP_FLOOR if HARD_STOP_ENABLED else PRICE_STOP_FLOOR
-    if best_bid < effective_floor:
-        print(f"[{ts()}] ABORT_EXIT: Bid {best_bid*100:.0f}c below floor {effective_floor*100:.0f}c")
+    if best_bid < HARD_STOP_FLOOR:
+        print(f"[{ts()}] ABORT_EXIT: Bid {best_bid*100:.0f}c below floor {HARD_STOP_FLOOR*100:.0f}c")
         return False
 
     exit_price = best_bid
     token = window_state.get(f'{side.lower()}_token')
 
-    # Different emoji for price stop vs OB exit
-    emoji = "🛑" if reason == "price_stop" else "🚨"
-    label = "PRICE STOP" if reason == "price_stop" else "OB EXIT"
-
     print()
-    print(f"{emoji}" * 20)
-    print(f"{emoji} 99c {label} TRIGGERED")
-    print(f"{emoji} Selling {shares:.0f} {side} shares @ {exit_price*100:.0f}c")
-    if reason == "price_stop":
-        print(f"{emoji} Price dropped to: {trigger_value*100:.0f}c")
-    else:
-        print(f"{emoji} OB Reading: {trigger_value:+.2f}")
-    print(f"{emoji}" * 20)
+    print("🚨" * 20)
+    print(f"🚨 99c OB EXIT TRIGGERED")
+    print(f"🚨 Selling {shares:.0f} {side} shares @ {exit_price*100:.0f}c")
+    print(f"🚨 OB Reading: {trigger_value:+.2f}")
+    print("🚨" * 20)
 
     # Place sell order
     success, order_id = place_limit_order(token, exit_price, shares, "SELL")
 
     if not success:
-        print(f"[{ts()}] {label}: Order failed to place")
+        print(f"[{ts()}] OB EXIT: Order failed to place")
         return False
 
     # CRITICAL: Wait for order confirmation
@@ -1791,39 +1673,22 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
     filled = status.get('filled', 0)
 
     if filled < shares * 0.9:  # Require at least 90% filled
-        print(f"[{ts()}] {label}: Only {filled:.1f}/{shares:.0f} filled, order may be partial")
+        print(f"[{ts()}] OB EXIT: Only {filled:.1f}/{shares:.0f} filled, order may be partial")
         # Don't return False - partial exit is better than no exit
 
     # Calculate P&L
     entry_price = window_state.get('capture_99c_fill_price', 0.99)
     pnl = (exit_price - entry_price) * filled
 
-    print(f"[{ts()}] {label}: Sold {filled:.0f} @ {exit_price*100:.0f}c (entry {entry_price*100:.0f}c)")
-    print(f"[{ts()}] {label}: P&L = ${pnl:.2f}")
+    print(f"[{ts()}] OB EXIT: Sold {filled:.0f} @ {exit_price*100:.0f}c (entry {entry_price*100:.0f}c)")
+    print(f"[{ts()}] OB EXIT: P&L = ${pnl:.2f}")
 
-    # Log to Sheets - use different event type for price stop
-    event_type = "99C_PRICE_STOP" if reason == "price_stop" else "99C_EARLY_EXIT"
-    if reason == "price_stop":
-        details = f"trigger={trigger_value*100:.0f}c"
-    else:
-        details = f"OB={trigger_value:.2f}"
-
-    log_event(event_type, window_state.get('window_id', ''),
+    log_event("99C_EARLY_EXIT", window_state.get('window_id', ''),
                     side=side, shares=filled, price=exit_price,
-                    pnl=pnl, reason=reason, details=details)
+                    pnl=pnl, reason=reason, details=f"OB={trigger_value:.2f}")
 
     # Telegram notification
-    if reason == "price_stop":
-        msg = f"""🛑 <b>99c PRICE STOP</b>
-Side: {side}
-Shares: {filled:.0f}
-Trigger: {trigger_value*100:.0f}c
-Exit: {exit_price*100:.0f}c
-Entry: {entry_price*100:.0f}c
-P&L: ${pnl:.2f}
-<i>Price floor triggered</i>"""
-    else:
-        msg = f"""🚨 <b>99c EARLY EXIT</b>
+    msg = f"""🚨 <b>99c EARLY EXIT</b>
 Side: {side}
 Shares: {filled:.0f}
 Exit Price: {exit_price*100:.0f}c
@@ -2071,98 +1936,6 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
         return False
 
 
-def check_99c_capture_hedge(books, ttc):
-    """Monitor 99c capture position and hedge if danger score exceeds threshold."""
-    global window_state
-
-    # Guards
-    if not CAPTURE_99C_HEDGE_ENABLED:
-        return
-    if not window_state.get('capture_99c_fill_notified'):
-        return  # Not filled yet
-    if window_state.get('capture_99c_hedged'):
-        return  # Already hedged
-
-    bet_side = window_state.get('capture_99c_side')
-    if not bet_side:
-        return
-
-    # Get current ask for our bet side
-    if bet_side == "UP":
-        current_ask = float(books['up_asks'][0]['price']) if books.get('up_asks') else 0
-        opposite_asks = books.get('down_asks', [])
-        opposite_token = window_state['down_token']
-        opposite_side = "DOWN"
-    else:
-        current_ask = float(books['down_asks'][0]['price']) if books.get('down_asks') else 0
-        opposite_asks = books.get('up_asks', [])
-        opposite_token = window_state['up_token']
-        opposite_side = "UP"
-
-    if not opposite_asks:
-        return
-
-    # Get danger score from window_state (calculated by main loop)
-    danger_score = window_state.get('danger_score', 0)
-
-    # Check if we should hedge based on danger score
-    if danger_score >= DANGER_THRESHOLD:
-        opposite_ask = float(opposite_asks[0]['price'])
-        shares = window_state.get('capture_99c_shares', 0)
-
-        if shares > 0 and opposite_ask < 0.50:  # Don't hedge if opposite too expensive
-            print()
-            print(f"┌─────────────── 99c HEDGE TRIGGERED ───────────────┐")
-            print(f"│  Danger score: {danger_score:.2f} >= {DANGER_THRESHOLD:.2f} threshold".ljust(50) + "│")
-            print(f"│  Bet: {bet_side} @ 99c".ljust(50) + "│")
-            print(f"│  Hedging: {shares} {opposite_side} @ {opposite_ask*100:.0f}c".ljust(50) + "│")
-            print(f"└───────────────────────────────────────────────────┘")
-
-            # Place hedge order at market (take the ask)
-            success, order_id, status = place_and_verify_order(opposite_token, opposite_ask, shares)
-            if success:
-                combined = 0.99 + opposite_ask
-                loss_per_share = combined - 1.00
-                total_loss = loss_per_share * shares
-
-                window_state['capture_99c_hedged'] = True
-                window_state['capture_99c_hedge_price'] = opposite_ask
-
-                # Track hedge shares in filled counts
-                if opposite_side == "UP":
-                    window_state['filled_up_shares'] = max(window_state.get('filled_up_shares', 0), shares)
-                    window_state['capture_99c_filled_up'] = max(window_state.get('capture_99c_filled_up', 0), shares)
-                else:
-                    window_state['filled_down_shares'] = max(window_state.get('filled_down_shares', 0), shares)
-                    window_state['capture_99c_filled_down'] = max(window_state.get('capture_99c_filled_down', 0), shares)
-
-                print(f"│  ✅ HEDGED: Combined {combined*100:.0f}c | Loss: ${abs(total_loss):.2f}".ljust(50) + "│")
-                print(f"└───────────────────────────────────────────────────┘")
-                print()
-
-                # LOG-02: Log hedge event with full signal breakdown
-                danger_result = window_state.get('danger_result', {})
-                log_event("99C_HEDGE", window_state.get('window_id', ''),
-                               bet_side=bet_side, hedge_side=opposite_side,
-                               hedge_price=opposite_ask, combined=combined,
-                               pnl=-abs(total_loss),  # Record loss in PnL column
-                               danger_score=danger_score,
-                               conf_drop=danger_result.get('confidence_drop', 0),
-                               conf_wgt=danger_result.get('confidence_component', 0),
-                               imb_raw=danger_result.get('imbalance', 0),
-                               imb_wgt=danger_result.get('imbalance_component', 0),
-                               vel_raw=danger_result.get('velocity', 0),
-                               vel_wgt=danger_result.get('velocity_component', 0),
-                               opp_raw=danger_result.get('opponent_ask', 0),
-                               opp_wgt=danger_result.get('opponent_component', 0),
-                               time_raw=danger_result.get('time_remaining', 0),
-                               time_wgt=danger_result.get('time_component', 0))
-            else:
-                print(f"│  ❌ HEDGE FAILED: {status}".ljust(50) + "│")
-                print(f"└───────────────────────────────────────────────────┘")
-                print()
-
-
 def get_price_velocity(btc_price_history: deque, bet_side: str) -> float:
     """
     Calculate BTC price velocity over the rolling window.
@@ -2324,16 +2097,16 @@ def check_and_place_arb(books, ttc):
     cheap_price = min(ask_up, ask_down)
     expensive_price = max(ask_up, ask_down)
 
-    # Check 1: Cheap side must be cheap enough
-    if cheap_price > DIVERGENCE_THRESHOLD:
+    # Check 1: Cheap side must be cheap enough (ARB disabled - dead code)
+    if cheap_price > 0.42:
         return False  # Both sides near 50/50
 
-    # Check 2: Expensive side must show clear momentum (NEW)
-    if expensive_price < MIN_EXPENSIVE_SIDE_PRICE:
-        print(f"[{ts()}] SKIP_WEAK_DIVERGENCE: {cheap_price*100:.0f}c/{expensive_price*100:.0f}c - need {MIN_EXPENSIVE_SIDE_PRICE*100:.0f}c+ on expensive side")
+    # Check 2: Expensive side must show clear momentum
+    if expensive_price < 0.58:
+        print(f"[{ts()}] SKIP_WEAK_DIVERGENCE: {cheap_price*100:.0f}c/{expensive_price*100:.0f}c - need 58c+ on expensive side")
         return False
 
-    cheap_side = "UP" if ask_up <= DIVERGENCE_THRESHOLD else "DOWN"
+    cheap_side = "UP" if ask_up <= 0.42 else "DOWN"
     print(f"[{ts()}] STRONG_DIVERGENCE: {cheap_side} @ {cheap_price*100:.0f}c, other @ {expensive_price*100:.0f}c")
 
     size_multiplier = 1.0
@@ -2538,8 +2311,6 @@ def check_and_place_arb(books, ttc):
                 print("💰 BOTH FILLED - PAIR COMPLETE!")
                 window_state['avg_up_price_paid'] = bid_up
                 window_state['avg_down_price_paid'] = bid_down
-                notify_profit_pair(window_state['filled_up_shares'], bid_up,
-                                   window_state['filled_down_shares'], bid_down)
                 cancel_all_orders()
                 window_state['current_arb_orders'] = None
                 window_state['state'] = STATE_DONE
@@ -2588,7 +2359,6 @@ def monitor_arb_orders(books):
 
     if up_status['fully_filled'] and down_status['fully_filled']:
         print("💰 BOTH FILLED - PAIRED!")
-        notify_profit_pair(arb['q'], arb['bid_up'], arb['q'], arb['bid_down'])
         window_state['current_arb_orders'] = None
         window_state['state'] = STATE_DONE
         return
@@ -2936,12 +2706,12 @@ def run_pairing_mode(books, ttc):
         imb = get_imbalance()
         missing_shares = abs(imb)
         if missing_shares >= MIN_SHARES:
-            # Loss check: Don't take if loss would exceed MAX_PER_TRADE_LOSS
+            # Loss check: Don't take if loss would exceed 3c per share
             potential_total = existing_price + best_ask
             per_share_loss = potential_total - 1.00
 
-            if per_share_loss > MAX_PER_TRADE_LOSS:
-                print(f"[{ts()}] TAKER_BLOCKED_MAX_LOSS: {per_share_loss*100:.0f}c per share > {MAX_PER_TRADE_LOSS*100:.0f}c limit")
+            if per_share_loss > 0.03:
+                print(f"[{ts()}] TAKER_BLOCKED_MAX_LOSS: {per_share_loss*100:.0f}c per share > 3c limit")
                 print(f"[{ts()}] Would pay {existing_price*100:.0f}c + {best_ask*100:.0f}c = {potential_total*100:.0f}c (loss: {per_share_loss*100:.0f}c)")
                 # Don't take - wait for better price or hard flatten
             else:
@@ -2997,7 +2767,7 @@ def main():
     global window_state, trades_log, error_count, clob_client
 
     print("=" * 100)
-    print(f"CHATGPT POLY BOT - SMART STRATEGY VERSION")
+    print(f"MARKWATNEY POLYBOT v{BOT_VERSION['version']} '{BOT_VERSION['codename']}'")
     print("=" * 100)
     print()
 
@@ -3029,8 +2799,8 @@ def main():
         print("  Supabase logger: DISABLED (module not found)")
     print()
 
-    print("STRATEGY: HARD HEDGE INVARIANT")
-    print(f"  - NEVER allow unequal UP/DOWN at window close")
+    print("STRATEGY: 99c SNIPER")
+    print(f"  - Confidence-based 99c capture on near-certain winners")
     print(f"  - Order book signals: {'ENABLED' if USE_ORDERBOOK_SIGNALS and ORDERBOOK_ANALYZER_AVAILABLE else 'DISABLED'}")
     if USE_ORDERBOOK_SIGNALS and ORDERBOOK_ANALYZER_AVAILABLE:
         print(f"  - Min signal strength: {ORDERBOOK_MIN_SIGNAL_STRENGTH}")
@@ -3075,36 +2845,29 @@ def main():
                             sniper_side = window_state.get('capture_99c_side')
                             sniper_shares = window_state.get('capture_99c_filled_up', 0) + window_state.get('capture_99c_filled_down', 0)
 
-                            if window_state.get('capture_99c_hedged'):
-                                # Hedged: loss = (0.99 + hedge_price) - 1.00 per share
-                                hedge_price = window_state.get('capture_99c_hedge_price', 0)
-                                sniper_pnl = -(0.99 + hedge_price - 1.00) * sniper_shares
-                                sniper_won = False
-                                print(f"[{ts()}] 99c SNIPER RESULT: HEDGED (loss avoided) P&L=${sniper_pnl:.2f}")
-                            else:
-                                # Query Polymarket API for actual settlement result
-                                # Retry up to 6 times (30 seconds total) waiting for market resolution
-                                sniper_won = None
-                                for retry in range(6):
-                                    try:
-                                        sniper_won = check_99c_outcome(sniper_side, last_slug)
-                                        if sniper_won is not None:
-                                            sniper_pnl = sniper_shares * 0.01 if sniper_won else -sniper_shares * 0.99
-                                            print(f"[{ts()}] 99c SNIPER RESULT: {'WIN' if sniper_won else 'LOSS'} P&L=${sniper_pnl:.2f}")
-                                            break
-                                        else:
-                                            if retry < 5:
-                                                print(f"[{ts()}] 99c SNIPER: Market not resolved, retrying in 5s... ({retry+1}/6)")
-                                                time.sleep(5)
-                                            else:
-                                                print(f"[{ts()}] 99c SNIPER RESULT: PENDING after 30s - will resolve on next window")
-                                                sniper_pnl = 0
-                                    except Exception as e:
-                                        print(f"[{ts()}] 99c SNIPER RESULT ERROR (retry {retry+1}): {e}")
+                            # Query Polymarket API for actual settlement result
+                            # Retry up to 6 times (30 seconds total) waiting for market resolution
+                            sniper_won = None
+                            for retry in range(6):
+                                try:
+                                    sniper_won = check_99c_outcome(sniper_side, last_slug)
+                                    if sniper_won is not None:
+                                        sniper_pnl = sniper_shares * 0.01 if sniper_won else -sniper_shares * 0.99
+                                        print(f"[{ts()}] 99c SNIPER RESULT: {'WIN' if sniper_won else 'LOSS'} P&L=${sniper_pnl:.2f}")
+                                        break
+                                    else:
                                         if retry < 5:
+                                            print(f"[{ts()}] 99c SNIPER: Market not resolved, retrying in 5s... ({retry+1}/6)")
                                             time.sleep(5)
-                                        sniper_won = None
-                                        sniper_pnl = 0
+                                        else:
+                                            print(f"[{ts()}] 99c SNIPER RESULT: PENDING after 30s - will resolve on next window")
+                                            sniper_pnl = 0
+                                except Exception as e:
+                                    print(f"[{ts()}] 99c SNIPER RESULT ERROR (retry {retry+1}): {e}")
+                                    if retry < 5:
+                                        time.sleep(5)
+                                    sniper_won = None
+                                    sniper_pnl = 0
 
                             # Only send notification if we know the result
                             if sniper_won is not None:
@@ -3120,8 +2883,7 @@ def main():
                                     pnl=sniper_pnl,
                                     details=json.dumps({
                                         "outcome": "WIN" if sniper_won else "LOSS",
-                                        "settlement_price": 1.00 if sniper_won else 0.00,
-                                        "hedged": window_state.get('capture_99c_hedged', False)
+                                        "settlement_price": 1.00 if sniper_won else 0.00
                                     }))
                             else:
                                 # Add to pending list to retry on next window
@@ -3179,7 +2941,6 @@ def main():
                                         details=json.dumps({
                                             "outcome": "WIN" if result else "LOSS",
                                             "settlement_price": 1.00 if result else 0.00,
-                                            "hedged": False,
                                             "delayed_resolution": True
                                         }))
                                     notify_99c_resolution(pending['side'], pending['shares'], result, pnl)
@@ -3337,7 +3098,6 @@ def main():
                 if (HARD_STOP_ENABLED and
                     window_state.get('capture_99c_fill_notified') and
                     not window_state.get('capture_99c_exited') and
-                    not window_state.get('capture_99c_hedged') and
                     remaining_secs > 15):
 
                     capture_side = window_state.get('capture_99c_side')
@@ -3354,7 +3114,6 @@ def main():
                 if (OB_EARLY_EXIT_ENABLED and
                     window_state.get('capture_99c_fill_notified') and
                     not window_state.get('capture_99c_exited') and
-                    not window_state.get('capture_99c_hedged') and
                     remaining_secs > 15):
 
                     capture_side = window_state.get('capture_99c_side')
@@ -3379,9 +3138,9 @@ def main():
                             print(f"[{ts()}] 🚨 99c OB EXIT TRIGGERED: {capture_side} imb={imb:+.2f}")
                             execute_99c_early_exit(capture_side, imb, books, reason="ob_reversal")
 
-                # Check if 99c capture needs hedging (confidence dropped)
+                # Calculate danger score (used for logging/monitoring)
                 # Skip if we already exited early
-                if window_state.get('capture_99c_fill_notified') and not window_state.get('capture_99c_hedged') and not window_state.get('capture_99c_exited'):
+                if window_state.get('capture_99c_fill_notified') and not window_state.get('capture_99c_exited'):
                     # Calculate danger score from 5 signals
                     bet_side = window_state.get('capture_99c_side')
 
@@ -3420,9 +3179,6 @@ def main():
                     )
                     window_state['danger_score'] = danger_result['score']
                     window_state['danger_result'] = danger_result  # Store full result for logging
-
-                    # Existing hedge check (will use danger_score in Phase 3)
-                    check_99c_capture_hedge(books, remaining_secs)
 
                 # State machine
                 if window_state['state'] == STATE_DONE:
