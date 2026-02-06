@@ -15,10 +15,10 @@ STRATEGY: 99c Capture (single-side bet on near-certain winners)
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.47",
-    "codename": "Steel Gate",
+    "version": "v1.48",
+    "codename": "Last Second",
     "date": "2026-02-05",
-    "changes": "Fix: Stop false PAIRING_MODE entry from 99c captures. Don't set capture_99c_filled at placement, add max(0) guard on ARB imbalance calc."
+    "changes": "Remove 15s dead zone: exits (HARD STOP, OB EXIT) now active until T-0. CLOSE_GUARD only blocks new entries. WINDOW COMPLETE shows after settlement with result."
 }
 
 import os
@@ -2834,14 +2834,11 @@ def main():
                         if window_state['filled_up_shares'] > 0 and window_state['filled_up_shares'] == window_state['filled_down_shares']:
                             session_stats['paired'] += 1
                         session_stats['pnl'] += window_state['realized_pnl_usd']
-                        # Prettier window summary
-                        print()
-                        print("┌─────────────────── WINDOW COMPLETE ───────────────────┐")
-                        print(f"│  ✅ Profits: {session_counters['profit_pairs']}    🟧 Loss-Avoid: {session_counters['loss_avoid_pairs']}    🔴 Flatten: {session_counters['hard_flattens']}".ljust(55) + "│")
-                        print(f"│  💵 Session PnL: ${session_stats['pnl']:.2f}".ljust(55) + "│")
-                        print("└────────────────────────────────────────────────────────┘")
 
-                        # 99c Sniper Resolution Notification
+                        flush_ticks()  # Flush any remaining tick data
+
+                        # 99c Sniper Resolution - wait for settlement BEFORE showing summary
+                        sniper_result_line = ""
                         if window_state.get('capture_99c_fill_notified'):
                             sniper_side = window_state.get('capture_99c_side')
                             sniper_shares = window_state.get('capture_99c_filled_up', 0) + window_state.get('capture_99c_filled_down', 0)
@@ -2849,12 +2846,12 @@ def main():
                             # Query Polymarket API for actual settlement result
                             # Retry up to 6 times (30 seconds total) waiting for market resolution
                             sniper_won = None
+                            sniper_pnl = 0
                             for retry in range(6):
                                 try:
                                     sniper_won = check_99c_outcome(sniper_side, last_slug)
                                     if sniper_won is not None:
                                         sniper_pnl = sniper_shares * 0.01 if sniper_won else -sniper_shares * 0.99
-                                        print(f"[{ts()}] 99c SNIPER RESULT: {'WIN' if sniper_won else 'LOSS'} P&L=${sniper_pnl:.2f}")
                                         break
                                     else:
                                         if retry < 5:
@@ -2862,7 +2859,6 @@ def main():
                                             time.sleep(5)
                                         else:
                                             print(f"[{ts()}] 99c SNIPER RESULT: PENDING after 30s - will resolve on next window")
-                                            sniper_pnl = 0
                                 except Exception as e:
                                     print(f"[{ts()}] 99c SNIPER RESULT ERROR (retry {retry+1}): {e}")
                                     if retry < 5:
@@ -2870,8 +2866,15 @@ def main():
                                     sniper_won = None
                                     sniper_pnl = 0
 
-                            # Only send notification if we know the result
+                            # Build result line for banner
                             if sniper_won is not None:
+                                # Only add sniper PnL if we held to settlement (no early exit)
+                                # Early exits already counted in realized_pnl_usd
+                                if not window_state.get('capture_99c_exited'):
+                                    session_stats['pnl'] += sniper_pnl
+                                emoji = "✅" if sniper_won else "❌"
+                                exited_tag = " (EXITED EARLY)" if window_state.get('capture_99c_exited') else ""
+                                sniper_result_line = f"│  {emoji} 99c {sniper_side}: {'WIN' if sniper_won else 'LOSS'} ${sniper_pnl:+.2f}{exited_tag}"
                                 notify_99c_resolution(sniper_side, sniper_shares, sniper_won, sniper_pnl)
 
                                 # Log outcome to Sheets/Supabase for dashboard tracking
@@ -2887,6 +2890,7 @@ def main():
                                         "settlement_price": 1.00 if sniper_won else 0.00
                                     }))
                             else:
+                                sniper_result_line = f"│  ⏳ 99c {sniper_side}: PENDING ({sniper_shares} shares)"
                                 # Add to pending list to retry on next window
                                 entry_price = window_state.get('capture_99c_fill_price', 0.99)
                                 pending_99c_resolutions.append({
@@ -2896,9 +2900,14 @@ def main():
                                     'entry_price': entry_price,
                                     'timestamp': time.time()
                                 })
-                                print(f"[{ts()}] 99c SNIPER: Added to pending queue for later resolution")
 
-                        flush_ticks()  # Flush any remaining tick data
+                        # Show WINDOW COMPLETE banner AFTER settlement
+                        print()
+                        print("┌─────────────────── WINDOW COMPLETE ───────────────────┐")
+                        if sniper_result_line:
+                            print(sniper_result_line.ljust(55) + "│")
+                        print(f"│  💵 Session PnL: ${session_stats['pnl']:.2f}".ljust(55) + "│")
+                        print("└────────────────────────────────────────────────────────┘")
 
                         # Check for claimable positions after window closes
                         try:
@@ -2906,7 +2915,7 @@ def main():
                             claimable = check_and_claim()
                             if claimable:
                                 total = sum(p['claimable_usdc'] for p in claimable)
-                                print(f"[{ts()}] 💰 CLAIMABLE: ${total:.2f} - check polymarket.com to claim!")
+                                print(f"[{ts()}] CLAIMABLE: ${total:.2f} - check polymarket.com to claim!")
                         except ImportError:
                             pass  # auto_redeem module not available
                         except Exception as e:
@@ -2979,10 +2988,12 @@ def main():
                     time.sleep(2)
                     continue
 
-                if remaining_secs <= CLOSE_GUARD_SECONDS:
+                # CLOSE_GUARD: Cancel pending buy orders but keep processing
+                # (exits, tick logging, danger score all continue until T-0)
+                close_guard_active = remaining_secs <= CLOSE_GUARD_SECONDS
+                if close_guard_active and not window_state.get('_close_guard_fired'):
                     cancel_all_orders()
-                    time.sleep(0.5)
-                    continue
+                    window_state['_close_guard_fired'] = True
 
                 books = get_order_books(cached_market)
                 if not books:
@@ -3043,7 +3054,8 @@ def main():
 
                 # 99c BID CAPTURE - runs independently of arb strategy
                 # Confidence-based 99c capture: only bet when confidence >= 95%
-                if CAPTURE_99C_ENABLED and books and not window_state.get('capture_99c_used'):
+                # Skip new entries during CLOSE_GUARD (exits still active)
+                if CAPTURE_99C_ENABLED and books and not window_state.get('capture_99c_used') and not close_guard_active:
                     ask_up = float(books['up_asks'][0]['price']) if books.get('up_asks') else 0.50
                     ask_down = float(books['down_asks'][0]['price']) if books.get('down_asks') else 0.50
                     capture = check_99c_capture_opportunity(ask_up, ask_down, remaining_secs)
@@ -3098,8 +3110,7 @@ def main():
                 # Uses best BID (not ask) to ensure real liquidity exists
                 if (HARD_STOP_ENABLED and
                     window_state.get('capture_99c_fill_notified') and
-                    not window_state.get('capture_99c_exited') and
-                    remaining_secs > 15):
+                    not window_state.get('capture_99c_exited')):
 
                     capture_side = window_state.get('capture_99c_side')
 
@@ -3114,8 +3125,7 @@ def main():
                 # Exit early if OB shows sellers dominating for 3 consecutive ticks
                 if (OB_EARLY_EXIT_ENABLED and
                     window_state.get('capture_99c_fill_notified') and
-                    not window_state.get('capture_99c_exited') and
-                    remaining_secs > 15):
+                    not window_state.get('capture_99c_exited')):
 
                     capture_side = window_state.get('capture_99c_side')
 
@@ -3181,8 +3191,10 @@ def main():
                     window_state['danger_score'] = danger_result['score']
                     window_state['danger_result'] = danger_result  # Store full result for logging
 
-                # State machine
-                if window_state['state'] == STATE_DONE:
+                # State machine (skip new entries during CLOSE_GUARD - exits still active above)
+                if close_guard_active:
+                    pass
+                elif window_state['state'] == STATE_DONE:
                     pass
                 elif window_state['state'] == STATE_PAIRING:
                     run_pairing_mode(books, remaining_secs)

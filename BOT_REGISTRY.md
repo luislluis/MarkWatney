@@ -1,10 +1,11 @@
 # Polybot Version Registry
 
-## Current Version: v1.47 "Steel Gate"
+## Current Version: v1.48 "Last Second"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.47 | 2026-02-05 PST | Steel Gate | Fix: Stop false PAIRING_MODE entry from 99c captures. Don't set capture_99c_filled at placement, add max(0) guard on ARB imbalance calc. | Active |
+| v1.48 | 2026-02-05 PST | Last Second | Remove 15s dead zone: exits (HARD STOP, OB EXIT) now active until T-0. CLOSE_GUARD only blocks new entries. WINDOW COMPLETE shows after settlement with result. | Active |
+| v1.47 | 2026-02-05 PST | Steel Gate | Fix: Stop false PAIRING_MODE entry from 99c captures. Don't set capture_99c_filled at placement, add max(0) guard on ARB imbalance calc. | Archived |
 | v1.46 | 2026-02-05 PST | Iron Lock | Fix: Lock capture_99c_used BEFORE API call to prevent duplicate order spam when API fails | Archived |
 | v1.45 | 2026-02-05 PST | Granite Wolf | Audit cleanup: Remove dead ARB constants, hedge system, stale CHATGPT references. Fix effective_floor crash bug. Rename to MarkWatney. | Archived |
 | v1.44 | 2026-02-05 PST | Silent Puma | Remove: 5-SEC RULE auto-bail from pairing mode (legacy v1.10 code that should no longer fire) | Archived |
