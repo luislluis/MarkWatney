@@ -15,10 +15,10 @@ STRATEGY: 99c Capture (single-side bet on near-certain winners)
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.54",
-    "codename": "Clean Slate",
+    "version": "v1.55",
+    "codename": "Iron Fist",
     "date": "2026-02-06",
-    "changes": "Strip ALL ARB/PAIRING code (~800 lines). Clean 99c sniper-only bot. No more phantom PAIRING_MODE triggers."
+    "changes": "OB exit now uses FOK market orders (was limit sell). Atomic execution, no partials, no stale orders."
 }
 
 import os
@@ -1245,13 +1245,13 @@ def place_and_verify_order(token_id, price, size, side="BUY", bypass_price_fails
         return False, order_id, "REJECTED"
 
 def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason: str = "ob_reversal", market_data=None) -> bool:
-    """Exit 99c position early due to OB reversal.
+    """Exit 99c position early due to OB reversal using FOK market orders.
 
     Triggered when:
     - OB imbalance is negative for 3 consecutive ticks (reason="ob_reversal")
 
-    NOTE: Price-based exits are now handled by execute_hard_stop() using FOK orders.
-    This function is only used for OB-based early exits and uses limit orders.
+    Uses FOK (Fill-or-Kill) market orders for guaranteed atomic execution.
+    If FOK rejects, returns False and lets the next tick retry or hard stop catch it.
 
     Args:
         side: "UP" or "DOWN" - which side we bet on
@@ -1282,7 +1282,7 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
         print(f"[{ts()}] EARLY_EXIT: No shares to sell for {side}")
         return False
 
-    # Get best bid, but enforce minimum exit price
+    # Get best bid for P&L estimation and floor check
     bids = books.get(f'{side.lower()}_bids', [])
     if not bids:
         print(f"[{ts()}] NO_BIDS: Escalating to HARD STOP for {side}")
@@ -1295,74 +1295,59 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
         print(f"[{ts()}] ABORT_EXIT: Bid {best_bid*100:.0f}c below floor {HARD_STOP_FLOOR*100:.0f}c")
         return False
 
-    exit_price = best_bid
     token = window_state.get(f'{side.lower()}_token')
+    entry_price = window_state.get('capture_99c_fill_price', 0.99)
 
     print()
     print("🚨" * 20)
     print(f"🚨 99c OB EXIT TRIGGERED")
-    print(f"🚨 Selling {shares:.0f} {side} shares @ {exit_price*100:.0f}c")
+    print(f"🚨 Selling {shares:.0f} {side} shares (FOK market sell)")
     print(f"🚨 OB Reading: {trigger_value:+.2f}")
     print("🚨" * 20)
 
-    # Place sell order
-    success, order_id = place_limit_order(token, exit_price, shares, "SELL")
+    # Place FOK market sell — atomic: fills completely or not at all
+    success, order_id, filled = place_fok_market_sell(token, shares)
 
     if not success:
-        print(f"[{ts()}] OB EXIT: Order failed to place")
+        print(f"[{ts()}] OB EXIT: FOK rejected — will retry next tick")
         return False
 
-    # CRITICAL: Wait for order confirmation
-    time.sleep(1.0)
-    status = get_order_status(order_id)
-    filled = status.get('filled', 0)
+    # "not enough balance" → shares already sold by another exit
+    if filled == 0:
+        print(f"[{ts()}] OB EXIT: Shares already sold (balance exhausted)")
+        window_state['capture_99c_exited'] = True
+        window_state['capture_99c_exit_reason'] = reason
+        window_state[f'capture_99c_filled_{side.lower()}'] = 0
+        window_state[f'filled_{side.lower()}_shares'] = 0
+        return True
 
-    if filled < shares * 0.9:  # Require at least 90% filled
-        print(f"[{ts()}] OB EXIT: Only {filled:.1f}/{shares:.0f} filled, order may be partial")
-        # Don't return False - partial exit is better than no exit
+    # Calculate P&L (use best_bid as approximate exit price)
+    pnl = (best_bid - entry_price) * filled
 
-    # Calculate P&L
-    entry_price = window_state.get('capture_99c_fill_price', 0.99)
-    pnl = (exit_price - entry_price) * filled
-
-    print(f"[{ts()}] OB EXIT: Sold {filled:.0f} @ {exit_price*100:.0f}c (entry {entry_price*100:.0f}c)")
+    print(f"[{ts()}] OB EXIT: Sold {filled:.0f} @ ~{best_bid*100:.0f}c (entry {entry_price*100:.0f}c)")
     print(f"[{ts()}] OB EXIT: P&L = ${pnl:.2f}")
 
     log_event("99C_EARLY_EXIT", window_state.get('window_id', ''),
-                    side=side, shares=filled, price=exit_price,
+                    side=side, shares=filled, price=best_bid,
                     pnl=pnl, reason=reason, details=f"OB={trigger_value:.2f}")
 
     # Telegram notification
     msg = f"""🚨 <b>99c EARLY EXIT</b>
 Side: {side}
 Shares: {filled:.0f}
-Exit Price: {exit_price*100:.0f}c
+Exit Price: ~{best_bid*100:.0f}c
 Entry Price: {entry_price*100:.0f}c
 OB Reading: {trigger_value:+.2f}
 P&L: ${pnl:.2f}
-<i>Exited early to cut losses</i>"""
+<i>FOK market sell — guaranteed exit</i>"""
     send_telegram(msg)
 
-    # Update state — only mark as FULLY exited if ALL shares sold
-    # Partial fills: update remaining count but keep exit mechanisms active for the rest
-    if filled > 0:
-        remaining = max(0, shares - filled)
-        window_state[f'capture_99c_filled_{side.lower()}'] = remaining
-        window_state[f'filled_{side.lower()}_shares'] = remaining
-        window_state['realized_pnl_usd'] = window_state.get('realized_pnl_usd', 0.0) + pnl
-        if remaining == 0:
-            # Fully exited — disable all exit mechanisms
-            window_state['capture_99c_exited'] = True
-            window_state['capture_99c_exit_reason'] = reason
-        else:
-            # Partial fill — keep exit mechanisms active for remaining shares
-            print(f"[{ts()}] OB EXIT: Partial fill ({filled:.0f}/{shares:.0f}), {remaining:.0f} shares still exposed")
-            cancel_all_orders()  # Cancel remainder of limit sell
-    else:
-        # Zero fills — do NOT mark as exited, so other exit mechanisms can still fire
-        print(f"[{ts()}] OB EXIT: 0 fills — keeping exit mechanisms active")
-        cancel_all_orders()  # Cancel the unfilled limit sell
-        return False
+    # Update state — FOK is atomic, so filled == shares (no partials)
+    window_state['capture_99c_exited'] = True
+    window_state['capture_99c_exit_reason'] = reason
+    window_state[f'capture_99c_filled_{side.lower()}'] = 0
+    window_state[f'filled_{side.lower()}_shares'] = 0
+    window_state['realized_pnl_usd'] = window_state.get('realized_pnl_usd', 0.0) + pnl
 
     return True
 
