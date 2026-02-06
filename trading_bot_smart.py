@@ -15,10 +15,10 @@ STRATEGY: 99c Capture (single-side bet on near-certain winners)
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.45",
-    "codename": "Granite Wolf",
+    "version": "v1.46",
+    "codename": "Iron Lock",
     "date": "2026-02-05",
-    "changes": "Audit cleanup: Remove dead ARB constants, hedge system, stale CHATGPT references. Fix effective_floor crash bug. Rename to MarkWatney."
+    "changes": "Fix: Lock capture_99c_used BEFORE API call to prevent duplicate order spam when API fails"
 }
 
 import os
@@ -1902,6 +1902,10 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
     shares = int(CAPTURE_99C_MAX_SPEND / CAPTURE_99C_BID_PRICE)  # ~5 shares
     token = window_state['up_token'] if side == 'UP' else window_state['down_token']
 
+    # LOCK IMMEDIATELY: Prevent retry loops if API fails or is slow.
+    # Better to miss one window than place 5 duplicate orders.
+    window_state['capture_99c_used'] = True
+
     print()
     print(f"┌─────────────── 99c CAPTURE ───────────────┐")
     print(f"│  {side} @ {current_ask*100:.0f}c | T-{ttc:.0f}s | Confidence: {confidence*100:.0f}%".ljust(44) + "│")
@@ -1915,7 +1919,6 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
     )
 
     if success:
-        window_state['capture_99c_used'] = True
         window_state['capture_99c_order'] = order_id
         window_state['capture_99c_side'] = side
         window_state['capture_99c_shares'] = shares
@@ -1931,7 +1934,7 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
                         confidence=confidence, penalty=penalty, ttl=ttc)
         return True
     else:
-        print(f"🎰 99c CAPTURE: ❌ Failed - {status}")
+        print(f"🎰 99c CAPTURE: ❌ Failed - {status} (locked for this window)")
         print()
         return False
 

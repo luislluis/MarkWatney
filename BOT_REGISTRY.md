@@ -1,10 +1,11 @@
 # Polybot Version Registry
 
-## Current Version: v1.45 "Granite Wolf"
+## Current Version: v1.46 "Iron Lock"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.45 | 2026-02-05 PST | Granite Wolf | Audit cleanup: Remove dead ARB constants, hedge system, stale CHATGPT references. Fix effective_floor crash bug. Rename to MarkWatney. | Active |
+| v1.46 | 2026-02-05 PST | Iron Lock | Fix: Lock capture_99c_used BEFORE API call to prevent duplicate order spam when API fails | Active |
+| v1.45 | 2026-02-05 PST | Granite Wolf | Audit cleanup: Remove dead ARB constants, hedge system, stale CHATGPT references. Fix effective_floor crash bug. Rename to MarkWatney. | Archived |
 | v1.44 | 2026-02-05 PST | Silent Puma | Remove: 5-SEC RULE auto-bail from pairing mode (legacy v1.10 code that should no longer fire) | Archived |
 | v1.43 | 2026-02-05 PST | Steady Falcon | Fix: OB EXIT sell uses actual API position (5.9995) not tracked (6.0) to avoid 'not enough balance' rejections. Remove unused strategy_signals imports. | Archived |
 | v1.42 | 2026-02-05 PST | Crystal Dashboard | Fix: Dashboard uses CAPTURE_FILL (not CAPTURE_99C) so unfilled orders don't show as pending, prices show correctly | Archived |
