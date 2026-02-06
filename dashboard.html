@@ -601,23 +601,6 @@
       el.error.classList.remove('visible');
     }
 
-    // Check market resolution via CLOB API (supports CORS)
-    async function resolveMarket(conditionId, outcomeIndex, price, shares) {
-      try {
-        if (!conditionId) return null;
-        const resp = await fetch(`https://clob.polymarket.com/markets/${conditionId}`);
-        if (!resp.ok) return null;
-        const market = await resp.json();
-        const tokens = market.tokens || [];
-        const ourToken = tokens[outcomeIndex];
-        if (!ourToken || ourToken.winner === undefined) return null;
-        const won = ourToken.winner === true;
-        return {
-          status: won ? 'WIN' : 'LOSS',
-          profit_loss: won ? Math.round(shares * (1 - price) * 100) / 100 : Math.round(shares * -price * 100) / 100
-        };
-      } catch { return null; }
-    }
 
     let balanceChart = null;
     async function loadBalanceChart() {
@@ -701,29 +684,23 @@
 
     async function loadData() {
       try {
-        // Source 1: Polymarket API - actual fill prices (primary)
-        // Source 2: Supabase - WIN/LOSS outcomes with PnL
-        const [polyTrades, { data: outcomeEvents, error: outcomeErr }] = await Promise.all([
+        // All data from Polymarket APIs directly — no Supabase for outcomes
+        // Source 1: /trades - all BUY/SELL fills with real prices
+        // Source 2: /activity?type=REDEEM - redemptions prove a WIN
+        const [polyTrades, redeemEvents] = await Promise.all([
           fetch(`${CONFIG.polymarketApi}?user=${CONFIG.walletAddress}&limit=500`)
-            .then(r => r.ok ? r.json() : Promise.reject(new Error('Polymarket API: ' + r.status)))
-            .catch(err => { console.warn('[DASHBOARD] Polymarket API failed, using fallback:', err.message); return null; }),
-          db.from('Polymarket Bot Log - Events')
-            .select('"Event","Window ID","PnL"')
-            .in('Event', ['CAPTURE_99C_WIN', 'CAPTURE_99C_LOSS'])
-            .order('Timestamp', { ascending: false })
-            .limit(500)
+            .then(r => r.ok ? r.json() : Promise.reject(new Error('Polymarket API: ' + r.status))),
+          fetch(`https://data-api.polymarket.com/activity?user=${CONFIG.walletAddress}&limit=500&type=REDEEM`)
+            .then(r => r.ok ? r.json() : [])
+            .catch(() => [])
         ]);
 
-        if (outcomeErr) throw new Error('Supabase: ' + outcomeErr.message);
-
-        // Build outcome lookup: Window ID -> { status, pnl }
-        const outcomes = {};
-        for (const e of (outcomeEvents ?? [])) {
-          outcomes[e['Window ID']] = {
-            status: e.Event === 'CAPTURE_99C_WIN' ? 'WIN' : 'LOSS',
-            profit_loss: parseFloat(e.PnL) || 0
-          };
+        // Build redemption lookup: slug -> true (redeemed = won)
+        const redeemed = new Set();
+        for (const r of redeemEvents) {
+          if (r.slug) redeemed.add(r.slug);
         }
+        console.log(`[DASHBOARD] ${polyTrades.length} trades, ${redeemed.size} redeemed slugs`);
 
         let trades;
 
@@ -755,7 +732,7 @@
           for (const [key, group] of Object.entries(grouped)) {
             const [slug, side] = key.split('|');
             if (group.buys.length === 0) continue;
-            const out = outcomes[slug];
+            const won = redeemed.has(slug);
 
             // Sort buys by timestamp, sells by timestamp
             group.buys.sort((a, b) => a.timestamp - b.timestamp);
@@ -814,81 +791,36 @@
                   conditionId: buy.conditionId, outcomeIndex: buy.outcomeIndex
                 });
                 const remainCost = remainShares * buy.price;
-                const remainPnl = out ? (out.status === 'WIN' ? remainShares * (1 - buy.price) : -remainCost) : 0;
+                // Resolve remaining portion: redeemed=WIN, old+not redeemed=LOSS
+                const remainAge = Date.now() / 1000 - buy.timestamp;
+                const remainStatus = won ? 'WIN' : (remainAge > 1800 ? 'LOSS' : 'PENDING');
+                const remainPnl = remainStatus === 'WIN' ? remainShares * (1 - buy.price) : (remainStatus === 'LOSS' ? -remainCost : 0);
                 trades.push({
                   timestamp: new Date(buy.timestamp * 1000).toISOString(),
                   window_id: slug, side,
                   shares: remainShares, entry_price: buy.price,
-                  status: out?.status || 'PENDING',
+                  status: remainStatus,
                   profit_loss: Math.round(remainPnl * 100) / 100,
                   cost_basis: Math.round(remainCost * 100) / 100,
                   conditionId: buy.conditionId, outcomeIndex: buy.outcomeIndex
                 });
               } else {
-                // No exit — normal WIN/LOSS/PENDING
-                const pnl = out ? (out.status === 'WIN' ? buy.size * (1 - buy.price) : -cost) : 0;
+                // No exit — resolve via redemption data
+                // redeemed=WIN, >30min old + not redeemed=LOSS, else PENDING
+                const age = Date.now() / 1000 - buy.timestamp;
+                const status = won ? 'WIN' : (age > 1800 ? 'LOSS' : 'PENDING');
+                const pnl = status === 'WIN' ? buy.size * (1 - buy.price) : (status === 'LOSS' ? -cost : 0);
                 trades.push({
                   timestamp: new Date(buy.timestamp * 1000).toISOString(),
                   window_id: slug, side,
                   shares: buy.size, entry_price: buy.price,
-                  status: out?.status || 'PENDING',
+                  status,
                   profit_loss: Math.round(pnl * 100) / 100,
                   cost_basis: Math.round(cost * 100) / 100,
                   conditionId: buy.conditionId, outcomeIndex: buy.outcomeIndex
                 });
               }
             });
-          }
-        } else {
-          // FALLBACK: If Polymarket API fails, use Supabase CAPTURE_FILL events
-          console.warn('[DASHBOARD] Using Supabase fallback');
-          const { data: fills, error: fillErr } = await db
-            .from('Polymarket Bot Log - Events')
-            .select('*')
-            .eq('Event', 'CAPTURE_FILL')
-            .order('Timestamp', { ascending: false })
-            .limit(500);
-          if (fillErr) throw new Error('Supabase fallback: ' + fillErr.message);
-          trades = (fills ?? []).map(f => {
-            const wid = f['Window ID'];
-            const out = outcomes[wid];
-            const shares = parseFloat(f.Shares) || 0;
-            const price = parseFloat(f.Price) || 0.99;
-            return {
-              timestamp: f.Timestamp,
-              window_id: wid,
-              side: f.Side,
-              shares, entry_price: price,
-              status: out?.status || 'PENDING',
-              profit_loss: out?.profit_loss || 0,
-              cost_basis: Math.round(shares * price * 100) / 100
-            };
-          });
-        }
-
-        // Resolve PENDING trades via CLOB API (for trades where bot missed logging outcome)
-        const now = Date.now();
-        const pendingTrades = trades.filter(t => t.status === 'PENDING' && (now - new Date(t.timestamp).getTime()) > 20 * 60 * 1000);
-        if (pendingTrades.length > 0) {
-          console.log(`[DASHBOARD] Resolving ${pendingTrades.length} pending trades via CLOB API`);
-          const resolutions = await Promise.all(
-            pendingTrades.map(t => resolveMarket(t.conditionId, t.outcomeIndex, t.entry_price, t.shares))
-          );
-          pendingTrades.forEach((t, i) => {
-            if (resolutions[i]) {
-              t.status = resolutions[i].status;
-              t.profit_loss = resolutions[i].profit_loss;
-            }
-          });
-        }
-
-        // Old trades still PENDING after CLOB check (market removed from API) — assume WIN
-        // These 15-min markets resolve within minutes; if CLOB returns 404 they're long settled
-        const TWO_HOURS = 2 * 60 * 60 * 1000;
-        for (const t of trades) {
-          if (t.status === 'PENDING' && (now - new Date(t.timestamp).getTime()) > TWO_HOURS) {
-            t.status = 'WIN';
-            t.profit_loss = Math.round(t.shares * (1 - t.entry_price) * 100) / 100;
           }
         }
 
@@ -911,7 +843,7 @@
             const cur = windowStatus[wid];
             if (t.status === 'EXIT' && cur !== 'EXIT') windowStatus[wid] = 'EXIT';
             else if (t.status === 'LOSS' && cur !== 'EXIT') windowStatus[wid] = 'LOSS';
-            else if (t.status === 'WIN' && !cur) windowStatus[wid] = 'WIN';
+            else if (t.status === 'WIN' && (!cur || cur === 'PENDING')) windowStatus[wid] = 'WIN';
             else if (!cur) windowStatus[wid] = 'PENDING';
           }
           const statuses = Object.values(windowStatus);
