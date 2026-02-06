@@ -15,10 +15,10 @@ STRATEGY: 99c Capture (single-side bet on near-certain winners)
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.46",
-    "codename": "Iron Lock",
+    "version": "v1.47",
+    "codename": "Steel Gate",
     "date": "2026-02-05",
-    "changes": "Fix: Lock capture_99c_used BEFORE API call to prevent duplicate order spam when API fails"
+    "changes": "Fix: Stop false PAIRING_MODE entry from 99c captures. Don't set capture_99c_filled at placement, add max(0) guard on ARB imbalance calc."
 }
 
 import os
@@ -446,8 +446,8 @@ def get_arb_imbalance():
     """Calculate ARB imbalance (excludes 99c capture shares)"""
     if not window_state:
         return 0
-    arb_up = window_state['filled_up_shares'] - window_state.get('capture_99c_filled_up', 0)
-    arb_down = window_state['filled_down_shares'] - window_state.get('capture_99c_filled_down', 0)
+    arb_up = max(0, window_state['filled_up_shares'] - window_state.get('capture_99c_filled_up', 0))
+    arb_down = max(0, window_state['filled_down_shares'] - window_state.get('capture_99c_filled_down', 0))
     raw_imb = arb_up - arb_down
     if abs(raw_imb) < MICRO_IMBALANCE_TOLERANCE:
         return 0
@@ -1922,11 +1922,9 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
         window_state['capture_99c_order'] = order_id
         window_state['capture_99c_side'] = side
         window_state['capture_99c_shares'] = shares
-        # Track captured shares to exclude from pairing logic
-        if side == 'UP':
-            window_state['capture_99c_filled_up'] = shares
-        else:
-            window_state['capture_99c_filled_down'] = shares
+        # NOTE: Do NOT set capture_99c_filled_up/down here.
+        # Setting it at placement (before fill) causes arb_imbalance = 0 - 6 = -6,
+        # triggering false PAIRING_MODE. Let the fill detection code (line ~3098) set it.
         print(f"🔭 99c CAPTURE: Order placed, watching for fill... (${shares * 0.01:.2f} potential profit)")
         print()
         log_event("CAPTURE_99C", window_state.get('window_id', ''),
@@ -3195,8 +3193,9 @@ def main():
                     window_state['filled_down_shares'] = verified_down
 
                     # Calculate ARB imbalance (exclude 99c capture shares)
-                    arb_up = window_state['filled_up_shares'] - window_state.get('capture_99c_filled_up', 0)
-                    arb_down = window_state['filled_down_shares'] - window_state.get('capture_99c_filled_down', 0)
+                    # max(0, ...) prevents negative values when 99c shares are tracked before fills sync
+                    arb_up = max(0, window_state['filled_up_shares'] - window_state.get('capture_99c_filled_up', 0))
+                    arb_down = max(0, window_state['filled_down_shares'] - window_state.get('capture_99c_filled_down', 0))
                     arb_imbalance = arb_up - arb_down
 
                     if abs(arb_imbalance) > MICRO_IMBALANCE_TOLERANCE:
@@ -3212,8 +3211,8 @@ def main():
                             window_state['filled_down_shares'] = api_down
 
                             # Recalculate imbalance
-                            arb_up = api_up - window_state.get('capture_99c_filled_up', 0)
-                            arb_down = api_down - window_state.get('capture_99c_filled_down', 0)
+                            arb_up = max(0, api_up - window_state.get('capture_99c_filled_up', 0))
+                            arb_down = max(0, api_down - window_state.get('capture_99c_filled_down', 0))
                             arb_imbalance = arb_up - arb_down
 
                         if abs(arb_imbalance) > MICRO_IMBALANCE_TOLERANCE:
