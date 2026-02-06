@@ -52,24 +52,23 @@ grep "POLYBOT" ~/polybot/bot.log | tail -1
 
 ### Deploy New Version
 
-**IMPORTANT**: Always SSH in interactively to start the bot. Long one-liner commands via `ssh "command"` break due to line wrapping issues.
+**CRITICAL**: The bot is managed by `polybot.service` (systemd) with `Restart=always`.
+- **NEVER** use `nohup python3 trading_bot_smart.py` - this creates a SECOND instance alongside systemd, causing duplicate orders.
+- **ALWAYS** use `systemctl restart polybot` to deploy.
 
 ```bash
 # Step 1: From Mac - push files to server
-scp ~/MarkWatney/trading_bot_smart.py ~/MarkWatney/sheets_dashboard.py root@174.138.5.183:~/polymarket_bot/
+scp trading_bot_smart.py root@174.138.5.183:~/polymarket_bot/
 
-# Step 2: SSH into server
-ssh root@174.138.5.183
+# Step 2: Restart the bot via systemd (single instance guaranteed)
+ssh root@174.138.5.183 "systemctl restart polybot"
 
-# Step 3: On server - stop old bot
-pkill -f trading_bot_smart.py
-
-# Step 4: On server - start new bot (run as ONE command)
-cd ~/polymarket_bot && export GOOGLE_SHEETS_SPREADSHEET_ID=1fxGKxKxj2RAL0hwtqjaOWdmnwqg6RcKseYYP-cCKp74 && export GOOGLE_SHEETS_CREDENTIALS_FILE=~/.google_sheets_credentials.json && nohup python3 trading_bot_smart.py > /dev/null 2>&1 &
-
-# Step 5: Verify it's running
-tail -20 ~/polybot/bot.log
+# Step 3: Verify it's running (single instance)
+ssh root@174.138.5.183 "ps aux | grep trading_bot | grep -v grep"
+ssh root@174.138.5.183 "tail -20 ~/polybot/bot.log"
 ```
+
+The systemd service loads env from `~/.env` and logs to `~/polybot/bot.log` automatically.
 
 ### Version History
 See `BOT_REGISTRY.md` for full version history with codenames and changes.
@@ -285,21 +284,21 @@ HARD_FLATTEN_SECONDS = 10
 
 ## Commands Reference
 
-### Start Bot on Server
-**Best method**: SSH in interactively, then run:
+**CRITICAL**: Bot is managed by `polybot.service` (systemd). NEVER use `nohup` to start - it creates duplicate instances.
+
+### Start/Restart Bot
 ```bash
-ssh root@174.138.5.183
-cd ~/polymarket_bot && export GOOGLE_SHEETS_SPREADSHEET_ID=1fxGKxKxj2RAL0hwtqjaOWdmnwqg6RcKseYYP-cCKp74 && export GOOGLE_SHEETS_CREDENTIALS_FILE=~/.google_sheets_credentials.json && nohup python3 trading_bot_smart.py > /dev/null 2>&1 &
+ssh root@174.138.5.183 "systemctl restart polybot"
 ```
 
-### Stop Bot on Server
+### Stop Bot
 ```bash
-ssh root@174.138.5.183 "pkill -f trading_bot_smart.py"
+ssh root@174.138.5.183 "systemctl stop polybot"
 ```
 
-### Check if Bot Running
+### Check if Bot Running (should show exactly 1 process)
 ```bash
-ssh root@174.138.5.183 "ps aux | grep trading_bot"
+ssh root@174.138.5.183 "ps aux | grep trading_bot | grep -v grep"
 ```
 
 ### View Live Logs
@@ -317,22 +316,28 @@ ssh root@174.138.5.183 "tail -100 ~/polybot/bot.log"
 scp trading_bot_smart.py root@174.138.5.183:~/polymarket_bot/
 ```
 
-### Full Restart Sequence
+### Full Deploy Sequence
 ```bash
 # 1. Upload new code (from Mac)
-scp ~/MarkWatney/trading_bot_smart.py ~/MarkWatney/sheets_dashboard.py root@174.138.5.183:~/polymarket_bot/
+scp trading_bot_smart.py root@174.138.5.183:~/polymarket_bot/
 
-# 2. SSH into server
-ssh root@174.138.5.183
+# 2. Restart via systemd
+ssh root@174.138.5.183 "systemctl restart polybot"
 
-# 3. On server - kill old bot
-pkill -f trading_bot_smart.py
+# 3. Verify single instance + logs
+ssh root@174.138.5.183 "ps aux | grep trading_bot | grep -v grep"
+ssh root@174.138.5.183 "tail -20 ~/polybot/bot.log"
+```
 
-# 4. On server - start new bot (run as ONE command)
-cd ~/polymarket_bot && export GOOGLE_SHEETS_SPREADSHEET_ID=1fxGKxKxj2RAL0hwtqjaOWdmnwqg6RcKseYYP-cCKp74 && export GOOGLE_SHEETS_CREDENTIALS_FILE=~/.google_sheets_credentials.json && nohup python3 trading_bot_smart.py > /dev/null 2>&1 &
+### Systemd Service Details
+```bash
+# Service config location
+/etc/systemd/system/polybot.service
 
-# 5. Verify running
-tail -20 ~/polybot/bot.log
+# Key settings:
+# - Restart=always (auto-restarts on crash, RestartSec=10)
+# - EnvironmentFile=/root/.env (loads all env vars)
+# - StandardOutput=append:/root/polybot/bot.log
 ```
 
 ---
@@ -482,13 +487,7 @@ All trading activity is logged to Google Sheets for analysis.
 | **Windows** | Window summaries (positions, outcome, PnL, 99c capture info) | At window end |
 
 ### Server Environment Variables
-```bash
-# These must be exported before starting the bot:
-export GOOGLE_SHEETS_SPREADSHEET_ID=1fxGKxKxj2RAL0hwtqjaOWdmnwqg6RcKseYYP-cCKp74
-export GOOGLE_SHEETS_CREDENTIALS_FILE=~/.google_sheets_credentials.json
-```
-
-To make permanent, add to `~/.bashrc`.
+Google Sheets env vars are stored in `~/.env` and loaded automatically by `polybot.service`.
 
 ### Credentials
 - **File:** `~/.google_sheets_credentials.json` (service account JSON key)
@@ -496,10 +495,9 @@ To make permanent, add to `~/.bashrc`.
 - **Google Cloud Project:** `polymarket-bot-logging`
 
 ### Start Bot with Sheets Logging
+Sheets logging is automatic - `polybot.service` loads env from `~/.env` which contains the Sheets config.
 ```bash
-export GOOGLE_SHEETS_SPREADSHEET_ID=1fxGKxKxj2RAL0hwtqjaOWdmnwqg6RcKseYYP-cCKp74
-export GOOGLE_SHEETS_CREDENTIALS_FILE=~/.google_sheets_credentials.json
-cd ~/polymarket_bot && nohup python3 trading_bot_smart.py > /dev/null 2>&1 &
+systemctl restart polybot
 ```
 
 ### Verify Sheets Logging
