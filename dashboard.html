@@ -564,7 +564,6 @@
       supabaseUrl: 'https://qszosdrmnoglrkttdevz.supabase.co',
       supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFzem9zZHJtbm9nbHJrdHRkZXZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxOTg1NTYsImV4cCI6MjA4NDc3NDU1Nn0.-Ebe2icoMqIiL8NlVX93IJGVBCAmpfxk9S7U8ABsStA',
       walletAddress: '0x636796704404959f5Ae9BEfEb2B3880eadf6960a',
-      polymarketApi: 'https://data-api.polymarket.com/trades',
       maxTrades: 50,
       historyStartDate: '2026-02-04'
     };
@@ -684,16 +683,13 @@
 
     async function loadData() {
       try {
-        // All data from Polymarket APIs directly — no Supabase for outcomes
-        // Source 1: /trades - all BUY/SELL fills with real prices
-        // Source 2: /activity?type=REDEEM - redemptions prove a WIN
-        const [polyTrades, redeemEvents] = await Promise.all([
-          fetch(`${CONFIG.polymarketApi}?user=${CONFIG.walletAddress}&limit=500`)
-            .then(r => r.ok ? r.json() : Promise.reject(new Error('Polymarket API: ' + r.status))),
-          fetch(`https://data-api.polymarket.com/activity?user=${CONFIG.walletAddress}&limit=500&type=REDEEM`)
-            .then(r => r.ok ? r.json() : [])
-            .catch(() => [])
-        ]);
+        // All data from Polymarket Activity API — single source of truth
+        // /activity returns TRADE + REDEEM events (more complete than /trades)
+        const activityUrl = `https://data-api.polymarket.com/activity?user=${CONFIG.walletAddress}&limit=1000`;
+        const allActivity = await fetch(activityUrl)
+          .then(r => r.ok ? r.json() : Promise.reject(new Error('Activity API: ' + r.status)));
+        const polyTrades = allActivity.filter(a => a.type === 'TRADE');
+        const redeemEvents = allActivity.filter(a => a.type === 'REDEEM');
 
         // Build redemption lookup: slug -> true (redeemed = won)
         const redeemed = new Set();
