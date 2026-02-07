@@ -15,10 +15,10 @@ STRATEGY: 99c Capture (single-side bet on near-certain winners)
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.56",
-    "codename": "Steel Gate",
+    "version": "v1.57",
+    "codename": "Crystal Eye",
     "date": "2026-02-06",
-    "changes": "OB exit: FOK failure now escalates to hard stop (10-retry loop). Floor check escalates instead of aborting. State-before-log ordering fix."
+    "changes": "Exact fill tracking via Position API, floor FOK sell to 2dp, fix double PnL counting, fix capture_99c_exited on hard stop partial fail, cache OB analyze (was 3x/tick)."
 }
 
 import os
@@ -702,7 +702,7 @@ def ts():
 _last_log_time = 0
 _last_skip_reason = ""
 
-def log_state(ttc, books=None):
+def log_state(ttc, books=None, ob_result=None):
     """Log current state every second with prices and skip reason"""
     global _last_log_time, _last_skip_reason
     if not window_state:
@@ -767,15 +767,11 @@ def log_state(ttc, books=None):
     # v1.24: Track market prices for entry filter
     market_price_history.append((time.time(), ask_up, ask_down))
 
-    # Get order book imbalance
+    # Get order book imbalance (use cached result — analyze() called once per tick in main loop)
     ob_str = ""
     up_imb = None
     down_imb = None
-    if ORDERBOOK_ANALYZER_AVAILABLE and orderbook_analyzer and books and ORDERBOOK_LOG_ALWAYS:
-        ob_result = orderbook_analyzer.analyze(
-            books.get('up_bids', []), books.get('up_asks', []),
-            books.get('down_bids', []), books.get('down_asks', [])
-        )
+    if ob_result and ORDERBOOK_LOG_ALWAYS:
         up_imb = ob_result['up_imbalance']
         down_imb = ob_result['down_imbalance']
         signal = ob_result['signal']
@@ -888,12 +884,16 @@ def place_fok_market_sell(token_id: str, shares: float) -> tuple:
         from py_clob_client.clob_types import MarketOrderArgs, OrderType
         from py_clob_client.order_builder.constants import SELL
 
-        print(f"[{ts()}] HARD_STOP: Placing FOK market sell: {shares} shares")
+        # Floor to 2 decimal places (CLOB size precision) to never sell more than we have
+        safe_shares = math.floor(shares * 100) / 100
+        if safe_shares != shares:
+            print(f"[{ts()}] FOK_FLOOR: {shares} → {safe_shares} (floored to 2dp)")
+        print(f"[{ts()}] HARD_STOP: Placing FOK market sell: {safe_shares} shares")
 
         # Create market sell order
         sell_args = MarketOrderArgs(
             token_id=token_id,
-            amount=shares,
+            amount=safe_shares,
             side=SELL
         )
 
@@ -1067,8 +1067,9 @@ def execute_hard_stop(side: str, books: dict, market_data=None) -> tuple:
 
     if remaining_shares > 0:
         print(f"[{ts()}] HARD_STOP_ERROR: Failed to fully liquidate! {remaining_shares:.0f} shares stuck")
-        # Update state with partial exit — track sold shares in both fields
-        sold_shares = shares - remaining_shares
+        # CRITICAL: Mark exited even on partial failure to prevent infinite re-triggers
+        window_state['capture_99c_exited'] = True
+        window_state['capture_99c_exit_reason'] = 'hard_stop_partial_fail'
         window_state[f'capture_99c_filled_{side.lower()}'] = remaining_shares
         window_state[f'filled_{side.lower()}_shares'] = remaining_shares
         window_state['realized_pnl_usd'] = window_state.get('realized_pnl_usd', 0.0) + total_pnl
@@ -1321,7 +1322,7 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
         if not window_state.get('capture_99c_exited'):
             window_state['capture_99c_exited'] = True
             window_state['capture_99c_exit_reason'] = reason
-        window_state['realized_pnl_usd'] = window_state.get('realized_pnl_usd', 0.0) + hs_pnl
+        # PnL already written by execute_hard_stop() — do NOT add again
         return hs_success
 
     # "not enough balance" → shares already sold by another exit
@@ -1945,7 +1946,15 @@ def main():
                         window_state['filled_up_shares'] = api_up
                         window_state['filled_down_shares'] = api_down
 
-                log_state(remaining_secs, books)
+                # Analyze order book ONCE per tick (reused by log_state, OB exit, danger score)
+                ob_result_cached = None
+                if ORDERBOOK_ANALYZER_AVAILABLE and orderbook_analyzer and books:
+                    ob_result_cached = orderbook_analyzer.analyze(
+                        books.get('up_bids', []), books.get('up_asks', []),
+                        books.get('down_bids', []), books.get('down_asks', [])
+                    )
+
+                log_state(remaining_secs, books, ob_result=ob_result_cached)
 
                 # 99c BID CAPTURE - core sniper strategy
                 # Confidence-based 99c capture: only bet when confidence >= 95%
@@ -1974,13 +1983,27 @@ def main():
                         fill_price = status.get('price', 0.99)
                         if fill_price <= 0:
                             fill_price = 0.99  # Fallback if price not returned
+
+                        # Query Position API for EXACT share balance (size_matched can lie - Issue #245)
+                        actual_shares = filled  # Default to order API value
+                        api_position = verify_position_from_api()
+                        if api_position:
+                            api_up, api_down = api_position
+                            actual_shares = api_up if side == 'UP' else api_down
+                            if abs(actual_shares - filled) > 0.001:
+                                print(f"[{ts()}] FILL_PRECISION: order says {filled:.4f}, position API says {actual_shares:.4f} (delta={filled - actual_shares:.4f})")
+                            if actual_shares <= 0:
+                                # Position API hasn't caught up yet — trust order API for now
+                                actual_shares = filled
+                                print(f"[{ts()}] FILL_PRECISION: Position API returned 0, using order API value {filled:.4f}")
+
                         # Calculate actual P&L based on real fill price
-                        actual_pnl = filled * (1.00 - fill_price)
+                        actual_pnl = actual_shares * (1.00 - fill_price)
                         # Store fill price for later reference
                         window_state['capture_99c_fill_price'] = fill_price
                         print()
                         print(f"┌─────────────── 99c CAPTURE FILLED ───────────────┐")
-                        print(f"│  ✅ {side}: {filled:.0f} shares filled @ {fill_price*100:.0f}c".ljust(48) + "│")
+                        print(f"│  ✅ {side}: {actual_shares:.2f} shares filled @ {fill_price*100:.0f}c".ljust(48) + "│")
                         print(f"│  💰 Expected profit: ${actual_pnl:.2f}".ljust(48) + "│")
                         print(f"└──────────────────────────────────────────────────┘")
                         print()
@@ -1990,14 +2013,12 @@ def main():
                             peak_conf, _ = calculate_99c_confidence(current_ask, remaining_secs)
                             window_state['capture_99c_peak_confidence'] = peak_conf
                         window_state['capture_99c_fill_notified'] = True
-                        # Update tracked shares with ACTUAL filled amount (not requested)
-                        if side == 'UP':
-                            window_state['capture_99c_filled_up'] = filled
-                        else:
-                            window_state['capture_99c_filled_down'] = filled
+                        # Update BOTH tracking fields with actual shares from Position API
+                        window_state[f'capture_99c_filled_{side.lower()}'] = actual_shares
+                        window_state[f'filled_{side.lower()}_shares'] = actual_shares
                         # Send Telegram notification
-                        notify_99c_fill(side, filled, peak_conf * 100 if peak_conf else 95, remaining_secs)
-                        log_event("CAPTURE_FILL", slug, side=side, shares=filled,
+                        notify_99c_fill(side, actual_shares, peak_conf * 100 if peak_conf else 95, remaining_secs)
+                        log_event("CAPTURE_FILL", slug, side=side, shares=actual_shares,
                                         price=fill_price, pnl=actual_pnl)
 
                 # === 60¢ HARD STOP CHECK (v1.34, BTC safety added v1.52) ===
@@ -2042,13 +2063,9 @@ def main():
 
                     capture_side = window_state.get('capture_99c_side')
 
-                    # Get OB imbalance for our side
-                    if ORDERBOOK_ANALYZER_AVAILABLE and books:
-                        ob_result = orderbook_analyzer.analyze(
-                            books.get('up_bids', []), books.get('up_asks', []),
-                            books.get('down_bids', []), books.get('down_asks', [])
-                        )
-                        imb = ob_result.get('up_imbalance', 0) if capture_side == "UP" else ob_result.get('down_imbalance', 0)
+                    # Get OB imbalance for our side (use cached result from earlier this tick)
+                    if ob_result_cached:
+                        imb = ob_result_cached.get('up_imbalance', 0) if capture_side == "UP" else ob_result_cached.get('down_imbalance', 0)
 
                         # Track negative ticks with decay (decrement by 1 instead of reset to 0)
                         if imb < OB_EARLY_EXIT_THRESHOLD:
@@ -2084,14 +2101,10 @@ def main():
                         current_ask = float(our_asks[0]['price'])
                         current_confidence, _ = calculate_99c_confidence(current_ask, remaining_secs)
 
-                    # Get order book imbalance for our side
+                    # Get order book imbalance for our side (use cached result from earlier this tick)
                     our_imbalance = 0.0
-                    if ORDERBOOK_ANALYZER_AVAILABLE:
-                        ob_result = orderbook_analyzer.analyze(
-                            books.get('up_bids', []), books.get('up_asks', []),
-                            books.get('down_bids', []), books.get('down_asks', [])
-                        )
-                        our_imbalance = ob_result['up_imbalance'] if bet_side == "UP" else ob_result['down_imbalance']
+                    if ob_result_cached:
+                        our_imbalance = ob_result_cached['up_imbalance'] if bet_side == "UP" else ob_result_cached['down_imbalance']
 
                     # Get opponent ask price
                     if bet_side == "UP":
