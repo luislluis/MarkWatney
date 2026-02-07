@@ -1,10 +1,11 @@
 # Polybot Version Registry
 
-## Current Version: v1.55 "Iron Fist"
+## Current Version: v1.56 "Steel Gate"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.55 | 2026-02-06 PST | Iron Fist | OB exit now uses FOK market orders (was limit sell). Atomic execution, no partials, no stale orders left on book. | Active |
+| v1.56 | 2026-02-06 PST | Steel Gate | OB exit: FOK failure escalates to hard stop (10-retry guaranteed exit). Floor check escalates instead of aborting. State-before-log ordering fix. | Active |
+| v1.55 | 2026-02-06 PST | Iron Fist | OB exit now uses FOK market orders (was limit sell). Atomic execution, no partials, no stale orders left on book. | Archived |
 | v1.54 | 2026-02-06 PST | Clean Slate | Strip ALL ARB/PAIRING code (~1200 lines removed). Clean 99c sniper-only bot. No more phantom PAIRING_MODE triggers. 3408→2184 lines. | Archived |
 | v1.53 | 2026-02-06 PST | Dead Gate | CRITICAL: Block PAIRING_MODE when ARB disabled. Stale position API triggered phantom imbalances causing ~$6 loss in 99c-only mode. Two gates: entry check + state handler guard. | Archived |
 | v1.52 | 2026-02-05 PST | Iron Veil | 15-agent audit hardening: BTC safety on hard stop, empty-book danger guard, position re-inflation fix, partial OB exit fix, allowance/balance separation, realized_pnl tracking, RTDS disconnect safety, state-before-log ordering, stale books cleanup. | Archived |

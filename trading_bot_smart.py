@@ -15,10 +15,10 @@ STRATEGY: 99c Capture (single-side bet on near-certain winners)
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.55",
-    "codename": "Iron Fist",
+    "version": "v1.56",
+    "codename": "Steel Gate",
     "date": "2026-02-06",
-    "changes": "OB exit now uses FOK market orders (was limit sell). Atomic execution, no partials, no stale orders."
+    "changes": "OB exit: FOK failure now escalates to hard stop (10-retry loop). Floor check escalates instead of aborting. State-before-log ordering fix."
 }
 
 import os
@@ -1251,7 +1251,8 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
     - OB imbalance is negative for 3 consecutive ticks (reason="ob_reversal")
 
     Uses FOK (Fill-or-Kill) market orders for guaranteed atomic execution.
-    If FOK rejects, returns False and lets the next tick retry or hard stop catch it.
+    If FOK rejects, escalates immediately to execute_hard_stop() which has
+    a 10-attempt retry loop with book refresh — guaranteed exit.
 
     Args:
         side: "UP" or "DOWN" - which side we bet on
@@ -1282,7 +1283,7 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
         print(f"[{ts()}] EARLY_EXIT: No shares to sell for {side}")
         return False
 
-    # Get best bid for P&L estimation and floor check
+    # Get best bid for P&L estimation
     bids = books.get(f'{side.lower()}_bids', [])
     if not bids:
         print(f"[{ts()}] NO_BIDS: Escalating to HARD STOP for {side}")
@@ -1291,9 +1292,14 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
 
     best_bid = float(bids[0]['price'])
 
+    # Floor check: escalate to hard stop (which sells at any price) instead of aborting
     if best_bid < HARD_STOP_FLOOR:
-        print(f"[{ts()}] ABORT_EXIT: Bid {best_bid*100:.0f}c below floor {HARD_STOP_FLOOR*100:.0f}c")
-        return False
+        print(f"[{ts()}] OB EXIT: Bid {best_bid*100:.0f}c below floor, escalating to HARD STOP")
+        success, pnl = execute_hard_stop(side, books, market_data=market_data)
+        if not window_state.get('capture_99c_exited'):
+            window_state['capture_99c_exited'] = True
+            window_state['capture_99c_exit_reason'] = reason
+        return success
 
     token = window_state.get(f'{side.lower()}_token')
     entry_price = window_state.get('capture_99c_fill_price', 0.99)
@@ -1308,9 +1314,15 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
     # Place FOK market sell — atomic: fills completely or not at all
     success, order_id, filled = place_fok_market_sell(token, shares)
 
+    # FOK rejected → escalate to hard stop (10-attempt retry loop, guaranteed exit)
     if not success:
-        print(f"[{ts()}] OB EXIT: FOK rejected — will retry next tick")
-        return False
+        print(f"[{ts()}] OB EXIT: FOK rejected, escalating to HARD STOP")
+        hs_success, hs_pnl = execute_hard_stop(side, books, market_data=market_data)
+        if not window_state.get('capture_99c_exited'):
+            window_state['capture_99c_exited'] = True
+            window_state['capture_99c_exit_reason'] = reason
+        window_state['realized_pnl_usd'] = window_state.get('realized_pnl_usd', 0.0) + hs_pnl
+        return hs_success
 
     # "not enough balance" → shares already sold by another exit
     if filled == 0:
@@ -1327,12 +1339,24 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
     print(f"[{ts()}] OB EXIT: Sold {filled:.0f} @ ~{best_bid*100:.0f}c (entry {entry_price*100:.0f}c)")
     print(f"[{ts()}] OB EXIT: P&L = ${pnl:.2f}")
 
-    log_event("99C_EARLY_EXIT", window_state.get('window_id', ''),
-                    side=side, shares=filled, price=best_bid,
-                    pnl=pnl, reason=reason, details=f"OB={trigger_value:.2f}")
+    # CRITICAL: Update state FIRST — before log_event/telegram which can throw
+    window_state['capture_99c_exited'] = True
+    window_state['capture_99c_exit_reason'] = reason
+    window_state[f'capture_99c_filled_{side.lower()}'] = 0
+    window_state[f'filled_{side.lower()}_shares'] = 0
+    window_state['realized_pnl_usd'] = window_state.get('realized_pnl_usd', 0.0) + pnl
 
-    # Telegram notification
-    msg = f"""🚨 <b>99c EARLY EXIT</b>
+    # Log to Sheets (non-critical — state already updated above)
+    try:
+        log_event("99C_EARLY_EXIT", window_state.get('window_id', ''),
+                        side=side, shares=filled, price=best_bid,
+                        pnl=pnl, reason=reason, details=f"OB={trigger_value:.2f}")
+    except Exception as e:
+        print(f"[{ts()}] OB EXIT: log_event failed (non-critical): {e}")
+
+    # Telegram notification (non-critical)
+    try:
+        msg = f"""🚨 <b>99c EARLY EXIT</b>
 Side: {side}
 Shares: {filled:.0f}
 Exit Price: ~{best_bid*100:.0f}c
@@ -1340,14 +1364,9 @@ Entry Price: {entry_price*100:.0f}c
 OB Reading: {trigger_value:+.2f}
 P&L: ${pnl:.2f}
 <i>FOK market sell — guaranteed exit</i>"""
-    send_telegram(msg)
-
-    # Update state — FOK is atomic, so filled == shares (no partials)
-    window_state['capture_99c_exited'] = True
-    window_state['capture_99c_exit_reason'] = reason
-    window_state[f'capture_99c_filled_{side.lower()}'] = 0
-    window_state[f'filled_{side.lower()}_shares'] = 0
-    window_state['realized_pnl_usd'] = window_state.get('realized_pnl_usd', 0.0) + pnl
+        send_telegram(msg)
+    except Exception as e:
+        print(f"[{ts()}] OB EXIT: send_telegram failed (non-critical): {e}")
 
     return True
 
