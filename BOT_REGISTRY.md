@@ -1,10 +1,11 @@
 # Polybot Version Registry
 
-## Current Version: v1.57 "Crystal Eye"
+## Current Version: v1.58 "Patient Eye"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.57 | 2026-02-06 PST | Crystal Eye | Exact fill tracking via Position API (size_matched unreliable), floor FOK sell to 2dp, fix double PnL counting on OB→hard stop escalation, fix capture_99c_exited on hard stop partial fail, cache OB analyze() (was 3x/tick corrupting deque). | Active |
+| v1.58 | 2026-02-07 PST | Patient Eye | Sleep 2s after fill before querying Position API (was returning 0 instantly, causing 6.00→5.99 precision bug). Retry up to 3x. Blocks OB exit from firing on same tick as fill. | Active |
+| v1.57 | 2026-02-06 PST | Crystal Eye | Exact fill tracking via Position API (size_matched unreliable), floor FOK sell to 2dp, fix double PnL counting on OB→hard stop escalation, fix capture_99c_exited on hard stop partial fail, cache OB analyze() (was 3x/tick corrupting deque). | Archived |
 | v1.56 | 2026-02-06 PST | Steel Gate | OB exit: FOK failure escalates to hard stop (10-retry guaranteed exit). Floor check escalates instead of aborting. State-before-log ordering fix. | Archived |
 | v1.55 | 2026-02-06 PST | Iron Fist | OB exit now uses FOK market orders (was limit sell). Atomic execution, no partials, no stale orders left on book. | Archived |
 | v1.54 | 2026-02-06 PST | Clean Slate | Strip ALL ARB/PAIRING code (~1200 lines removed). Clean 99c sniper-only bot. No more phantom PAIRING_MODE triggers. 3408→2184 lines. | Archived |

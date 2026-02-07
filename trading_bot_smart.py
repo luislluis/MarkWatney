@@ -15,10 +15,10 @@ STRATEGY: 99c Capture (single-side bet on near-certain winners)
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.57",
-    "codename": "Crystal Eye",
-    "date": "2026-02-06",
-    "changes": "Exact fill tracking via Position API, floor FOK sell to 2dp, fix double PnL counting, fix capture_99c_exited on hard stop partial fail, cache OB analyze (was 3x/tick)."
+    "version": "v1.58",
+    "codename": "Patient Eye",
+    "date": "2026-02-07",
+    "changes": "Sleep 2s after fill before querying Position API (was returning 0 instantly). Retry up to 3x. Blocks OB exit from firing on same tick as fill."
 }
 
 import os
@@ -1985,17 +1985,25 @@ def main():
                             fill_price = 0.99  # Fallback if price not returned
 
                         # Query Position API for EXACT share balance (size_matched can lie - Issue #245)
+                        # Sleep first to let on-chain state propagate — also blocks OB exit from firing instantly
                         actual_shares = filled  # Default to order API value
-                        api_position = verify_position_from_api()
-                        if api_position:
-                            api_up, api_down = api_position
-                            actual_shares = api_up if side == 'UP' else api_down
-                            if abs(actual_shares - filled) > 0.001:
-                                print(f"[{ts()}] FILL_PRECISION: order says {filled:.4f}, position API says {actual_shares:.4f} (delta={filled - actual_shares:.4f})")
-                            if actual_shares <= 0:
-                                # Position API hasn't caught up yet — trust order API for now
-                                actual_shares = filled
-                                print(f"[{ts()}] FILL_PRECISION: Position API returned 0, using order API value {filled:.4f}")
+                        for pos_attempt in range(3):
+                            if pos_attempt == 0:
+                                time.sleep(2)  # Initial delay for on-chain propagation
+                            else:
+                                time.sleep(1)  # Shorter retries
+                            api_position = verify_position_from_api()
+                            if api_position:
+                                api_up, api_down = api_position
+                                pos_shares = api_up if side == 'UP' else api_down
+                                if pos_shares > 0:
+                                    if abs(pos_shares - filled) > 0.001:
+                                        print(f"[{ts()}] FILL_PRECISION: order says {filled:.4f}, position API says {pos_shares:.4f} (delta={filled - pos_shares:.4f})")
+                                    actual_shares = pos_shares
+                                    break
+                            print(f"[{ts()}] FILL_PRECISION: Position API returned 0, retrying ({pos_attempt + 1}/3)")
+                        else:
+                            print(f"[{ts()}] FILL_PRECISION: Position API never returned shares, using order API value {filled:.4f}")
 
                         # Calculate actual P&L based on real fill price
                         actual_pnl = actual_shares * (1.00 - fill_price)
