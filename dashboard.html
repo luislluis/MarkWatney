@@ -754,7 +754,7 @@
             group.buys.forEach((buy, i) => {
               const info = buyExitInfo[i];
               const cost = buy.size * buy.price;
-              const exitedAll = info.exitShares >= buy.size - 0.001;
+              const exitedAll = info.exitShares >= buy.size - 0.02;
               const hasExit = info.exitShares > 0.001;
 
               if (exitedAll) {
