@@ -720,7 +720,8 @@
             const slug = t.slug || '';
             const outcome = (t.outcome || '').toUpperCase();
             const key = slug + '|' + outcome;
-            if (!grouped[key]) grouped[key] = { buys: [], sells: [] };
+            if (!grouped[key]) grouped[key] = { buys: [], sells: [], title: '' };
+            if (t.title) grouped[key].title = t.title;
             const entry = {
               timestamp: t.timestamp,
               size: parseFloat(t.size) || 0,
@@ -740,6 +741,7 @@
             const [slug, side] = key.split('|');
             if (group.buys.length === 0) continue;
             const won = redeemed.has(slug);
+            const windowTitle = group.title;
 
             // Sort buys by timestamp, sells by timestamp
             group.buys.sort((a, b) => a.timestamp - b.timestamp);
@@ -779,7 +781,7 @@
                   status: 'EXIT',
                   profit_loss: Math.round(pnl * 100) / 100,
                   cost_basis: Math.round(cost * 100) / 100,
-                  conditionId: buy.conditionId, outcomeIndex: buy.outcomeIndex
+                  conditionId: buy.conditionId, outcomeIndex: buy.outcomeIndex, window_title: windowTitle
                 });
               } else if (hasExit) {
                 // Partially exited — split into EXIT portion + remaining WIN/LOSS
@@ -795,7 +797,7 @@
                   status: 'EXIT',
                   profit_loss: Math.round(exitPnl * 100) / 100,
                   cost_basis: Math.round(exitCost * 100) / 100,
-                  conditionId: buy.conditionId, outcomeIndex: buy.outcomeIndex
+                  conditionId: buy.conditionId, outcomeIndex: buy.outcomeIndex, window_title: windowTitle
                 });
                 const remainCost = remainShares * buy.price;
                 // Resolve remaining portion: redeemed=WIN, old+not redeemed=LOSS
@@ -809,7 +811,7 @@
                   status: remainStatus,
                   profit_loss: Math.round(remainPnl * 100) / 100,
                   cost_basis: Math.round(remainCost * 100) / 100,
-                  conditionId: buy.conditionId, outcomeIndex: buy.outcomeIndex
+                  conditionId: buy.conditionId, outcomeIndex: buy.outcomeIndex, window_title: windowTitle
                 });
               } else {
                 // No exit — resolve via redemption data
@@ -824,7 +826,7 @@
                   status,
                   profit_loss: Math.round(pnl * 100) / 100,
                   cost_basis: Math.round(cost * 100) / 100,
-                  conditionId: buy.conditionId, outcomeIndex: buy.outcomeIndex
+                  conditionId: buy.conditionId, outcomeIndex: buy.outcomeIndex, window_title: windowTitle
                 });
               }
             });
@@ -968,7 +970,11 @@
               <div class="trade-info">
                 <div class="trade-pair">${side} ${shares}@${price}${isExit ? ' → ' + fmtPrice(t.exit_price ?? 0) : ''}</div>
                 <div class="trade-detail">$${costBasis.toFixed(2)} · ${roiText || '--'}</div>
-                <div class="trade-meta">${time}</div>
+                <div class="trade-meta">${(() => {
+                  const title = t.window_title || '';
+                  const m = title.match(/(\d{1,2}:\d{2}[AP]M-\d{1,2}:\d{2}[AP]M\s*ET)/);
+                  return m ? m[1] : time;
+                })()}</div>
               </div>
               <div class="trade-pnl ${pnlClass}">${pnlText}</div>
             </div>
