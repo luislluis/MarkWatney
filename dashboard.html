@@ -1391,45 +1391,58 @@
     // Fetch initial live data from Supabase
     async function loadLiveData() {
       try {
+        console.log('[LIVE] Loading live data...');
+
         // Get latest tick to determine current window
-        const { data: latestTicks } = await db
+        const { data: latestTicks, error: tickErr } = await db
           .from('Polymarket Bot Log - Ticks')
           .select('*')
           .order('Timestamp', { ascending: false })
           .limit(1);
 
+        if (tickErr) console.error('[LIVE] Tick query error:', tickErr);
+
         if (latestTicks && latestTicks.length > 0) {
           const tick = latestTicks[0];
+          console.log('[LIVE] Latest tick:', tick['Status'], 'TTL:', tick['TTL']);
           currentWindowId = tick['Window ID'];
           updateLivePanel(tick);
 
           // Load ticks for current window (for chart)
-          const { data: windowTicks } = await db
+          const { data: windowTicks, error: windowErr } = await db
             .from('Polymarket Bot Log - Ticks')
             .select('*')
             .eq('Window ID', currentWindowId)
             .order('Timestamp', { ascending: true });
 
+          if (windowErr) console.error('[LIVE] Window ticks error:', windowErr);
           if (windowTicks) {
+            console.log('[LIVE] Window ticks loaded:', windowTicks.length);
             renderLiveChart(windowTicks);
           }
+        } else {
+          console.warn('[LIVE] No ticks found');
+          document.getElementById('live-reason').textContent = 'No tick data available';
         }
 
         // Load recent events
-        const { data: events } = await db
+        const { data: events, error: evtErr } = await db
           .from('Polymarket Bot Log - Events')
           .select('*')
           .order('Timestamp', { ascending: false })
           .limit(25);
 
+        if (evtErr) console.error('[LIVE] Events query error:', evtErr);
         if (events) {
+          console.log('[LIVE] Events loaded:', events.length);
           liveEvents = events;
           renderEventFeed();
         }
 
         liveDataLoaded = true;
       } catch (e) {
-        console.warn('[LIVE] Error loading data:', e);
+        console.error('[LIVE] Error loading data:', e);
+        document.getElementById('live-reason').textContent = 'Error: ' + e.message;
       }
     }
 
