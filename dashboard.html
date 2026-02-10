@@ -461,6 +461,141 @@
     .delay-3 { animation-delay: 0.3s; opacity: 0; }
     .delay-4 { animation-delay: 0.4s; opacity: 0; }
 
+    /* Tab bar */
+    .tab-bar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .tab {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      padding: 6px 16px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .tab.active {
+      color: var(--green-primary);
+      border-color: var(--green-primary);
+      background: var(--green-glow);
+    }
+    .tab:hover:not(.active) {
+      color: var(--text-secondary);
+      border-color: var(--text-secondary);
+    }
+
+    /* Live Status Panel */
+    .live-panel { padding: 16px; }
+    .live-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    .live-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+    .live-badge .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-muted);
+    }
+    .live-badge.sniper .dot, .live-badge.paired .dot {
+      background: var(--green-primary);
+      box-shadow: 0 0 8px var(--green-primary);
+    }
+    .live-badge.pairing .dot {
+      background: var(--yellow-primary);
+      box-shadow: 0 0 8px var(--yellow-primary);
+    }
+    .live-badge.imbal .dot {
+      background: var(--red-primary);
+      box-shadow: 0 0 8px var(--red-primary);
+    }
+    .live-header-right {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+    }
+    .live-ttl {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 20px;
+      font-weight: 700;
+    }
+    .live-stale {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      color: var(--green-primary);
+    }
+    .live-stale.warning { color: var(--yellow-primary); }
+    .live-stale.stale { color: var(--red-primary); }
+
+    .live-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .live-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      margin-bottom: 2px;
+    }
+    .live-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    .live-reason {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--text-secondary);
+      padding-top: 8px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    /* Event Feed */
+    .event-feed {
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .event-item {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 6px 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .event-time {
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+    .event-icon { width: 14px; text-align: center; }
+    .event-text { flex: 1; }
+    .event-text.green { color: var(--green-primary); }
+    .event-text.red { color: var(--red-primary); }
+    .event-text.yellow { color: var(--yellow-primary); }
+    .event-text.muted { color: var(--text-secondary); }
+
     /* Desktop layout */
     @media (min-width: 768px) {
       .container {
@@ -495,6 +630,15 @@
       </div>
       <p class="date" id="date"><span class="status-dot"></span>Loading...</p>
     </header>
+
+    <!-- Tab Bar -->
+    <div class="tab-bar animate-in">
+      <button class="tab active" data-tab="trades">Trades</button>
+      <button class="tab" data-tab="live">Live Status</button>
+    </div>
+
+    <!-- Trades View (existing dashboard) -->
+    <div id="trades-view">
 
     <!-- Error Banner -->
     <div class="error-banner" id="error">
@@ -548,6 +692,71 @@
         </div>
       </div>
     </div>
+    </div><!-- /trades-view -->
+
+    <!-- Live Status View -->
+    <div id="live-view" style="display:none">
+      <!-- Status Panel -->
+      <div class="card live-panel animate-in">
+        <div class="live-header">
+          <div id="live-badge" class="live-badge idle"><span class="dot"></span>--</div>
+          <div class="live-header-right">
+            <span id="live-ttl" class="live-ttl">--</span>
+            <span id="live-stale" class="live-stale">--</span>
+          </div>
+        </div>
+        <div class="live-grid">
+          <div>
+            <div class="live-label">UP Ask</div>
+            <div class="live-value" id="live-up-ask">--</div>
+          </div>
+          <div>
+            <div class="live-label">DN Ask</div>
+            <div class="live-value" id="live-dn-ask">--</div>
+          </div>
+          <div>
+            <div class="live-label">UP Pos</div>
+            <div class="live-value" id="live-up-pos">0</div>
+          </div>
+          <div>
+            <div class="live-label">DN Pos</div>
+            <div class="live-value" id="live-dn-pos">0</div>
+          </div>
+          <div>
+            <div class="live-label">BTC Price</div>
+            <div class="live-value" id="live-btc">--</div>
+          </div>
+          <div>
+            <div class="live-label">Danger</div>
+            <div class="live-value" id="live-danger">--</div>
+          </div>
+        </div>
+        <div class="live-reason" id="live-reason">--</div>
+      </div>
+
+      <!-- Price Chart -->
+      <div style="margin-top: 16px;">
+        <div class="section-header">
+          <span class="section-title">Window Prices</span>
+          <span class="section-badge" id="live-window-id">--</span>
+        </div>
+        <div class="card" id="liveChartCard" style="padding: 1rem;">
+          <canvas id="liveCanvas" height="180"></canvas>
+        </div>
+      </div>
+
+      <!-- Event Feed -->
+      <div style="margin-top: 16px;">
+        <div class="section-header">
+          <span class="section-title">Recent Events</span>
+        </div>
+        <div class="card">
+          <div class="event-feed" id="live-events">
+            <p class="empty-state">Loading events...</p>
+          </div>
+        </div>
+      </div>
+    </div><!-- /live-view -->
 
     <!-- Footer -->
     <footer class="footer">
@@ -565,8 +774,18 @@
       supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFzem9zZHJtbm9nbHJrdHRkZXZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxOTg1NTYsImV4cCI6MjA4NDc3NDU1Nn0.-Ebe2icoMqIiL8NlVX93IJGVBCAmpfxk9S7U8ABsStA',
       walletAddress: '0x636796704404959f5Ae9BEfEb2B3880eadf6960a',
       historyStartDate: '2026-02-09',
-      startingBalance: 131.07
+      startingBalance: 131.07,
+      // Set this to a unix timestamp (seconds) to start a fresh "day" from that point.
+      // Pre-cutoff trades on the same calendar day get rolled into yesterday.
+      // Set to null for normal calendar-day behavior.
+      newDayAt: null
     };
+
+    // Support both config and URL param (?from= overrides config)
+    const fromParam = new URLSearchParams(window.location.search).get('from');
+    const cutoffTs = fromParam ? parseInt(fromParam) : CONFIG.newDayAt;
+    const FROM_CUTOFF = cutoffTs ? new Date(cutoffTs * 1000) : null;
+    if (FROM_CUTOFF) console.log('[DASHBOARD] New day starts at:', FROM_CUTOFF.toLocaleString('en-US', { timeZone: 'America/New_York' }));
 
     const db = window.supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabaseAnonKey);
 
@@ -607,9 +826,12 @@
 
     function getTodayTrades() {
       const today = getLocalDate();
-      return allTrades.filter(t =>
-        new Date(t.timestamp).toLocaleDateString('en-CA', { timeZone: 'America/New_York' }) === today
-      );
+      return allTrades.filter(t => {
+        const tradeTime = new Date(t.timestamp);
+        if (tradeTime.toLocaleDateString('en-CA', { timeZone: 'America/New_York' }) !== today) return false;
+        if (FROM_CUTOFF && tradeTime < FROM_CUTOFF) return false;
+        return true;
+      });
     }
 
     let balanceChart = null;
@@ -837,9 +1059,19 @@
         trades.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
         // Build daily summary by aggregating trades by date (EST)
+        // When ?from= is set, pre-cutoff trades on the same calendar day
+        // get shifted to the previous day — so "today" starts fresh.
+        const cutoffDate = FROM_CUTOFF
+          ? FROM_CUTOFF.toLocaleDateString('en-CA', { timeZone: 'America/New_York' })
+          : null;
         const dateGroups = {};
         for (const t of trades) {
-          const d = new Date(t.timestamp).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+          const tradeTime = new Date(t.timestamp);
+          let d = tradeTime.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+          if (FROM_CUTOFF && d === cutoffDate && tradeTime < FROM_CUTOFF) {
+            const prev = new Date(FROM_CUTOFF.getTime() - 86400000);
+            d = prev.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+          }
           if (!dateGroups[d]) dateGroups[d] = [];
           dateGroups[d].push(t);
         }
@@ -1062,8 +1294,13 @@
           (payload) => {
             const evt = payload.new?.Event || '';
             console.log('[REALTIME] New event:', evt);
+
+            // Live status: always feed events into the live panel
+            if (payload.new) prependEvent(payload.new);
+
+            // Trades tab: reload on trade-affecting events
             if (['CAPTURE_FILL', 'CAPTURE_99C_WIN', 'CAPTURE_99C_LOSS'].includes(evt)) {
-              updateStatus('⚡ Update received', true);
+              updateStatus('\u26A1 Update received', true);
               loadData();
               setTimeout(() => {
                 if (isRealtimeConnected) {
@@ -1071,6 +1308,21 @@
                 }
               }, 1000);
             }
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'Polymarket Bot Log - Ticks'
+          },
+          (payload) => {
+            const tick = payload.new;
+            if (!tick) return;
+            // Always update state (cheap), only update DOM if on live tab
+            updateLivePanel(tick);
+            if (activeTab === 'live') appendTickToChart(tick);
           }
         )
         .subscribe((status, err) => {
@@ -1109,6 +1361,271 @@
         }
       }
     });
+
+    // ── Live Status Tab ──────────────────────────────────────
+
+    let activeTab = 'trades';
+    let liveChart = null;
+    let lastTickTime = null;
+    let currentWindowId = null;
+    let liveEvents = [];
+    let liveDataLoaded = false;
+
+    // Tab switching (no hash routing — just toggle display)
+    function switchTab(tab) {
+      activeTab = tab;
+      document.getElementById('trades-view').style.display = tab === 'trades' ? '' : 'none';
+      document.getElementById('live-view').style.display = tab === 'live' ? '' : 'none';
+      document.querySelectorAll('.tab').forEach(t => {
+        t.classList.toggle('active', t.dataset.tab === tab);
+      });
+      if (tab === 'live' && !liveDataLoaded) {
+        loadLiveData();
+      }
+    }
+
+    document.querySelectorAll('.tab').forEach(btn => {
+      btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+    });
+
+    // Fetch initial live data from Supabase
+    async function loadLiveData() {
+      try {
+        console.log('[LIVE] Loading live data...');
+
+        // Get latest tick to determine current window
+        const { data: latestTicks, error: tickErr } = await db
+          .from('Polymarket Bot Log - Ticks')
+          .select('*')
+          .order('Timestamp', { ascending: false })
+          .limit(1);
+
+        if (tickErr) console.error('[LIVE] Tick query error:', tickErr);
+
+        if (latestTicks && latestTicks.length > 0) {
+          const tick = latestTicks[0];
+          console.log('[LIVE] Latest tick:', tick['Status'], 'TTL:', tick['TTL']);
+          currentWindowId = tick['Window ID'];
+          updateLivePanel(tick);
+
+          // Load ticks for current window (for chart)
+          const { data: windowTicks, error: windowErr } = await db
+            .from('Polymarket Bot Log - Ticks')
+            .select('*')
+            .eq('Window ID', currentWindowId)
+            .order('Timestamp', { ascending: true });
+
+          if (windowErr) console.error('[LIVE] Window ticks error:', windowErr);
+          if (windowTicks) {
+            console.log('[LIVE] Window ticks loaded:', windowTicks.length);
+            renderLiveChart(windowTicks);
+          }
+        } else {
+          console.warn('[LIVE] No ticks found');
+          document.getElementById('live-reason').textContent = 'No tick data available';
+        }
+
+        // Load recent events
+        const { data: events, error: evtErr } = await db
+          .from('Polymarket Bot Log - Events')
+          .select('*')
+          .order('Timestamp', { ascending: false })
+          .limit(25);
+
+        if (evtErr) console.error('[LIVE] Events query error:', evtErr);
+        if (events) {
+          console.log('[LIVE] Events loaded:', events.length);
+          liveEvents = events;
+          renderEventFeed();
+        }
+
+        liveDataLoaded = true;
+      } catch (e) {
+        console.error('[LIVE] Error loading data:', e);
+        document.getElementById('live-reason').textContent = 'Error: ' + e.message;
+      }
+    }
+
+    // Update the status panel from a tick row
+    function updateLivePanel(tick) {
+      lastTickTime = new Date(tick['Timestamp']);
+
+      const status = tick['Status'] || '--';
+      const ttl = parseInt(tick['TTL']) || 0;
+      const upAsk = parseFloat(tick['UP Ask']) || 0;
+      const dnAsk = parseFloat(tick['DN Ask']) || 0;
+      const upPos = parseFloat(tick['UP Pos']) || 0;
+      const dnPos = parseFloat(tick['DN Pos']) || 0;
+      const btc = parseFloat(tick['BTC']) || 0;
+      const danger = tick['Reason 2'] ? parseFloat(tick['Reason 2']) : null;
+      const reason = tick['Reason'] || '';
+      const newWindowId = tick['Window ID'] || '';
+
+      // Detect window transition → reset chart
+      if (currentWindowId && newWindowId && newWindowId !== currentWindowId) {
+        currentWindowId = newWindowId;
+        if (liveChart) {
+          liveChart.data.labels = [];
+          liveChart.data.datasets[0].data = [];
+          liveChart.data.datasets[1].data = [];
+          liveChart.update();
+        }
+      }
+      currentWindowId = newWindowId;
+
+      // Compensate TTL for flush latency: actual TTL ≈ stored TTL - age of tick
+      const tickAge = Math.max(0, (Date.now() - lastTickTime.getTime()) / 1000);
+      const adjustedTtl = Math.max(0, Math.round(ttl - tickAge));
+
+      // Update DOM
+      const badge = document.getElementById('live-badge');
+      const statusLower = status.toLowerCase();
+      badge.className = 'live-badge ' + statusLower;
+      badge.innerHTML = '<span class="dot"></span>' + status;
+      document.getElementById('live-ttl').textContent = adjustedTtl > 0 ? 'T-' + adjustedTtl + 's' : 'WAIT';
+      document.getElementById('live-up-ask').textContent = Math.round(upAsk * 100) + '\u00A2';
+      document.getElementById('live-dn-ask').textContent = Math.round(dnAsk * 100) + '\u00A2';
+      document.getElementById('live-up-pos').textContent = upPos;
+      document.getElementById('live-dn-pos').textContent = dnPos;
+      document.getElementById('live-btc').textContent = '$' + btc.toLocaleString('en-US', { maximumFractionDigits: 0 });
+      document.getElementById('live-danger').textContent = danger !== null ? danger.toFixed(2) : '--';
+      document.getElementById('live-reason').textContent = reason;
+
+      // Window ID badge
+      const wid = currentWindowId.replace('btc-updown-15m-', '');
+      document.getElementById('live-window-id').textContent = wid || '--';
+    }
+
+    // Staleness indicator — updated every second
+    setInterval(() => {
+      if (!lastTickTime) return;
+      const age = Math.round((Date.now() - lastTickTime.getTime()) / 1000);
+      const el = document.getElementById('live-stale');
+      el.textContent = 'Last: ' + age + 's';
+      // Yellow after 90s (3 missed flushes), red after 300s
+      el.className = 'live-stale' + (age < 90 ? '' : age < 300 ? ' warning' : ' stale');
+    }, 1000);
+
+    // ── Live Chart ──────────────────────────────────────────
+
+    function renderLiveChart(ticks) {
+      const labels = [];
+      const upData = [];
+      const dnData = [];
+      for (const t of ticks) {
+        labels.push(new Date(t['Timestamp']).toLocaleTimeString('en-US', {
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'America/New_York'
+        }));
+        upData.push(Math.round(parseFloat(t['UP Ask']) * 100));
+        dnData.push(Math.round(parseFloat(t['DN Ask']) * 100));
+      }
+
+      if (liveChart) {
+        liveChart.data.labels = labels;
+        liveChart.data.datasets[0].data = upData;
+        liveChart.data.datasets[1].data = dnData;
+        liveChart.update();
+        return;
+      }
+
+      liveChart = new Chart(document.getElementById('liveCanvas'), {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            { label: 'UP', data: upData, borderColor: '#34d399', borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+            { label: 'DN', data: dnData, borderColor: '#f87171', borderWidth: 1.5, pointRadius: 0, tension: 0.1 }
+          ]
+        },
+        options: {
+          responsive: true,
+          animation: false,
+          plugins: {
+            legend: { display: true, labels: { color: '#71717a', font: { family: 'JetBrains Mono', size: 10 } } },
+            tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + ctx.parsed.y + '\u00A2' } }
+          },
+          scales: {
+            x: {
+              ticks: { color: '#71717a', font: { family: 'JetBrains Mono', size: 9 }, maxTicksLimit: 6, maxRotation: 0 },
+              grid: { color: 'rgba(255,255,255,0.04)' }
+            },
+            y: {
+              min: 0, max: 100,
+              ticks: { color: '#71717a', font: { family: 'JetBrains Mono', size: 10 }, callback: v => v + '\u00A2' },
+              grid: { color: 'rgba(255,255,255,0.04)' }
+            }
+          }
+        }
+      });
+    }
+
+    function appendTickToChart(tick) {
+      if (!liveChart) return;
+      const time = new Date(tick['Timestamp']).toLocaleTimeString('en-US', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'America/New_York'
+      });
+      liveChart.data.labels.push(time);
+      liveChart.data.datasets[0].data.push(Math.round(parseFloat(tick['UP Ask']) * 100));
+      liveChart.data.datasets[1].data.push(Math.round(parseFloat(tick['DN Ask']) * 100));
+      liveChart.update();
+    }
+
+    // ── Event Feed ──────────────────────────────────────────
+
+    function getEventStyle(evt) {
+      if (/WIN|FILL|PROFIT/.test(evt)) return { icon: '\u2713', color: 'green' };
+      if (/LOSS|ERROR|STOP|EXIT|FLATTEN/.test(evt)) return { icon: '\u2717', color: 'red' };
+      if (/BAIL|HEDGE/.test(evt)) return { icon: '!', color: 'yellow' };
+      return { icon: '\u00B7', color: 'muted' };
+    }
+
+    function formatEvent(e) {
+      const evt = e['Event'] || '';
+      const side = e['Side'] || '';
+      const shares = e['Shares'];
+      const price = e['Price'];
+      const pnl = e['PnL'];
+      switch (evt) {
+        case 'CAPTURE_99C': return '99c snipe: ' + side + ' @ ' + Math.round(price * 100) + '\u00A2';
+        case 'CAPTURE_FILL': return 'Filled: ' + shares + ' ' + side + ' @ ' + Math.round(price * 100) + '\u00A2';
+        case 'CAPTURE_99C_WIN': return 'WIN +$' + parseFloat(pnl || 0).toFixed(2);
+        case 'CAPTURE_99C_LOSS': return 'LOSS -$' + Math.abs(parseFloat(pnl || 0)).toFixed(2);
+        case '99C_EARLY_EXIT': return 'Early exit: ' + side;
+        case 'HARD_STOP_EXIT': return 'Hard stop: ' + side;
+        case 'WINDOW_START': return 'New window';
+        case 'BALANCE_SNAPSHOT': return 'Balance snapshot';
+        case 'PROFIT_PAIR': return 'Profit +$' + parseFloat(pnl || 0).toFixed(2);
+        case 'ERROR': return 'Error: ' + String(e['Details'] || '').substring(0, 50);
+        default: return evt + (side ? ' ' + side : '');
+      }
+    }
+
+    function renderEventFeed() {
+      const container = document.getElementById('live-events');
+      if (!liveEvents.length) {
+        container.innerHTML = '<p class="empty-state">No recent events</p>';
+        return;
+      }
+      container.innerHTML = liveEvents.map(e => {
+        const time = new Date(e['Timestamp']).toLocaleTimeString('en-US', {
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'America/New_York'
+        });
+        const { icon, color } = getEventStyle(e['Event'] || '');
+        return '<div class="event-item">' +
+          '<span class="event-time">' + time + '</span>' +
+          '<span class="event-icon">' + icon + '</span>' +
+          '<span class="event-text ' + color + '">' + escapeHtml(formatEvent(e)) + '</span>' +
+        '</div>';
+      }).join('');
+    }
+
+    function prependEvent(eventRow) {
+      liveEvents.unshift(eventRow);
+      if (liveEvents.length > 25) liveEvents.pop();
+      if (activeTab === 'live') renderEventFeed();
+    }
+
+    // ── End Live Status ─────────────────────────────────────
 
     // Toggle between today's trades and all historical trades
     document.getElementById('tradesToggle').addEventListener('click', () => {
