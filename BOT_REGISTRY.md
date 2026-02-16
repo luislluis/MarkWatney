@@ -1,10 +1,18 @@
 # Polybot Version Registry
 
-## Current Version: v1.33 "Phoenix Feed"
+## Current Version: v1.46 "Finish Line"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.33 | 2026-01-28 PST | Phoenix Feed | RTDS WebSocket: Real-time BTC prices from Polymarket's Chainlink stream | Active |
+| v1.46 | 2026-02-16 PST | Finish Line | Trading halt after 45% ROI — bot goes fully idle, resets at midnight EST | Active |
+| v1.44 | 2026-02-05 PST | Ledger Line | Daily portfolio balance snapshots (positions + USDC) logged at midnight EST | Archived |
+| v1.43 | 2026-02-05 PST | True Price | Fix: Log actual Polymarket execution price in CAPTURE_FILL via /trades API (not limit order price) | Archived |
+| v1.42 | 2026-02-05 PST | Crystal Dashboard | Fix: Dashboard uses CAPTURE_FILL (not CAPTURE_99C) so unfilled orders don't show as pending, prices show correctly | Archived |
+| v1.37 | 2026-02-04 PST | Data Driven | Log CAPTURE_99C_WIN/LOSS events for Supabase dashboard tracking | Archived |
+| v1.36 | 2026-02-03 PST | No Harm No Foul | Place 99c bids even when ask >= 99c - if doesn't fill, no loss | Archived |
+| v1.35 | 2026-02-03 PST | Six Shooter | Increase 99c capture to 6 shares ($6 max spend) | Archived |
+| v1.34 | 2026-02-03 PST | Iron Exit | 60¢ hard stop: FOK market orders for guaranteed emergency exit | Archived |
+| v1.33 | 2026-01-28 PST | Phoenix Feed | RTDS WebSocket: Real-time BTC prices from Polymarket's Chainlink stream | Archived |
 | v1.32 | 2026-01-27 PST | Gas Guardian | MATIC balance monitoring: Log at window start, bold Telegram alert when low | Archived |
 | v1.31 | 2026-01-26 PST | Background Flush | Non-blocking flush: Sheets/Supabase uploads run in background threads | Archived |
 | v1.30 | 2026-01-26 PST | Confidence Display | Show 99c confidence in tick output (DN:49%/95%) + activity logging to Supabase | Archived |
@@ -40,6 +48,26 @@
 | v1.0 | 2026-01-15 20:50 PST | The Potato Farmer | Baseline - includes PAIRING_MODE hedge escalation + 99c capture hedge protection | Archived |
 
 ## Version History Details
+
+### v1.34 - Iron Exit (2026-02-03)
+*"Never ride to zero."*
+- **60¢ Hard Stop with FOK Market Orders**
+  - Triggers when best bid ≤ 60¢ (not ask price)
+  - Uses Fill-or-Kill (FOK) market orders for guaranteed execution
+  - No price floor - will sell at any price (1¢ > $0)
+  - Keeps selling until position is completely flat
+- **Why Best Bid?**
+  - Empty order books show phantom 50¢ prices with no liquidity
+  - Best bid only exists if someone is actually buying
+  - Prevents false triggers from empty markets
+- **Replaces Legacy Price Stop**
+  - Old: PRICE_STOP_TRIGGER = 80¢, PRICE_STOP_FLOOR = 50¢, limit orders
+  - New: HARD_STOP_TRIGGER = 60¢, HARD_STOP_FLOOR = 1¢, FOK market orders
+- **Max Loss Protection**
+  - Entry at 99¢ → 60¢ trigger = 39% max drawdown
+  - Historical: 5 losses went to $0, each costing ~$4.90
+  - With hard stop: worst case ~$1.95 per loss
+- **Files changed:** trading_bot_smart.py
 
 ### v1.33 - Phoenix Feed (2026-01-28)
 *"Rising from the ashes of stale prices"*
