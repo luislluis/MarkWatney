@@ -264,6 +264,7 @@ ARB_ENABLED = False                # Disable ARB strategy, 99c sniper only
 # ===========================================
 PAPER_MODE_ROI_THRESHOLD = 0.45        # 45% ROI triggers paper mode
 PAPER_MODE_BID_PRICE = 0.95            # Paper mode bids at 95c (more trades, higher profit per trade)
+PAPER_MODE_EXIT_PRICE = 0.40           # Paper mode: only exit at 40c (no other exit conditions)
 PAPER_MODE_STATE_FILE = os.path.expanduser("~/polybot/paper_mode_state.json")
 FORCE_PAPER_MODE = os.getenv("FORCE_PAPER_MODE", "").lower() == "true"
 
@@ -3697,57 +3698,84 @@ def main():
                         log_event("CAPTURE_FILL", slug, side=side, shares=filled,
                                         price=fill_price, pnl=actual_pnl)
 
-                # === 60¢ HARD STOP CHECK (v1.34) ===
-                # Exit immediately using FOK market orders if best bid <= 60¢
-                # Uses best BID (not ask) to ensure real liquidity exists
-                if (HARD_STOP_ENABLED and
+                # === PAPER MODE: 40¢ EXIT ONLY ===
+                # In paper mode, only exit when best bid <= 40c — no other exit conditions
+                if (paper_mode and
                     window_state.get('capture_99c_fill_notified') and
                     not window_state.get('capture_99c_exited') and
-                    not window_state.get('capture_99c_hedged') and
-                    remaining_secs > 15):
+                    remaining_secs > 5):
 
                     capture_side = window_state.get('capture_99c_side')
+                    bid_key = 'up_bids' if capture_side == 'UP' else 'down_bids'
+                    if books.get(bid_key):
+                        best_bid = float(books[bid_key][0]['price'])
+                        if best_bid <= PAPER_MODE_EXIT_PRICE:
+                            shares = window_state.get(f'capture_99c_filled_{capture_side.lower()}', 0)
+                            fill_price = window_state.get('capture_99c_fill_price', PAPER_MODE_BID_PRICE)
+                            exit_pnl = shares * (best_bid - fill_price)
+                            print(f"[{ts()}] [PAPER] 40c STOP: {capture_side} best bid at {best_bid*100:.0f}c <= {PAPER_MODE_EXIT_PRICE*100:.0f}c")
+                            print(f"[{ts()}] [PAPER] EXIT: {shares} shares @ {best_bid*100:.0f}c | P&L: ${exit_pnl:.2f}")
+                            window_state['capture_99c_exited'] = True
+                            window_state['capture_99c_exit_reason'] = 'paper_stop_40c'
+                            window_state[f'capture_99c_filled_{capture_side.lower()}'] = 0
+                            window_state['realized_pnl_usd'] = exit_pnl
+                            log_event("CAPTURE_EXIT", window_state.get('window_id', ''),
+                                            side=capture_side, shares=shares, price=best_bid,
+                                            pnl=exit_pnl, reason="paper_stop_40c")
+                            send_telegram(f"40c STOP: {capture_side} {shares}sh @ {best_bid*100:.0f}c | P&L: ${exit_pnl:.2f}")
 
-                    # Check if hard stop should trigger (based on best bid)
-                    should_trigger, best_bid = check_hard_stop_trigger(books, capture_side)
+                if not paper_mode:
+                    # === 60¢ HARD STOP CHECK (v1.34) ===
+                    # Exit immediately using FOK market orders if best bid <= 60¢
+                    # Uses best BID (not ask) to ensure real liquidity exists
+                    if (HARD_STOP_ENABLED and
+                        window_state.get('capture_99c_fill_notified') and
+                        not window_state.get('capture_99c_exited') and
+                        not window_state.get('capture_99c_hedged') and
+                        remaining_secs > 15):
 
-                    if should_trigger:
-                        print(f"[{ts()}] 🛑 HARD STOP: {capture_side} best bid at {best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c trigger")
-                        execute_hard_stop(capture_side, books)
+                        capture_side = window_state.get('capture_99c_side')
 
-                # === 99c OB-BASED EARLY EXIT CHECK ===
-                # Exit early if OB shows sellers dominating for 3 consecutive ticks
-                if (OB_EARLY_EXIT_ENABLED and
-                    window_state.get('capture_99c_fill_notified') and
-                    not window_state.get('capture_99c_exited') and
-                    not window_state.get('capture_99c_hedged') and
-                    remaining_secs > 15):
+                        # Check if hard stop should trigger (based on best bid)
+                        should_trigger, best_bid = check_hard_stop_trigger(books, capture_side)
 
-                    capture_side = window_state.get('capture_99c_side')
+                        if should_trigger:
+                            print(f"[{ts()}] 🛑 HARD STOP: {capture_side} best bid at {best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c trigger")
+                            execute_hard_stop(capture_side, books)
 
-                    # Get OB imbalance for our side
-                    if ORDERBOOK_ANALYZER_AVAILABLE and books:
-                        ob_result = orderbook_analyzer.analyze(
-                            books.get('up_bids', []), books.get('up_asks', []),
-                            books.get('down_bids', []), books.get('down_asks', [])
-                        )
-                        imb = ob_result.get('up_imbalance', 0) if capture_side == "UP" else ob_result.get('down_imbalance', 0)
+                    # === 99c OB-BASED EARLY EXIT CHECK ===
+                    # Exit early if OB shows sellers dominating for 3 consecutive ticks
+                    if (OB_EARLY_EXIT_ENABLED and
+                        window_state.get('capture_99c_fill_notified') and
+                        not window_state.get('capture_99c_exited') and
+                        not window_state.get('capture_99c_hedged') and
+                        remaining_secs > 15):
 
-                        # Track consecutive negative ticks
-                        if imb < OB_EARLY_EXIT_THRESHOLD:
-                            window_state['ob_negative_ticks'] = window_state.get('ob_negative_ticks', 0) + 1
-                            print(f"[{ts()}] 99c OB WARNING: {capture_side} imb={imb:+.2f} ({window_state['ob_negative_ticks']}/3)")
-                        else:
-                            window_state['ob_negative_ticks'] = 0
+                        capture_side = window_state.get('capture_99c_side')
 
-                        # Trigger exit if 3 consecutive negative ticks
-                        if window_state['ob_negative_ticks'] >= 3:
-                            print(f"[{ts()}] 🚨 99c OB EXIT TRIGGERED: {capture_side} imb={imb:+.2f}")
-                            execute_99c_early_exit(capture_side, imb, books, reason="ob_reversal")
+                        # Get OB imbalance for our side
+                        if ORDERBOOK_ANALYZER_AVAILABLE and books:
+                            ob_result = orderbook_analyzer.analyze(
+                                books.get('up_bids', []), books.get('up_asks', []),
+                                books.get('down_bids', []), books.get('down_asks', [])
+                            )
+                            imb = ob_result.get('up_imbalance', 0) if capture_side == "UP" else ob_result.get('down_imbalance', 0)
+
+                            # Track consecutive negative ticks
+                            if imb < OB_EARLY_EXIT_THRESHOLD:
+                                window_state['ob_negative_ticks'] = window_state.get('ob_negative_ticks', 0) + 1
+                                print(f"[{ts()}] 99c OB WARNING: {capture_side} imb={imb:+.2f} ({window_state['ob_negative_ticks']}/3)")
+                            else:
+                                window_state['ob_negative_ticks'] = 0
+
+                            # Trigger exit if 3 consecutive negative ticks
+                            if window_state['ob_negative_ticks'] >= 3:
+                                print(f"[{ts()}] 🚨 99c OB EXIT TRIGGERED: {capture_side} imb={imb:+.2f}")
+                                execute_99c_early_exit(capture_side, imb, books, reason="ob_reversal")
 
                 # Check if 99c capture needs hedging (confidence dropped)
-                # Skip if we already exited early
-                if window_state.get('capture_99c_fill_notified') and not window_state.get('capture_99c_hedged') and not window_state.get('capture_99c_exited'):
+                # Skip if we already exited early (also skip in paper mode - no hedging)
+                if not paper_mode and window_state.get('capture_99c_fill_notified') and not window_state.get('capture_99c_hedged') and not window_state.get('capture_99c_exited'):
                     # Calculate danger score from 5 signals
                     bet_side = window_state.get('capture_99c_side')
 
