@@ -1,18 +1,10 @@
 # Polybot Version Registry
 
-## Current Version: v1.45 "Ghost Runner"
+## Current Version: v1.33 "Phoenix Feed"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.45 | 2026-02-16 PST | Ghost Runner | Paper trading mode: simulates trades after 45% ROI target, logs to same tables with PAPER_ prefix | Active |
-| v1.44 | 2026-02-05 PST | Ledger Line | Daily portfolio balance snapshots (positions + USDC) logged at midnight EST | Archived |
-| v1.43 | 2026-02-05 PST | True Price | Fix: Log actual Polymarket execution price in CAPTURE_FILL via /trades API (not limit order price) | Archived |
-| v1.42 | 2026-02-05 PST | Crystal Dashboard | Fix: Dashboard uses CAPTURE_FILL (not CAPTURE_99C) so unfilled orders don't show as pending, prices show correctly | Archived |
-| v1.37 | 2026-02-04 PST | Data Driven | Log CAPTURE_99C_WIN/LOSS events for Supabase dashboard tracking | Archived |
-| v1.36 | 2026-02-03 PST | No Harm No Foul | Place 99c bids even when ask >= 99c - if doesn't fill, no loss | Archived |
-| v1.35 | 2026-02-03 PST | Six Shooter | Increase 99c capture to 6 shares ($6 max spend) | Archived |
-| v1.34 | 2026-02-03 PST | Iron Exit | 60¢ hard stop: FOK market orders for guaranteed emergency exit | Archived |
-| v1.33 | 2026-01-28 PST | Phoenix Feed | RTDS WebSocket: Real-time BTC prices from Polymarket's Chainlink stream | Archived |
+| v1.33 | 2026-01-28 PST | Phoenix Feed | RTDS WebSocket: Real-time BTC prices from Polymarket's Chainlink stream | Active |
 | v1.32 | 2026-01-27 PST | Gas Guardian | MATIC balance monitoring: Log at window start, bold Telegram alert when low | Archived |
 | v1.31 | 2026-01-26 PST | Background Flush | Non-blocking flush: Sheets/Supabase uploads run in background threads | Archived |
 | v1.30 | 2026-01-26 PST | Confidence Display | Show 99c confidence in tick output (DN:49%/95%) + activity logging to Supabase | Archived |
@@ -48,54 +40,6 @@
 | v1.0 | 2026-01-15 20:50 PST | The Potato Farmer | Baseline - includes PAIRING_MODE hedge escalation + 99c capture hedge protection | Archived |
 
 ## Version History Details
-
-### v1.45 - Ghost Runner (2026-02-16)
-*"Still running the race, just not for keeps."*
-- **Paper Trading Mode**
-  - When cumulative ROI hits 45%, bot transitions to paper mode
-  - Same trading logic runs but no real orders are placed
-  - Fills simulated by checking if ask <= bid price in order book
-  - Paper trades logged to same Supabase/Sheets tables with `PAPER_` prefix
-  - Telegram notifications prefixed with `[PAPER]`
-- **Defense-in-Depth**
-  - Guards in `place_limit_order()`, `place_fok_market_sell()`, and `place_and_verify_order()`
-  - Even if calling code has a bug, no real orders can be placed in paper mode
-- **Persistent State**
-  - Paper mode state saved to `~/polybot/paper_mode_state.json`
-  - Atomic writes (temp file + rename) prevent corruption
-  - Bot resumes in paper mode after restart
-  - Corrupted state file defaults to paper mode (safe default)
-- **ROI Calculation**
-  - ROI = `total_pnl / total_capital_deployed`
-  - Capital deployed = sum of (shares * fill_price) for all real trades
-  - Checked at window boundaries only (no mid-window transitions)
-- **Paper Mode Suppresses**
-  - Real order placement, auto_redeem, cancel_all_orders
-  - Gas balance checks, daily balance snapshots
-  - Periodic order health checks
-- **Testing**
-  - `FORCE_PAPER_MODE=true` env var forces paper mode without ROI threshold
-- **Files changed:** trading_bot_smart.py, BOT_REGISTRY.md
-
-### v1.34 - Iron Exit (2026-02-03)
-*"Never ride to zero."*
-- **60¢ Hard Stop with FOK Market Orders**
-  - Triggers when best bid ≤ 60¢ (not ask price)
-  - Uses Fill-or-Kill (FOK) market orders for guaranteed execution
-  - No price floor - will sell at any price (1¢ > $0)
-  - Keeps selling until position is completely flat
-- **Why Best Bid?**
-  - Empty order books show phantom 50¢ prices with no liquidity
-  - Best bid only exists if someone is actually buying
-  - Prevents false triggers from empty markets
-- **Replaces Legacy Price Stop**
-  - Old: PRICE_STOP_TRIGGER = 80¢, PRICE_STOP_FLOOR = 50¢, limit orders
-  - New: HARD_STOP_TRIGGER = 60¢, HARD_STOP_FLOOR = 1¢, FOK market orders
-- **Max Loss Protection**
-  - Entry at 99¢ → 60¢ trigger = 39% max drawdown
-  - Historical: 5 losses went to $0, each costing ~$4.90
-  - With hard stop: worst case ~$1.95 per loss
-- **Files changed:** trading_bot_smart.py
 
 ### v1.33 - Phoenix Feed (2026-01-28)
 *"Rising from the ashes of stale prices"*
@@ -441,5 +385,3 @@
 **Billions**: Dollar Bill's Recovery, Wendy's Dashboard, The Enforcer, Axe's Edge, The Performance Coach, Short Squeeze Sunday, Ice Juice, Chuck's Gambit
 
 **Forgetting Sarah Marshall**: Turtle Bay, Dracula Musical
-
-**Original**: Ghost Runner
