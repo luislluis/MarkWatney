@@ -596,6 +596,31 @@
     .event-text.yellow { color: var(--yellow-primary); }
     .event-text.muted { color: var(--text-secondary); }
 
+    /* Paper Trading */
+    .paper-badge {
+      display: inline-block;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      color: #a78bfa;
+      background: rgba(167, 139, 250, 0.1);
+      border: 1px solid rgba(167, 139, 250, 0.2);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .stat-card.paper {
+      background: linear-gradient(135deg, rgba(167, 139, 250, 0.08), rgba(167, 139, 250, 0.02));
+      border-color: rgba(167, 139, 250, 0.3);
+    }
+
+    .trade-status.paper-exit {
+      background: rgba(167, 139, 250, 0.1);
+      color: #a78bfa;
+    }
+    .trade-pnl.paper-exit { color: #a78bfa; }
+
     /* Desktop layout */
     @media (min-width: 768px) {
       .container {
@@ -634,6 +659,7 @@
     <!-- Tab Bar -->
     <div class="tab-bar animate-in">
       <button class="tab active" data-tab="trades">Trades</button>
+      <button class="tab" data-tab="paper">Paper</button>
       <button class="tab" data-tab="live">Live Status</button>
     </div>
 
@@ -693,6 +719,28 @@
       </div>
     </div>
     </div><!-- /trades-view -->
+
+    <!-- Paper Trading View -->
+    <div id="paper-view" style="display:none">
+      <div class="summary-grid animate-in">
+        <div class="card stat-card paper">
+          <div class="stat-label">Paper P&L</div>
+          <div class="stat-value neutral" id="paperPnl">--</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-label">Record</div>
+          <div class="stat-value neutral" id="paperWinRate">--</div>
+          <div class="stat-detail" id="paperRecord">--</div>
+        </div>
+      </div>
+      <div class="section-header">
+        <span class="section-title">Paper Trades</span>
+        <span class="paper-badge">SIMULATED</span>
+      </div>
+      <div class="card trades-card" id="paperTrades">
+        <p class="loading">Loading paper trades...</p>
+      </div>
+    </div><!-- /paper-view -->
 
     <!-- Live Status View -->
     <div id="live-view" style="display:none">
@@ -1347,6 +1395,11 @@
             // Live status: always feed events into the live panel
             if (payload.new) prependEvent(payload.new);
 
+            // Paper tab: reload on paper trade events
+            if (evt.startsWith('PAPER_') && paperDataLoaded) {
+              loadPaperData();
+            }
+
             // Trades tab: reload on trade-affecting events
             if (['CAPTURE_FILL', 'CAPTURE_99C_WIN', 'CAPTURE_99C_LOSS'].includes(evt)) {
               updateStatus('\u26A1 Update received', true);
@@ -1424,12 +1477,16 @@
     function switchTab(tab) {
       activeTab = tab;
       document.getElementById('trades-view').style.display = tab === 'trades' ? '' : 'none';
+      document.getElementById('paper-view').style.display = tab === 'paper' ? '' : 'none';
       document.getElementById('live-view').style.display = tab === 'live' ? '' : 'none';
       document.querySelectorAll('.tab').forEach(t => {
         t.classList.toggle('active', t.dataset.tab === tab);
       });
       if (tab === 'live' && !liveDataLoaded) {
         loadLiveData();
+      }
+      if (tab === 'paper' && !paperDataLoaded) {
+        loadPaperData();
       }
     }
 
@@ -1675,6 +1732,188 @@
     }
 
     // ── End Live Status ─────────────────────────────────────
+
+    // ── Paper Trading Tab ───────────────────────────────────
+
+    let paperDataLoaded = false;
+
+    async function loadPaperData() {
+      try {
+        console.log('[PAPER] Loading paper trading data...');
+
+        // Fetch all relevant paper events in parallel
+        const [fillsRes, exitsRes, winsRes, lossesRes] = await Promise.all([
+          db.from('Polymarket Bot Log - Events').select('*')
+            .eq('Event', 'PAPER_CAPTURE_FILL')
+            .order('Timestamp', { ascending: false }),
+          db.from('Polymarket Bot Log - Events').select('*')
+            .eq('Event', 'PAPER_99C_EARLY_EXIT')
+            .order('Timestamp', { ascending: false }),
+          db.from('Polymarket Bot Log - Events').select('*')
+            .eq('Event', 'PAPER_CAPTURE_99C_WIN')
+            .order('Timestamp', { ascending: false }),
+          db.from('Polymarket Bot Log - Events').select('*')
+            .eq('Event', 'PAPER_CAPTURE_99C_LOSS')
+            .order('Timestamp', { ascending: false })
+        ]);
+
+        const fills = fillsRes.data || [];
+        const exits = exitsRes.data || [];
+        const wins = winsRes.data || [];
+        const losses = lossesRes.data || [];
+
+        console.log(`[PAPER] ${fills.length} fills, ${exits.length} exits, ${wins.length} wins, ${losses.length} losses`);
+
+        // Build lookup maps by Window ID
+        const exitMap = {};
+        for (const e of exits) exitMap[e['Window ID']] = e;
+        const winSet = new Set(wins.map(w => w['Window ID']));
+        const lossSet = new Set(losses.map(l => l['Window ID']));
+
+        // Build paper trades from fills
+        const paperTrades = [];
+        for (const fill of fills) {
+          const wid = fill['Window ID'] || '';
+          const side = fill['Side'] || '';
+          const shares = parseFloat(fill['Shares']) || 0;
+          const price = parseFloat(fill['Price']) || 0;
+          const cost = shares * price;
+          const exitEvent = exitMap[wid];
+          const age = (Date.now() - new Date(fill['Timestamp']).getTime()) / 1000;
+
+          let status, pnl, exitPrice;
+
+          if (exitEvent) {
+            // Early exit — compute P&L from entry vs exit price
+            exitPrice = parseFloat(exitEvent['Price']) || 0;
+            pnl = Math.round((shares * exitPrice - cost) * 100) / 100;
+            status = 'EXIT';
+          } else if (winSet.has(wid)) {
+            // Explicit WIN event
+            pnl = Math.round(shares * (1 - price) * 100) / 100;
+            status = 'WIN';
+          } else if (lossSet.has(wid)) {
+            // Explicit LOSS event
+            pnl = -Math.round(cost * 100) / 100;
+            status = 'LOSS';
+          } else if (age > 1200) {
+            // Window closed (>20 min) but no explicit outcome — assume WIN
+            // (99c captures at 95%+ confidence usually win)
+            pnl = Math.round(shares * (1 - price) * 100) / 100;
+            status = 'WIN';
+          } else {
+            pnl = 0;
+            status = 'PENDING';
+          }
+
+          // Parse confidence from corresponding PAPER_CAPTURE_99C event
+          let confidence = null;
+          const detailStr = fill['Details'] || '';
+          const confMatch = detailStr.match(/confidence['":\s]+([\d.]+)/);
+          if (confMatch) confidence = parseFloat(confMatch[1]);
+
+          paperTrades.push({
+            timestamp: fill['Timestamp'],
+            window_id: wid,
+            side,
+            shares,
+            entry_price: price,
+            exit_price: exitPrice,
+            status,
+            profit_loss: pnl,
+            cost_basis: Math.round(cost * 100) / 100,
+            confidence
+          });
+        }
+
+        paperDataLoaded = true;
+        renderPaperDashboard(paperTrades);
+      } catch (e) {
+        console.error('[PAPER] Error loading data:', e);
+        document.getElementById('paperTrades').innerHTML =
+          '<p class="empty-state">Error loading paper trades</p>';
+      }
+    }
+
+    function renderPaperDashboard(trades) {
+      // Summary stats
+      const resolved = trades.filter(t => t.status !== 'PENDING');
+      const winTrades = trades.filter(t => t.status === 'WIN');
+      const lossTrades = trades.filter(t => t.status === 'LOSS');
+      const exitTrades = trades.filter(t => t.status === 'EXIT');
+      const totalPnl = trades.reduce((s, t) => s + t.profit_loss, 0);
+
+      const pnlEl = document.getElementById('paperPnl');
+      pnlEl.textContent = fmtPnl(totalPnl);
+      pnlEl.className = 'stat-value ' + (totalPnl >= 0 ? 'positive' : totalPnl < 0 ? 'negative' : 'neutral');
+
+      const wrEl = document.getElementById('paperWinRate');
+      const resolvedCount = winTrades.length + lossTrades.length + exitTrades.length;
+      const winPct = resolvedCount > 0 ? Math.round(winTrades.length / resolvedCount * 100) : 0;
+      wrEl.textContent = trades.length > 0 ? winPct + '%' : '--';
+      wrEl.className = 'stat-value ' + (winPct >= 50 ? 'positive' : 'neutral');
+
+      let recordText = winTrades.length + 'W / ' + lossTrades.length + 'L';
+      if (exitTrades.length > 0) recordText += ' / ' + exitTrades.length + 'E';
+      const pendingCount = trades.filter(t => t.status === 'PENDING').length;
+      if (pendingCount > 0) recordText += ' (' + pendingCount + ' pending)';
+      document.getElementById('paperRecord').textContent = trades.length > 0 ? recordText : 'No trades yet';
+
+      // Trade list
+      const container = document.getElementById('paperTrades');
+      if (trades.length === 0) {
+        container.innerHTML = '<p class="empty-state">No paper trades yet</p>';
+        return;
+      }
+
+      let lastDate = null;
+      container.innerHTML = trades.map(t => {
+        const status = t.status;
+        const pnl = t.profit_loss;
+        const isPending = status === 'PENDING';
+        const isWin = status === 'WIN';
+        const isExit = status === 'EXIT';
+        const price = fmtPrice(t.entry_price);
+        const tradeDate = new Date(t.timestamp);
+        const time = tradeDate.toLocaleTimeString('en-US', {
+          hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York'
+        });
+        const dateStr = tradeDate.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+        const side = escapeHtml(t.side);
+        const shares = t.shares % 1 < 0.01 ? Math.round(t.shares) : t.shares.toFixed(2);
+
+        const statusClass = isPending ? 'pending' : isExit ? 'paper-exit' : (isWin ? 'win' : 'loss');
+        const statusIcon = isPending ? '\u25F7' : isExit ? '\u21A9' : (isWin ? '\u2713' : '\u2717');
+        const pnlClass = isPending ? 'pending' : isExit ? 'paper-exit' : (isWin ? 'positive' : 'negative');
+        const pnlText = isPending ? 'pending' : fmtPnl(pnl);
+
+        let separator = '';
+        if (lastDate !== dateStr) {
+          const displayDate = tradeDate.toLocaleDateString('en-US', {
+            weekday: 'short', month: 'short', day: 'numeric', timeZone: 'America/New_York'
+          });
+          separator = '<div class="date-separator">' + displayDate + '</div>';
+          lastDate = dateStr;
+        }
+
+        const confText = t.confidence ? Math.round(t.confidence * 100) + '% conf' : '';
+        const exitText = isExit && t.exit_price ? ' \u2192 ' + fmtPrice(t.exit_price) : '';
+
+        return separator + `
+          <div class="trade-item">
+            <div class="trade-status ${statusClass}">${statusIcon}</div>
+            <div class="trade-info">
+              <div class="trade-pair">${side} ${shares}@${price}${exitText}</div>
+              <div class="trade-detail">$${t.cost_basis.toFixed(2)}${confText ? ' \u00B7 ' + confText : ''}</div>
+              <div class="trade-meta">${time}</div>
+            </div>
+            <div class="trade-pnl ${pnlClass}">${pnlText}</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // ── End Paper Trading ───────────────────────────────────
 
     // Toggle between today's trades and all historical trades
     document.getElementById('tradesToggle').addEventListener('click', () => {
