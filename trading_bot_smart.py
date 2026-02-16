@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.44",
-    "codename": "Ledger Line",
-    "date": "2026-02-05",
-    "changes": "Daily portfolio balance snapshots (positions + USDC) logged at midnight EST"
+    "version": "v1.45",
+    "codename": "Ghost Runner",
+    "date": "2026-02-16",
+    "changes": "Paper trading mode: simulates trades after 45% ROI target, logs to same tables with PAPER_ prefix"
 }
 
 import os
@@ -65,6 +65,11 @@ except ImportError:
 
 # Unified logging functions
 def buffer_tick(*args, **kwargs):
+    # In paper mode, prefix the status (3rd positional arg) with PAPER_
+    if paper_mode and len(args) >= 3:
+        args = list(args)
+        args[2] = f"PAPER_{args[2]}"
+        args = tuple(args)
     supabase_buffer_tick(*args, **kwargs)
 
 def maybe_flush_ticks(ttl: float = None):
@@ -82,7 +87,17 @@ def flush_ticks():
     supabase_flush_activities()
 
 def log_event(event_type: str, window_id: str = "", **kwargs):
-    """Log a trading event to Supabase."""
+    """Log a trading event to Supabase. Adds PAPER_ prefix in paper mode."""
+    if paper_mode:
+        event_type = f"PAPER_{event_type}"
+        # Inject paper:true into details JSON
+        details_raw = kwargs.get('details', '{}')
+        try:
+            details = json.loads(details_raw) if isinstance(details_raw, str) and details_raw else {}
+        except (json.JSONDecodeError, TypeError):
+            details = {}
+        details['paper'] = True
+        kwargs['details'] = json.dumps(details)
     return supabase_log_event(event_type, window_id=window_id, **kwargs)
 
 # Setup file logging (tee to console and file)
@@ -243,6 +258,15 @@ AGGRESSIVE_COMPLETION_ENABLED = True
 USE_FAST_ORDER_CHECK = True
 MOMENTUM_FIRST_ENABLED = True
 ARB_ENABLED = False                # Disable ARB strategy, 99c sniper only
+
+# ===========================================
+# PAPER TRADING MODE
+# ===========================================
+PAPER_MODE_ROI_THRESHOLD = 0.45        # 45% ROI triggers paper mode
+PAPER_MODE_BID_PRICE = 0.95            # Paper mode bids at 95c (more trades, higher profit per trade)
+PAPER_MODE_EXIT_PRICE = 0.40           # Paper mode: only exit at 40c (no other exit conditions)
+PAPER_MODE_STATE_FILE = os.path.expanduser("~/polybot/paper_mode_state.json")
+FORCE_PAPER_MODE = os.getenv("FORCE_PAPER_MODE", "").lower() == "true"
 
 # ===========================================
 # SMART STRATEGY SETTINGS (NEW)
@@ -492,6 +516,16 @@ sniper_stats = {
     'trades': []  # List of {window_id, side, shares, won, pnl}
 }
 
+# Paper trading mode state
+paper_mode = False
+paper_stats = {
+    "paper_pnl": 0.0,
+    "paper_windows": 0,
+    "paper_wins": 0,
+    "paper_losses": 0,
+}
+capital_deployed = 0.0  # Sum of (shares * fill_price) for all real trades
+
 # Pending 99c resolutions to retry (when market hasn't settled yet)
 pending_99c_resolutions = []  # List of {slug, side, shares, entry_price, timestamp}
 
@@ -565,6 +599,9 @@ def send_telegram(message):
     if not telegram_config:
         return
     try:
+        # Prefix messages with [PAPER] in paper mode
+        if paper_mode:
+            message = f"[PAPER] {message}"
         url = f"https://api.telegram.org/bot{telegram_config['token']}/sendMessage"
         requests.post(url, data={
             "chat_id": telegram_config['chat_id'],
@@ -1173,7 +1210,10 @@ def log_state(ttc, books=None):
     conf_str = f" | {leading_side}:{conf*100:.0f}%/{threshold:.0f}%"
 
     price_str = f"UP:{ask_up*100:2.0f}c DN:{ask_down*100:2.0f}c"
-    print(f"[{ts()}] {status:7} | T-{ttc:3.0f}s | {btc_str}{price_str}{conf_str}{ob_str}{danger_str} | pos:{up_shares:.0f}/{down_shares:.0f} | {reason}")
+    # Prefix status with P: in paper mode for compact display
+    display_status = f"P:{status}" if paper_mode else status
+    paper_pnl_str = f" | paper:${paper_stats['paper_pnl']:.2f}" if paper_mode else ""
+    print(f"[{ts()}] {display_status:7} | T-{ttc:3.0f}s | {btc_str}{price_str}{conf_str}{ob_str}{danger_str}{paper_pnl_str} | pos:{up_shares:.0f}/{down_shares:.0f} | {reason}")
 
     # Get danger score if holding 99c position (LOG-01)
     danger_for_log = None
@@ -1200,6 +1240,11 @@ def log_order_event(order_id, side, action, price, qty, filled, avg_fill, reason
 
 def place_limit_order(token_id, price, size, side="BUY", bypass_price_failsafe=False):
     """Place a post-only limit order with FAILSAFE checks"""
+
+    # PAPER MODE GUARD: Never place real orders in paper mode
+    if paper_mode:
+        log_activity("PAPER_ORDER", {"side": side, "price": price, "size": size, "type": "limit"})
+        return True, f"PAPER_{int(time.time())}"
 
     if side == "BUY":
         if price > FAILSAFE_MAX_BUY_PRICE and not bypass_price_failsafe:
@@ -1255,6 +1300,11 @@ def place_fok_market_sell(token_id: str, shares: float) -> tuple:
         tuple: (success, order_id, filled_shares)
     """
     global clob_client
+
+    # PAPER MODE GUARD: Never place real orders in paper mode
+    if paper_mode:
+        log_activity("PAPER_FOK_SELL", {"shares": shares, "type": "fok_market_sell"})
+        return True, f"PAPER_{int(time.time())}", shares
 
     try:
         from py_clob_client.clob_types import MarketOrderArgs, OrderType
@@ -1663,6 +1713,12 @@ def has_pending_order(side):
 
 def place_and_verify_order(token_id, price, size, side="BUY", bypass_price_failsafe=False):
     """Place order and verify it exists on exchange - Bug Fix #1"""
+
+    # PAPER MODE GUARD: Simulate instant fill in paper mode
+    if paper_mode:
+        log_activity("PAPER_ORDER_VERIFIED", {"side": side, "price": price, "size": size})
+        return True, f"PAPER_{int(time.time())}", "PAPER_FILLED"
+
     # Check for duplicate first
     order_side = "UP" if token_id == window_state.get('up_token') else "DOWN"
     pending, pending_id = has_pending_order(order_side)
@@ -2123,19 +2179,20 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
     """
     global window_state, session_counters
 
-    shares = int(CAPTURE_99C_MAX_SPEND / CAPTURE_99C_BID_PRICE)  # ~5 shares
+    bid_price = PAPER_MODE_BID_PRICE if paper_mode else CAPTURE_99C_BID_PRICE
+    shares = int(CAPTURE_99C_MAX_SPEND / bid_price)
     token = window_state['up_token'] if side == 'UP' else window_state['down_token']
 
     print()
     print(f"┌─────────────── 99c CAPTURE ───────────────┐")
     print(f"│  {side} @ {current_ask*100:.0f}c | T-{ttc:.0f}s | Confidence: {confidence*100:.0f}%".ljust(44) + "│")
     print(f"│  (base {current_ask*100:.0f}% - {penalty*100:.0f}% time penalty)".ljust(44) + "│")
-    print(f"│  Bidding {shares} shares @ 99c = ${shares * CAPTURE_99C_BID_PRICE:.2f}".ljust(44) + "│")
+    print(f"│  Bidding {shares} shares @ {bid_price*100:.0f}c = ${shares * bid_price:.2f}".ljust(44) + "│")
     print(f"└────────────────────────────────────────────┘")
 
     # Bypass price failsafe - 99c capture is intentionally above 85c limit
     success, order_id, status = place_and_verify_order(
-        token, CAPTURE_99C_BID_PRICE, shares, "BUY", bypass_price_failsafe=True
+        token, bid_price, shares, "BUY", bypass_price_failsafe=True
     )
 
     if success:
@@ -2143,15 +2200,36 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
         window_state['capture_99c_order'] = order_id
         window_state['capture_99c_side'] = side
         window_state['capture_99c_shares'] = shares
-        # Track captured shares to exclude from pairing logic
-        if side == 'UP':
-            window_state['capture_99c_filled_up'] = shares
+
+        if paper_mode:
+            # Paper mode: simulate fill at our bid price (95c)
+            fill_price = bid_price
+            window_state['capture_99c_fill_price'] = fill_price
+            window_state['capture_99c_fill_notified'] = True
+            window_state['capture_99c_peak_confidence'] = confidence
+            if side == 'UP':
+                window_state['capture_99c_filled_up'] = shares
+                window_state['filled_up_shares'] = shares
+            else:
+                window_state['capture_99c_filled_down'] = shares
+                window_state['filled_down_shares'] = shares
+            actual_pnl = shares * (1.00 - fill_price)
+            print(f"[PAPER] 99c CAPTURE: Simulated fill {shares} {side} @ {fill_price*100:.0f}c (potential P&L: ${actual_pnl:.2f})")
+            print()
+            notify_99c_fill(side, shares, confidence * 100, ttc)
+            log_event("CAPTURE_FILL", window_state.get('window_id', ''),
+                            side=side, shares=shares, price=fill_price, pnl=actual_pnl)
         else:
-            window_state['capture_99c_filled_down'] = shares
-        print(f"🔭 99c CAPTURE: Order placed, watching for fill... (${shares * 0.01:.2f} potential profit)")
-        print()
+            # Track captured shares to exclude from pairing logic
+            if side == 'UP':
+                window_state['capture_99c_filled_up'] = shares
+            else:
+                window_state['capture_99c_filled_down'] = shares
+            print(f"🔭 99c CAPTURE: Order placed, watching for fill... (${shares * 0.01:.2f} potential profit)")
+            print()
+
         log_event("CAPTURE_99C", window_state.get('window_id', ''),
-                        side=side, price=CAPTURE_99C_BID_PRICE, shares=shares,
+                        side=side, price=bid_price, shares=shares,
                         confidence=confidence, penalty=penalty, ttl=ttc)
         return True
     else:
@@ -3167,12 +3245,41 @@ def save_trades():
     except Exception as e:
         print(f"[{ts()}] SAVE_TRADES_ERROR: {e}")
 
+def save_paper_state():
+    """Atomically save paper mode state to disk."""
+    try:
+        state = {
+            "paper_mode": paper_mode,
+            "activated_at": datetime.now(timezone.utc).isoformat(),
+            "capital_deployed": capital_deployed,
+            "paper_stats": paper_stats,
+        }
+        tmp_file = PAPER_MODE_STATE_FILE + ".tmp"
+        with open(tmp_file, "w") as f:
+            json.dump(state, f, indent=2)
+        os.rename(tmp_file, PAPER_MODE_STATE_FILE)
+    except Exception as e:
+        print(f"[{ts()}] SAVE_PAPER_STATE_ERROR: {e}")
+
+def load_paper_state():
+    """Load paper mode state from disk. Returns dict or None."""
+    try:
+        if not os.path.exists(PAPER_MODE_STATE_FILE):
+            return None
+        with open(PAPER_MODE_STATE_FILE, "r") as f:
+            state = json.load(f)
+        return state
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"[{ts()}] PAPER_STATE_CORRUPTED: {e} — defaulting to paper mode (safe)")
+        return {"paper_mode": True}
+
 # ============================================================================
 # MAIN BOT
 # ============================================================================
 
 def main():
     global window_state, trades_log, error_count, clob_client
+    global paper_mode, paper_stats, capital_deployed
 
     print("=" * 100)
     print(f"CHATGPT POLY BOT - SMART STRATEGY VERSION")
@@ -3206,6 +3313,28 @@ def main():
     else:
         print("  Supabase logger: DISABLED (module not found)")
     print()
+
+    # Load paper mode state from disk
+    saved_state = load_paper_state()
+    if saved_state and saved_state.get("paper_mode"):
+        paper_mode = True
+        paper_stats = saved_state.get("paper_stats", paper_stats)
+        capital_deployed = saved_state.get("capital_deployed", 0.0)
+        print("PAPER MODE: RESUMED from state file")
+        print(f"  Paper PnL: ${paper_stats['paper_pnl']:.2f} ({paper_stats['paper_wins']}W/{paper_stats['paper_losses']}L)")
+        log_event("PAPER_MODE_RESUMED", "", details=json.dumps(saved_state))
+
+    if FORCE_PAPER_MODE and not paper_mode:
+        paper_mode = True
+        print("PAPER MODE: FORCED via FORCE_PAPER_MODE env var")
+
+    if paper_mode:
+        print()
+        print("=" * 60)
+        print("  PAPER TRADING MODE ACTIVE")
+        print("  No real orders will be placed. All trades simulated.")
+        print("=" * 60)
+        print()
 
     print("STRATEGY: HARD HEDGE INVARIANT + SMART SIGNALS")
     print(f"  - NEVER allow unequal UP/DOWN at window close")
@@ -3245,15 +3374,57 @@ def main():
                         if window_state['filled_up_shares'] > 0 and window_state['filled_up_shares'] == window_state['filled_down_shares']:
                             session_stats['paired'] += 1
                         session_stats['pnl'] += window_state['realized_pnl_usd']
+
+                        # Paper mode: track paper PnL separately
+                        if paper_mode:
+                            paper_stats['paper_pnl'] += window_state['realized_pnl_usd']
+                            paper_stats['paper_windows'] += 1
+                            if window_state['realized_pnl_usd'] > 0:
+                                paper_stats['paper_wins'] += 1
+                            elif window_state['realized_pnl_usd'] < 0:
+                                paper_stats['paper_losses'] += 1
+                            save_paper_state()
+
+                        # ROI check: transition to paper mode at threshold
+                        if not paper_mode and capital_deployed > 0:
+                            roi = session_stats['pnl'] / capital_deployed
+                            if roi >= PAPER_MODE_ROI_THRESHOLD:
+                                paper_mode = True
+                                save_paper_state()
+                                print()
+                                print("=" * 60)
+                                print(f"  PAPER MODE ACTIVATED")
+                                print(f"  ROI: {roi*100:.1f}% >= {PAPER_MODE_ROI_THRESHOLD*100:.0f}% threshold")
+                                print(f"  PnL: ${session_stats['pnl']:.2f} / Capital: ${capital_deployed:.2f}")
+                                print(f"  All future trades will be SIMULATED")
+                                print("=" * 60)
+                                print()
+                                log_event("PAPER_MODE_ACTIVATED", slug,
+                                    pnl=session_stats['pnl'],
+                                    details=json.dumps({"roi": roi, "capital_deployed": capital_deployed}))
+                                send_telegram(
+                                    f"<b>PAPER MODE ACTIVATED</b>\n"
+                                    f"ROI: {roi*100:.1f}%\n"
+                                    f"PnL: ${session_stats['pnl']:.2f}\n"
+                                    f"Capital: ${capital_deployed:.2f}\n"
+                                    f"All future trades will be simulated."
+                                )
+
                         # Prettier window summary
                         total_trades = session_counters['smart_trades'] + session_counters['smart_skips']
                         hit_rate = (session_counters['smart_trades'] / total_trades * 100) if total_trades > 0 else 0
                         print()
-                        print("┌─────────────────── WINDOW COMPLETE ───────────────────┐")
-                        print(f"│  ✅ Profits: {session_counters['profit_pairs']}    🟧 Loss-Avoid: {session_counters['loss_avoid_pairs']}    🔴 Flatten: {session_counters['hard_flattens']}".ljust(55) + "│")
-                        print(f"│  📊 Smart Trades: {session_counters['smart_trades']}/{total_trades} ({hit_rate:.0f}% hit rate)".ljust(55) + "│")
-                        print(f"│  💵 Session PnL: ${session_stats['pnl']:.2f}".ljust(55) + "│")
-                        print("└────────────────────────────────────────────────────────┘")
+                        if paper_mode:
+                            print("┌──────────────── PAPER WINDOW COMPLETE ────────────────┐")
+                            print(f"│  Window PnL: ${window_state['realized_pnl_usd']:+.2f}".ljust(55) + "│")
+                            print(f"│  Paper Total: ${paper_stats['paper_pnl']:+.2f} ({paper_stats['paper_wins']}W/{paper_stats['paper_losses']}L)".ljust(55) + "│")
+                            print("└────────────────────────────────────────────────────────┘")
+                        else:
+                            print("┌─────────────────── WINDOW COMPLETE ───────────────────┐")
+                            print(f"│  ✅ Profits: {session_counters['profit_pairs']}    🟧 Loss-Avoid: {session_counters['loss_avoid_pairs']}    🔴 Flatten: {session_counters['hard_flattens']}".ljust(55) + "│")
+                            print(f"│  📊 Smart Trades: {session_counters['smart_trades']}/{total_trades} ({hit_rate:.0f}% hit rate)".ljust(55) + "│")
+                            print(f"│  💵 Session PnL: ${session_stats['pnl']:.2f}".ljust(55) + "│")
+                            print("└────────────────────────────────────────────────────────┘")
 
                         # 99c Sniper Resolution Notification
                         if window_state.get('capture_99c_fill_notified'):
@@ -3322,19 +3493,21 @@ def main():
 
                         flush_ticks()  # Flush any remaining tick data
 
-                        # Check for claimable positions after window closes
-                        try:
-                            from auto_redeem import check_and_claim
-                            claimable = check_and_claim()
-                            if claimable:
-                                total = sum(p['claimable_usdc'] for p in claimable)
-                                print(f"[{ts()}] 💰 CLAIMABLE: ${total:.2f} - check polymarket.com to claim!")
-                        except ImportError:
-                            pass  # auto_redeem module not available
-                        except Exception as e:
-                            print(f"[{ts()}] REDEEM_CHECK_ERROR: {e}")
+                        # Check for claimable positions after window closes (skip in paper mode)
+                        if not paper_mode:
+                            try:
+                                from auto_redeem import check_and_claim
+                                claimable = check_and_claim()
+                                if claimable:
+                                    total = sum(p['claimable_usdc'] for p in claimable)
+                                    print(f"[{ts()}] 💰 CLAIMABLE: ${total:.2f} - check polymarket.com to claim!")
+                            except ImportError:
+                                pass  # auto_redeem module not available
+                            except Exception as e:
+                                print(f"[{ts()}] REDEEM_CHECK_ERROR: {e}")
 
-                    cancel_all_orders()
+                    if not paper_mode:
+                        cancel_all_orders()
                     window_state = reset_window_state(slug)
                     market_price_history.clear()  # v1.24: Clear price history for entry filter
                     cached_market = None
@@ -3344,8 +3517,12 @@ def main():
 
                     print()
                     print("=" * 100)
-                    print(f"[{ts()}] NEW WINDOW: {slug}")
-                    print(f"[{ts()}] Session: {session_stats['windows']} windows | {session_stats['paired']} paired | PnL: ${session_stats['pnl']:.2f}")
+                    mode_tag = " [PAPER]" if paper_mode else ""
+                    print(f"[{ts()}] NEW WINDOW{mode_tag}: {slug}")
+                    if paper_mode:
+                        print(f"[{ts()}] Paper: {paper_stats['paper_windows']} windows | {paper_stats['paper_wins']}W/{paper_stats['paper_losses']}L | Paper PnL: ${paper_stats['paper_pnl']:.2f}")
+                    else:
+                        print(f"[{ts()}] Session: {session_stats['windows']} windows | {session_stats['paired']} paired | PnL: ${session_stats['pnl']:.2f}")
 
                     # Resolve any pending 99c outcomes from previous windows
                     if pending_99c_resolutions:
@@ -3378,15 +3555,16 @@ def main():
                         if pending_99c_resolutions:
                             print(f"[{ts()}] ⏳ Still pending: {len(pending_99c_resolutions)} unresolved 99c trades")
 
-                    # Check gas balance and alert if low
-                    gas_balance = check_gas_and_alert()
-                    if gas_balance is not None:
-                        days_left = gas_balance / (47 * 0.0268)
-                        gas_status = "OK" if gas_balance >= GAS_LOW_THRESHOLD else ("LOW" if gas_balance >= GAS_CRITICAL_THRESHOLD else "CRITICAL")
-                        print(f"[{ts()}] ⛽ Gas: {gas_balance:.4f} MATIC ({days_left:.1f} days) [{gas_status}]")
+                    # Check gas balance and alert if low (skip in paper mode)
+                    if not paper_mode:
+                        gas_balance = check_gas_and_alert()
+                        if gas_balance is not None:
+                            days_left = gas_balance / (47 * 0.0268)
+                            gas_status = "OK" if gas_balance >= GAS_LOW_THRESHOLD else ("LOW" if gas_balance >= GAS_CRITICAL_THRESHOLD else "CRITICAL")
+                            print(f"[{ts()}] ⛽ Gas: {gas_balance:.4f} MATIC ({days_left:.1f} days) [{gas_status}]")
 
-                    # Daily balance snapshot (once per EST day)
-                    check_and_log_balance()
+                        # Daily balance snapshot (once per EST day)
+                        check_and_log_balance()
 
                     print("=" * 100)
 
@@ -3451,8 +3629,8 @@ def main():
 
                 log_state(remaining_secs, books)
 
-                # PERIODIC ORDER HEALTH CHECK - detect fills from order status
-                if window_state.get('current_arb_orders'):
+                # PERIODIC ORDER HEALTH CHECK - detect fills from order status (skip in paper mode)
+                if not paper_mode and window_state.get('current_arb_orders'):
                     arb = window_state['current_arb_orders']
                     if arb.get('up_id'):
                         up_status = get_order_status(arb['up_id'])
@@ -3482,8 +3660,8 @@ def main():
                             remaining_secs
                         )
 
-                # Check if 99c capture order filled
-                if window_state.get('capture_99c_order') and not window_state.get('capture_99c_fill_notified'):
+                # Check if 99c capture order filled (skip in paper mode - fills handled in execute_99c_capture)
+                if not paper_mode and window_state.get('capture_99c_order') and not window_state.get('capture_99c_fill_notified'):
                     order_id = window_state['capture_99c_order']
                     status = get_order_status(order_id)
                     if status.get('filled', 0) > 0:
@@ -3513,62 +3691,91 @@ def main():
                             window_state['capture_99c_filled_up'] = filled
                         else:
                             window_state['capture_99c_filled_down'] = filled
+                        # Track capital deployed for ROI calculation
+                        capital_deployed += filled * fill_price
                         # Send Telegram notification
                         notify_99c_fill(side, filled, peak_conf * 100 if peak_conf else 95, remaining_secs)
                         log_event("CAPTURE_FILL", slug, side=side, shares=filled,
                                         price=fill_price, pnl=actual_pnl)
 
-                # === 60¢ HARD STOP CHECK (v1.34) ===
-                # Exit immediately using FOK market orders if best bid <= 60¢
-                # Uses best BID (not ask) to ensure real liquidity exists
-                if (HARD_STOP_ENABLED and
+                # === PAPER MODE: 40¢ EXIT ONLY ===
+                # In paper mode, only exit when best bid <= 40c — no other exit conditions
+                if (paper_mode and
                     window_state.get('capture_99c_fill_notified') and
                     not window_state.get('capture_99c_exited') and
-                    not window_state.get('capture_99c_hedged') and
-                    remaining_secs > 15):
+                    remaining_secs > 5):
 
                     capture_side = window_state.get('capture_99c_side')
+                    bid_key = 'up_bids' if capture_side == 'UP' else 'down_bids'
+                    if books.get(bid_key):
+                        best_bid = float(books[bid_key][0]['price'])
+                        if best_bid <= PAPER_MODE_EXIT_PRICE:
+                            shares = window_state.get(f'capture_99c_filled_{capture_side.lower()}', 0)
+                            fill_price = window_state.get('capture_99c_fill_price', PAPER_MODE_BID_PRICE)
+                            exit_pnl = shares * (best_bid - fill_price)
+                            print(f"[{ts()}] [PAPER] 40c STOP: {capture_side} best bid at {best_bid*100:.0f}c <= {PAPER_MODE_EXIT_PRICE*100:.0f}c")
+                            print(f"[{ts()}] [PAPER] EXIT: {shares} shares @ {best_bid*100:.0f}c | P&L: ${exit_pnl:.2f}")
+                            window_state['capture_99c_exited'] = True
+                            window_state['capture_99c_exit_reason'] = 'paper_stop_40c'
+                            window_state[f'capture_99c_filled_{capture_side.lower()}'] = 0
+                            window_state['realized_pnl_usd'] = exit_pnl
+                            log_event("CAPTURE_EXIT", window_state.get('window_id', ''),
+                                            side=capture_side, shares=shares, price=best_bid,
+                                            pnl=exit_pnl, reason="paper_stop_40c")
+                            send_telegram(f"40c STOP: {capture_side} {shares}sh @ {best_bid*100:.0f}c | P&L: ${exit_pnl:.2f}")
 
-                    # Check if hard stop should trigger (based on best bid)
-                    should_trigger, best_bid = check_hard_stop_trigger(books, capture_side)
+                if not paper_mode:
+                    # === 60¢ HARD STOP CHECK (v1.34) ===
+                    # Exit immediately using FOK market orders if best bid <= 60¢
+                    # Uses best BID (not ask) to ensure real liquidity exists
+                    if (HARD_STOP_ENABLED and
+                        window_state.get('capture_99c_fill_notified') and
+                        not window_state.get('capture_99c_exited') and
+                        not window_state.get('capture_99c_hedged') and
+                        remaining_secs > 15):
 
-                    if should_trigger:
-                        print(f"[{ts()}] 🛑 HARD STOP: {capture_side} best bid at {best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c trigger")
-                        execute_hard_stop(capture_side, books)
+                        capture_side = window_state.get('capture_99c_side')
 
-                # === 99c OB-BASED EARLY EXIT CHECK ===
-                # Exit early if OB shows sellers dominating for 3 consecutive ticks
-                if (OB_EARLY_EXIT_ENABLED and
-                    window_state.get('capture_99c_fill_notified') and
-                    not window_state.get('capture_99c_exited') and
-                    not window_state.get('capture_99c_hedged') and
-                    remaining_secs > 15):
+                        # Check if hard stop should trigger (based on best bid)
+                        should_trigger, best_bid = check_hard_stop_trigger(books, capture_side)
 
-                    capture_side = window_state.get('capture_99c_side')
+                        if should_trigger:
+                            print(f"[{ts()}] 🛑 HARD STOP: {capture_side} best bid at {best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c trigger")
+                            execute_hard_stop(capture_side, books)
 
-                    # Get OB imbalance for our side
-                    if ORDERBOOK_ANALYZER_AVAILABLE and books:
-                        ob_result = orderbook_analyzer.analyze(
-                            books.get('up_bids', []), books.get('up_asks', []),
-                            books.get('down_bids', []), books.get('down_asks', [])
-                        )
-                        imb = ob_result.get('up_imbalance', 0) if capture_side == "UP" else ob_result.get('down_imbalance', 0)
+                    # === 99c OB-BASED EARLY EXIT CHECK ===
+                    # Exit early if OB shows sellers dominating for 3 consecutive ticks
+                    if (OB_EARLY_EXIT_ENABLED and
+                        window_state.get('capture_99c_fill_notified') and
+                        not window_state.get('capture_99c_exited') and
+                        not window_state.get('capture_99c_hedged') and
+                        remaining_secs > 15):
 
-                        # Track consecutive negative ticks
-                        if imb < OB_EARLY_EXIT_THRESHOLD:
-                            window_state['ob_negative_ticks'] = window_state.get('ob_negative_ticks', 0) + 1
-                            print(f"[{ts()}] 99c OB WARNING: {capture_side} imb={imb:+.2f} ({window_state['ob_negative_ticks']}/3)")
-                        else:
-                            window_state['ob_negative_ticks'] = 0
+                        capture_side = window_state.get('capture_99c_side')
 
-                        # Trigger exit if 3 consecutive negative ticks
-                        if window_state['ob_negative_ticks'] >= 3:
-                            print(f"[{ts()}] 🚨 99c OB EXIT TRIGGERED: {capture_side} imb={imb:+.2f}")
-                            execute_99c_early_exit(capture_side, imb, books, reason="ob_reversal")
+                        # Get OB imbalance for our side
+                        if ORDERBOOK_ANALYZER_AVAILABLE and books:
+                            ob_result = orderbook_analyzer.analyze(
+                                books.get('up_bids', []), books.get('up_asks', []),
+                                books.get('down_bids', []), books.get('down_asks', [])
+                            )
+                            imb = ob_result.get('up_imbalance', 0) if capture_side == "UP" else ob_result.get('down_imbalance', 0)
+
+                            # Track consecutive negative ticks
+                            if imb < OB_EARLY_EXIT_THRESHOLD:
+                                window_state['ob_negative_ticks'] = window_state.get('ob_negative_ticks', 0) + 1
+                                print(f"[{ts()}] 99c OB WARNING: {capture_side} imb={imb:+.2f} ({window_state['ob_negative_ticks']}/3)")
+                            else:
+                                window_state['ob_negative_ticks'] = 0
+
+                            # Trigger exit if 3 consecutive negative ticks
+                            if window_state['ob_negative_ticks'] >= 3:
+                                print(f"[{ts()}] 🚨 99c OB EXIT TRIGGERED: {capture_side} imb={imb:+.2f}")
+                                execute_99c_early_exit(capture_side, imb, books, reason="ob_reversal")
 
                 # Check if 99c capture needs hedging (confidence dropped)
-                # Skip if we already exited early
-                if window_state.get('capture_99c_fill_notified') and not window_state.get('capture_99c_hedged') and not window_state.get('capture_99c_exited'):
+                # Skip if we already exited early (also skip in paper mode - no hedging)
+                if not paper_mode and window_state.get('capture_99c_fill_notified') and not window_state.get('capture_99c_hedged') and not window_state.get('capture_99c_exited'):
                     # Calculate danger score from 5 signals
                     bet_side = window_state.get('capture_99c_side')
 
