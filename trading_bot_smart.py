@@ -263,6 +263,7 @@ ARB_ENABLED = False                # Disable ARB strategy, 99c sniper only
 # PAPER TRADING MODE
 # ===========================================
 PAPER_MODE_ROI_THRESHOLD = 0.45        # 45% ROI triggers paper mode
+PAPER_MODE_BID_PRICE = 0.95            # Paper mode bids at 95c (more trades, higher profit per trade)
 PAPER_MODE_STATE_FILE = os.path.expanduser("~/polybot/paper_mode_state.json")
 FORCE_PAPER_MODE = os.getenv("FORCE_PAPER_MODE", "").lower() == "true"
 
@@ -2177,19 +2178,20 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
     """
     global window_state, session_counters
 
-    shares = int(CAPTURE_99C_MAX_SPEND / CAPTURE_99C_BID_PRICE)  # ~5 shares
+    bid_price = PAPER_MODE_BID_PRICE if paper_mode else CAPTURE_99C_BID_PRICE
+    shares = int(CAPTURE_99C_MAX_SPEND / bid_price)
     token = window_state['up_token'] if side == 'UP' else window_state['down_token']
 
     print()
     print(f"┌─────────────── 99c CAPTURE ───────────────┐")
     print(f"│  {side} @ {current_ask*100:.0f}c | T-{ttc:.0f}s | Confidence: {confidence*100:.0f}%".ljust(44) + "│")
     print(f"│  (base {current_ask*100:.0f}% - {penalty*100:.0f}% time penalty)".ljust(44) + "│")
-    print(f"│  Bidding {shares} shares @ 99c = ${shares * CAPTURE_99C_BID_PRICE:.2f}".ljust(44) + "│")
+    print(f"│  Bidding {shares} shares @ {bid_price*100:.0f}c = ${shares * bid_price:.2f}".ljust(44) + "│")
     print(f"└────────────────────────────────────────────┘")
 
     # Bypass price failsafe - 99c capture is intentionally above 85c limit
     success, order_id, status = place_and_verify_order(
-        token, CAPTURE_99C_BID_PRICE, shares, "BUY", bypass_price_failsafe=True
+        token, bid_price, shares, "BUY", bypass_price_failsafe=True
     )
 
     if success:
@@ -2199,8 +2201,8 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
         window_state['capture_99c_shares'] = shares
 
         if paper_mode:
-            # Paper mode: simulate instant fill at current ask price
-            fill_price = current_ask
+            # Paper mode: simulate fill at our bid price (95c)
+            fill_price = bid_price
             window_state['capture_99c_fill_price'] = fill_price
             window_state['capture_99c_fill_notified'] = True
             window_state['capture_99c_peak_confidence'] = confidence
@@ -2226,7 +2228,7 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
             print()
 
         log_event("CAPTURE_99C", window_state.get('window_id', ''),
-                        side=side, price=CAPTURE_99C_BID_PRICE, shares=shares,
+                        side=side, price=bid_price, shares=shares,
                         confidence=confidence, penalty=penalty, ttl=ttc)
         return True
     else:
