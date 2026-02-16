@@ -1,10 +1,12 @@
 # Polybot Version Registry
 
-## Current Version: v1.44 "Ledger Line"
+## Current Version: v1.46 "Kelly's Edge"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.44 | 2026-02-05 PST | Ledger Line | Daily portfolio balance snapshots (positions + USDC) logged at midnight EST | Active |
+| v1.46 | 2026-02-16 PST | Kelly's Edge | Bankroll management: trade size = 10% of portfolio, auto-adjusts + daily ROI pause at 50% | Active |
+| v1.45 | 2026-02-16 PST | Golden Ceiling | Daily ROI pause: stop trading when daily profit target (50%) is reached, resume next day | Archived |
+| v1.44 | 2026-02-05 PST | Ledger Line | Daily portfolio balance snapshots (positions + USDC) logged at midnight EST | Archived |
 | v1.43 | 2026-02-05 PST | True Price | Fix: Log actual Polymarket execution price in CAPTURE_FILL via /trades API (not limit order price) | Archived |
 | v1.42 | 2026-02-05 PST | Crystal Dashboard | Fix: Dashboard uses CAPTURE_FILL (not CAPTURE_99C) so unfilled orders don't show as pending, prices show correctly | Archived |
 | v1.37 | 2026-02-04 PST | Data Driven | Log CAPTURE_99C_WIN/LOSS events for Supabase dashboard tracking | Archived |

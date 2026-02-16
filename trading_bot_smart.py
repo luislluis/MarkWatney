@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.44",
-    "codename": "Ledger Line",
-    "date": "2026-02-05",
-    "changes": "Daily portfolio balance snapshots (positions + USDC) logged at midnight EST"
+    "version": "v1.46",
+    "codename": "Kelly's Edge",
+    "date": "2026-02-16",
+    "changes": "Bankroll management: trade size = 10% of portfolio, auto-adjusts as balance changes + daily ROI pause"
 }
 
 import os
@@ -375,6 +375,26 @@ DANGER_WEIGHT_VELOCITY = 2.0         # Weight for BTC price velocity against us
 DANGER_WEIGHT_OPPONENT = 0.5         # Weight for opponent ask price strength
 DANGER_WEIGHT_TIME = 0.3             # Weight for time decay in final 60s
 
+# ===========================================
+# BANKROLL MANAGEMENT - Daily Position Sizing
+# ===========================================
+# Trade size = BANKROLL_TRADE_PCT of portfolio balance, locked at start of each day.
+# Stays fixed all day. Recalculates next day based on new balance.
+BANKROLL_SIZING_ENABLED = True
+BANKROLL_TRADE_PCT = 0.10             # 10% of bankroll per trade
+BANKROLL_MIN_TRADE = 2.00             # Never trade less than $2 (floor)
+BANKROLL_MAX_TRADE = 20.00            # Never trade more than $20 (ceiling)
+
+# ===========================================
+# DAILY ROI PAUSE - Lock in profits
+# ===========================================
+# When daily ROI hits this target, pause all trading until next day (midnight EST).
+# ROI = daily_profit / avg_trade_value (avg_trade_value auto-set from bankroll sizing)
+# Protects gains from being given back.
+DAILY_ROI_PAUSE_ENABLED = True
+DAILY_ROI_PAUSE_TARGET = 0.45         # 45% daily ROI triggers pause (locks in gains near 50%)
+DAILY_ROI_AVG_TRADE_VALUE = 5.00      # $5 default (overridden by bankroll sizing at runtime)
+
 # Bot identity
 BOT_NAME = "ChatGPT-Smart"
 
@@ -640,6 +660,17 @@ def get_portfolio_balance():
 
 _last_balance_date = None  # Track last snapshot date (EST)
 
+# Daily ROI pause state
+_daily_pnl = 0.0                  # Today's P&L (synced from Polymarket API)
+_daily_roi_pct = 0.0              # Today's ROI % (synced from Polymarket API)
+_daily_pnl_date = None            # EST date string for current daily tracking
+_roi_pause_active = False         # True when daily ROI target is hit
+
+# Bankroll sizing state
+_current_bankroll = None          # Portfolio balance at start of day
+_current_trade_size = None        # Trade size ($) locked for the day
+_bankroll_date = None             # EST date when bankroll was set
+
 def check_and_log_balance():
     """Log daily balance snapshot on first window after midnight EST."""
     global _last_balance_date
@@ -653,6 +684,220 @@ def check_and_log_balance():
     print(f"[{ts()}] 💰 Balance snapshot: ${total:.2f} (positions: ${pos_value:.2f}, USDC: ${usdc_cash:.2f})")
     log_event("BALANCE_SNAPSHOT",
               details=f"total={total:.2f}|positions={pos_value:.2f}|usdc={usdc_cash:.2f}|date={est_date}")
+
+def refresh_bankroll_sizing():
+    """Set trade size from portfolio balance. Runs once per EST day (or bot startup). Locked all day."""
+    global _current_bankroll, _current_trade_size, _bankroll_date, CAPTURE_99C_MAX_SPEND, DAILY_ROI_AVG_TRADE_VALUE
+
+    if not BANKROLL_SIZING_ENABLED:
+        return
+
+    est_now = datetime.now(ZoneInfo("America/New_York"))
+    est_date = est_now.strftime("%Y-%m-%d")
+
+    if _bankroll_date == est_date:
+        return  # Already locked for today
+
+    pos_value, usdc_cash = get_portfolio_balance()
+    bankroll = pos_value + usdc_cash
+    if bankroll <= 0:
+        print(f"[{ts()}] BANKROLL: Could not fetch balance, keeping current sizing")
+        return
+
+    _bankroll_date = est_date
+    _current_bankroll = bankroll
+    raw_trade_size = bankroll * BANKROLL_TRADE_PCT
+    trade_size = max(BANKROLL_MIN_TRADE, min(BANKROLL_MAX_TRADE, raw_trade_size))
+
+    _current_trade_size = trade_size
+    CAPTURE_99C_MAX_SPEND = trade_size
+    DAILY_ROI_AVG_TRADE_VALUE = trade_size
+
+    shares = int(trade_size / CAPTURE_99C_BID_PRICE)
+    print(f"[{ts()}] BANKROLL: ${bankroll:.2f} x {BANKROLL_TRADE_PCT*100:.0f}% = ${trade_size:.2f}/trade ({shares} shares @ 99c) [locked for {est_date}]")
+    log_event("BANKROLL_SIZING",
+              details=f"bankroll={bankroll:.2f}|pct={BANKROLL_TRADE_PCT*100:.0f}|trade_size={trade_size:.2f}|shares={shares}|date={est_date}")
+
+def reset_daily_roi_tracking():
+    """Reset daily P&L tracking for new day. Called at midnight EST or bot startup."""
+    global _daily_pnl, _daily_roi_pct, _daily_pnl_date, _roi_pause_active
+    est_now = datetime.now(ZoneInfo("America/New_York"))
+    est_date = est_now.strftime("%Y-%m-%d")
+
+    if _daily_pnl_date == est_date:
+        return  # Already tracking today
+
+    # New day - reset
+    if _roi_pause_active:
+        print(f"[{ts()}] ROI_PAUSE: New day ({est_date}) - resuming trading")
+    old_pnl = _daily_pnl
+    _daily_pnl = 0.0
+    _daily_roi_pct = 0.0
+    _roi_pause_active = False
+    _daily_pnl_date = est_date
+
+    print(f"[{ts()}] ROI_PAUSE: Daily tracking reset (target: {DAILY_ROI_PAUSE_TARGET*100:.0f}% ROI, source: Polymarket API)")
+    log_event("ROI_PAUSE_RESET", details=f"date={est_date}|prev_pnl={old_pnl:.2f}|target_pct={DAILY_ROI_PAUSE_TARGET*100:.0f}|source=api")
+
+def fetch_daily_roi_from_api():
+    """Query Polymarket activity API (same source as dashboard) to compute today's ROI.
+    Uses real fill prices — works at any entry price (95c, 99c, etc).
+    Returns (daily_pnl, avg_trade_value, roi_pct) or None on error."""
+    try:
+        url = f"https://data-api.polymarket.com/activity?user={WALLET_ADDRESS}&limit=1000"
+        resp = http_session.get(url, timeout=10)
+        resp.raise_for_status()
+        all_activity = resp.json()
+
+        poly_trades = [a for a in all_activity if a.get('type') == 'TRADE']
+        redeem_events = [a for a in all_activity if a.get('type') == 'REDEEM']
+
+        # Redeemed slugs = wins (same logic as dashboard)
+        redeemed = set()
+        for r in redeem_events:
+            if r.get('slug'):
+                redeemed.add(r['slug'])
+
+        # Today in EST
+        est_now = datetime.now(ZoneInfo("America/New_York"))
+        today_str = est_now.strftime("%Y-%m-%d")
+
+        # Group trades by slug|side (mirrors dashboard.html grouping)
+        grouped = {}
+        for t in poly_trades:
+            slug = t.get('slug', '')
+            outcome = (t.get('outcome', '') or '').upper()
+            key = f"{slug}|{outcome}"
+            if key not in grouped:
+                grouped[key] = {'buys': [], 'sells': []}
+            entry = {
+                'timestamp': t.get('timestamp', 0),
+                'size': float(t.get('size', 0) or 0),
+                'price': float(t.get('price', 0) or 0),
+            }
+            if (t.get('side', '') or '').upper() == 'SELL':
+                grouped[key]['sells'].append(entry)
+            else:
+                grouped[key]['buys'].append(entry)
+
+        # Build trade list with P&L (same FIFO logic as dashboard)
+        today_trades = []
+        for key, group in grouped.items():
+            slug = key.split('|', 1)[0]
+            if not group['buys']:
+                continue
+            won = slug in redeemed
+
+            group['buys'].sort(key=lambda x: x['timestamp'])
+            group['sells'].sort(key=lambda x: x['timestamp'])
+
+            # FIFO match sells to buys
+            sell_pool = [{'remaining': s['size'], 'price': s['price']} for s in group['sells']]
+            buy_exit = [{'exit_shares': 0.0, 'exit_rev': 0.0} for _ in group['buys']]
+
+            for sell in sell_pool:
+                for i, buy in enumerate(group['buys']):
+                    if sell['remaining'] <= 0.001:
+                        break
+                    can = buy['size'] - buy_exit[i]['exit_shares']
+                    if can <= 0.001:
+                        continue
+                    matched = min(sell['remaining'], can)
+                    buy_exit[i]['exit_shares'] += matched
+                    buy_exit[i]['exit_rev'] += matched * sell['price']
+                    sell['remaining'] -= matched
+
+            for i, buy in enumerate(group['buys']):
+                # Filter to today (EST) early
+                trade_dt = datetime.fromtimestamp(buy['timestamp'], tz=ZoneInfo("America/New_York"))
+                if trade_dt.strftime("%Y-%m-%d") != today_str:
+                    continue
+
+                info = buy_exit[i]
+                cost = buy['size'] * buy['price']
+                exited_all = info['exit_shares'] >= buy['size'] - 0.02
+                has_exit = info['exit_shares'] > 0.001
+
+                if exited_all:
+                    pnl = info['exit_rev'] - cost
+                    today_trades.append({'pnl': round(pnl, 2), 'cost': round(cost, 2), 'slug': slug})
+                elif has_exit:
+                    # EXIT portion
+                    exit_cost = info['exit_shares'] * buy['price']
+                    exit_pnl = info['exit_rev'] - exit_cost
+                    today_trades.append({'pnl': round(exit_pnl, 2), 'cost': round(exit_cost, 2), 'slug': slug})
+                    # Remaining portion
+                    remain = buy['size'] - info['exit_shares']
+                    remain_cost = remain * buy['price']
+                    age = time.time() - buy['timestamp']
+                    status = 'WIN' if won else ('LOSS' if age > 1800 else 'PENDING')
+                    rpnl = remain * (1 - buy['price']) if status == 'WIN' else (-remain_cost if status == 'LOSS' else 0)
+                    today_trades.append({'pnl': round(rpnl, 2), 'cost': round(remain_cost, 2), 'slug': slug})
+                else:
+                    age = time.time() - buy['timestamp']
+                    status = 'WIN' if won else ('LOSS' if age > 1800 else 'PENDING')
+                    pnl = buy['size'] * (1 - buy['price']) if status == 'WIN' else (-cost if status == 'LOSS' else 0)
+                    today_trades.append({'pnl': round(pnl, 2), 'cost': round(cost, 2), 'slug': slug})
+
+        if not today_trades:
+            return (0.0, 0.0, 0.0)
+
+        # Same formula as dashboard: ROI = totalPnl / (totalCost / numWindows)
+        total_pnl = sum(t['pnl'] for t in today_trades)
+        total_cost = sum(t['cost'] for t in today_trades)
+        num_windows = len(set(t['slug'] for t in today_trades))
+        avg_trade_value = total_cost / num_windows if num_windows > 0 else 0
+        roi_pct = (total_pnl / avg_trade_value * 100) if avg_trade_value > 0 else 0
+
+        return (total_pnl, avg_trade_value, roi_pct)
+
+    except Exception as e:
+        print(f"[{ts()}] ROI_API_ERROR: {e}")
+        return None
+
+def check_roi_pause():
+    """Check today's ROI via Polymarket API (same data as dashboard). Trigger pause if target hit."""
+    global _daily_pnl, _daily_roi_pct, _roi_pause_active
+
+    if not DAILY_ROI_PAUSE_ENABLED or _roi_pause_active:
+        return
+
+    result = fetch_daily_roi_from_api()
+    if result is None:
+        print(f"[{ts()}] ROI_PAUSE: API check failed, skipping")
+        return
+
+    daily_pnl, avg_trade, roi_pct = result
+    _daily_pnl = daily_pnl        # Keep state in sync for status display
+    _daily_roi_pct = roi_pct      # Keep ROI in sync for status display
+
+    print(f"[{ts()}] ROI_PAUSE: Daily P&L ${daily_pnl:+.2f} | ROI {roi_pct:+.1f}% | avg trade ${avg_trade:.2f} (from API)")
+
+    if roi_pct / 100 >= DAILY_ROI_PAUSE_TARGET:
+        _roi_pause_active = True
+        print()
+        print("=" * 60)
+        print(f"[{ts()}] ROI_PAUSE: DAILY TARGET REACHED!")
+        print(f"  Daily P&L: ${daily_pnl:+.2f}")
+        print(f"  Daily ROI: +{roi_pct:.1f}% (target: {DAILY_ROI_PAUSE_TARGET*100:.0f}%)")
+        print(f"  Source: Polymarket API (real fill prices)")
+        print(f"  Trading PAUSED until next day (midnight EST)")
+        print("=" * 60)
+        print()
+
+        log_event("ROI_PAUSE_TRIGGERED",
+                  details=f"daily_pnl={daily_pnl:.2f}|roi={roi_pct:.1f}|avg_trade={avg_trade:.2f}|source=api")
+
+        # Telegram notification
+        msg = f"""🏆 <b>DAILY ROI TARGET HIT - PAUSED</b>
+
+Daily P&L: ${daily_pnl:+.2f}
+ROI: +{roi_pct:.1f}% (avg trade ${avg_trade:.2f})
+
+Trading paused until tomorrow.
+Locking in gains! 🔒"""
+        send_telegram(msg)
+
 
 def check_gas_and_alert():
     """Check gas balance and send Telegram alert if low. Called once per window."""
@@ -789,6 +1034,9 @@ def notify_99c_resolution(side, shares, won, pnl):
         'pnl': pnl
     })
 
+    # Track daily P&L for ROI pause
+    check_roi_pause()
+
     # Calculate stats
     total_trades = sniper_stats['wins'] + sniper_stats['losses']
     win_rate = (sniper_stats['wins'] / total_trades * 100) if total_trades > 0 else 0
@@ -911,6 +1159,7 @@ def _send_pair_outcome_notification():
                         up_shares=min_shares, up_price=avg_up,
                         down_shares=min_shares, down_price=avg_down,
                         pnl=profit)
+        check_roi_pause()
     else:
         last_pair_type = "LOSS_AVOID_PAIR"
         session_counters['loss_avoid_pairs'] += 1
@@ -928,6 +1177,7 @@ def _send_pair_outcome_notification():
                         up_shares=min_shares, up_price=avg_up,
                         down_shares=min_shares, down_price=avg_down,
                         pnl=-loss)
+        check_roi_pause()
 
 # ============================================================================
 # DATA FETCHING
@@ -1100,18 +1350,23 @@ def log_state(ttc, books=None):
             status = "IMBAL"
             reason = ""
     else:
-        status = "IDLE"
-        # Figure out why we're idle
-        cheap = min(ask_up, ask_down)
-        expensive = max(ask_up, ask_down)
-        if cheap > DIVERGENCE_THRESHOLD:
-            reason = f"no diverge ({cheap*100:.0f}c>{DIVERGENCE_THRESHOLD*100:.0f}c)"
-        elif expensive < MIN_EXPENSIVE_SIDE_PRICE:
-            reason = f"weak ({expensive*100:.0f}c<{MIN_EXPENSIVE_SIDE_PRICE*100:.0f}c)"
-        elif ttc <= PAIR_DEADLINE_SECONDS:
-            reason = "too late"
+        # Check if paused due to daily ROI target
+        if _roi_pause_active:
+            status = "PAUSED"
+            reason = f"ROI +{_daily_roi_pct:.0f}% (P&L ${_daily_pnl:+.2f})"
         else:
-            reason = _last_skip_reason if _last_skip_reason else "checking..."
+            status = "IDLE"
+            # Figure out why we're idle
+            cheap = min(ask_up, ask_down)
+            expensive = max(ask_up, ask_down)
+            if cheap > DIVERGENCE_THRESHOLD:
+                reason = f"no diverge ({cheap*100:.0f}c>{DIVERGENCE_THRESHOLD*100:.0f}c)"
+            elif expensive < MIN_EXPENSIVE_SIDE_PRICE:
+                reason = f"weak ({expensive*100:.0f}c<{MIN_EXPENSIVE_SIDE_PRICE*100:.0f}c)"
+            elif ttc <= PAIR_DEADLINE_SECONDS:
+                reason = "too late"
+            else:
+                reason = _last_skip_reason if _last_skip_reason else "checking..."
 
     # Get BTC price - prefer RTDS (real-time) over Chainlink (delayed)
     btc_str = ""
@@ -1453,6 +1708,9 @@ Entry: {entry_price*100:.0f}c
 P&L: ${total_pnl:.2f}
 <i>FOK market orders - guaranteed exit</i>"""
     send_telegram(msg)
+
+    # Track daily P&L for ROI pause
+    check_roi_pause()
 
     # Update state
     window_state['capture_99c_exited'] = True
@@ -1921,6 +2179,9 @@ OB Reading: {trigger_value:+.2f}
 P&L: ${pnl:.2f}
 <i>Exited early to cut losses</i>"""
     send_telegram(msg)
+
+    # Track daily P&L for ROI pause
+    check_roi_pause()
 
     # Update state
     window_state['capture_99c_exited'] = True
@@ -3223,6 +3484,16 @@ def main():
     print(f"  - Max shares: {FAILSAFE_MAX_SHARES}")
     print(f"  - Max order cost: ${FAILSAFE_MAX_ORDER_COST:.2f}")
     print()
+    print(f"BANKROLL SIZING: {'ENABLED' if BANKROLL_SIZING_ENABLED else 'DISABLED'}")
+    if BANKROLL_SIZING_ENABLED:
+        print(f"  - Trade size: {BANKROLL_TRADE_PCT*100:.0f}% of portfolio (locked daily)")
+        print(f"  - Min/Max: ${BANKROLL_MIN_TRADE:.2f} - ${BANKROLL_MAX_TRADE:.2f}")
+    print()
+    print(f"DAILY ROI PAUSE: {'ENABLED' if DAILY_ROI_PAUSE_ENABLED else 'DISABLED'}")
+    if DAILY_ROI_PAUSE_ENABLED:
+        print(f"  - Target: +{DAILY_ROI_PAUSE_TARGET*100:.0f}% ROI")
+        print(f"  - (avg trade value set dynamically from bankroll sizing)" if BANKROLL_SIZING_ENABLED else f"  - Avg trade: ${DAILY_ROI_AVG_TRADE_VALUE:.2f}")
+    print()
     print("⚠️  CTRL+C TO STOP")
     print("=" * 100)
     print()
@@ -3230,6 +3501,14 @@ def main():
     last_slug = None
     session_stats = {"windows": 0, "paired": 0, "pnl": 0.0}
     cached_market = None
+
+    # Initialize bankroll sizing at bot startup (locked for the day)
+    if BANKROLL_SIZING_ENABLED:
+        refresh_bankroll_sizing()
+
+    # Initialize daily ROI tracking at bot startup
+    if DAILY_ROI_PAUSE_ENABLED:
+        reset_daily_roi_tracking()
 
     try:
         while True:
@@ -3388,6 +3667,14 @@ def main():
                     # Daily balance snapshot (once per EST day)
                     check_and_log_balance()
 
+                    # Refresh bankroll sizing (respects cache interval)
+                    if BANKROLL_SIZING_ENABLED:
+                        refresh_bankroll_sizing()
+
+                    # Daily ROI pause: reset tracking on new day
+                    if DAILY_ROI_PAUSE_ENABLED:
+                        reset_daily_roi_tracking()
+
                     print("=" * 100)
 
                     # Log window start to Google Sheets
@@ -3467,9 +3754,13 @@ def main():
                             window_state['filled_down_shares'] = down_status['filled']
                             window_state['avg_down_price_paid'] = arb.get('bid_down', 0)
 
+                # Daily ROI pause - skip new entries if paused
+                # Still monitors existing positions (fills, hedging, hard stops)
+                _roi_paused_this_tick = _roi_pause_active
+
                 # 99c BID CAPTURE - runs independently of arb strategy
                 # Confidence-based 99c capture: only bet when confidence >= 95%
-                if CAPTURE_99C_ENABLED and books and not window_state.get('capture_99c_used'):
+                if CAPTURE_99C_ENABLED and books and not window_state.get('capture_99c_used') and not _roi_paused_this_tick:
                     ask_up = float(books['up_asks'][0]['price']) if books.get('up_asks') else 0.50
                     ask_down = float(books['down_asks'][0]['price']) if books.get('down_asks') else 0.50
                     capture = check_99c_capture_opportunity(ask_up, ask_down, remaining_secs)
@@ -3659,7 +3950,7 @@ def main():
                         if window_state['current_arb_orders']:
                             monitor_arb_orders(books)
                         else:
-                            if ARB_ENABLED:
+                            if ARB_ENABLED and not _roi_paused_this_tick:
                                 check_and_place_arb(books, remaining_secs)
 
                 elapsed = time.time() - cycle_start
