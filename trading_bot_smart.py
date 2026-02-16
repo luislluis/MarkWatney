@@ -3509,6 +3509,8 @@ def main():
     # Initialize daily ROI tracking at bot startup
     if DAILY_ROI_PAUSE_ENABLED:
         reset_daily_roi_tracking()
+        # Check if today's ROI already hit target (e.g. bot restarted mid-day)
+        check_roi_pause()
 
     try:
         while True:
