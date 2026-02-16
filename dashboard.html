@@ -774,7 +774,7 @@
       supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFzem9zZHJtbm9nbHJrdHRkZXZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxOTg1NTYsImV4cCI6MjA4NDc3NDU1Nn0.-Ebe2icoMqIiL8NlVX93IJGVBCAmpfxk9S7U8ABsStA',
       walletAddress: '0x636796704404959f5Ae9BEfEb2B3880eadf6960a',
       historyStartDate: '2026-02-09',
-      startingBalance: 131.07,
+      startingBalance: 82.15,
       // Set this to a unix timestamp (seconds) to start a fresh "day" from that point.
       // Pre-cutoff trades on the same calendar day get rolled into yesterday.
       // Set to null for normal calendar-day behavior.
@@ -835,28 +835,77 @@
     }
 
     let balanceChart = null;
+    // Fetch latest BALANCE_SNAPSHOT from Supabase for calibration
+    let latestBalanceSnapshot = null;
+    async function fetchStartingBalance() {
+      try {
+        // Get the latest BALANCE_SNAPSHOT (most recent known wallet balance)
+        const { data, error } = await db
+          .from('Polymarket Bot Log - Events')
+          .select('Details, Timestamp')
+          .eq('Event', 'BALANCE_SNAPSHOT')
+          .order('Timestamp', { ascending: false })
+          .limit(1);
+
+        if (!error && data && data.length > 0) {
+          const details = typeof data[0].Details === 'string' ? data[0].Details : JSON.stringify(data[0].Details);
+          const totalMatch = details.match(/total=([\d.]+)/);
+          const dateMatch = details.match(/date=([\d-]+)/);
+          if (totalMatch) {
+            latestBalanceSnapshot = {
+              total: parseFloat(totalMatch[1]),
+              date: dateMatch ? dateMatch[1] : new Date(data[0].Timestamp).toLocaleDateString('en-CA', { timeZone: 'America/New_York' })
+            };
+            console.log('[DASHBOARD] Latest BALANCE_SNAPSHOT:', latestBalanceSnapshot);
+          }
+        }
+        if (!latestBalanceSnapshot) {
+          console.warn('[DASHBOARD] No BALANCE_SNAPSHOT found, using CONFIG.startingBalance');
+        }
+      } catch (e) {
+        console.warn('[DASHBOARD] Could not fetch balance snapshot:', e);
+      }
+    }
+
     // Compute balance chart from daily P&L (no bot dependency)
     function updateBalanceChart(summary) {
       try {
-        // Sort oldest first, filter to historyStartDate
-        const days = summary
-          .filter(s => s.trade_date >= CONFIG.historyStartDate)
-          .sort((a, b) => a.trade_date.localeCompare(b.trade_date));
+        // Sort ALL days oldest first (includes pre-historyStartDate for accurate accumulation)
+        const allDays = [...summary].sort((a, b) => a.trade_date.localeCompare(b.trade_date));
 
-        if (!days.length) {
+        if (!allDays.length) {
           document.getElementById('balanceChartCard').style.display = 'none';
           return;
         }
 
-        // Starting balance before first trading day
-        const startBalance = CONFIG.startingBalance;
+        // Calibrate starting balance: use latest BALANCE_SNAPSHOT and work backwards
+        // effectiveStart = knownBalance - totalPnlFromAllDays
+        // This ensures the chart ends at the actual wallet balance
+        const totalPnl = allDays.reduce((s, d) => s + d.total_pnl, 0);
+        let startBalance;
+        if (latestBalanceSnapshot) {
+          startBalance = Math.round((latestBalanceSnapshot.total - totalPnl) * 100) / 100;
+          console.log('[DASHBOARD] Calibrated starting balance:', startBalance,
+            '(snapshot:', latestBalanceSnapshot.total, '- total P&L:', Math.round(totalPnl * 100) / 100, ')');
+        } else {
+          startBalance = CONFIG.startingBalance;
+        }
+
         const labels = [];
         const values = [];
         let running = startBalance;
-        for (const day of days) {
+        for (const day of allDays) {
           running += day.total_pnl;
-          labels.push(day.trade_date);
-          values.push(Math.round(running * 100) / 100);
+          // Only add chart points from historyStartDate onwards
+          if (day.trade_date >= CONFIG.historyStartDate) {
+            labels.push(day.trade_date);
+            values.push(Math.round(running * 100) / 100);
+          }
+        }
+
+        if (!labels.length) {
+          document.getElementById('balanceChartCard').style.display = 'none';
+          return;
         }
 
         document.getElementById('balanceChartCard').style.display = 'block';
@@ -1113,7 +1162,7 @@
         currentSummary = filteredSummary;
         const displayTrades = showingAll ? allTrades : getTodayTrades();
         renderDashboard(filteredSummary, displayTrades);
-        updateBalanceChart(filteredSummary);
+        updateBalanceChart(summary);
       } catch (error) {
         console.error('Dashboard error:', error);
         showError(error.message + ' - will retry');
@@ -1637,7 +1686,7 @@
     });
 
     // Initial load and setup
-    loadData().then(() => {
+    fetchStartingBalance().then(() => loadData()).then(() => {
       setupRealtime();
     }).catch(() => {
       setupRealtime();
