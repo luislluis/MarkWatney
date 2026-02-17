@@ -3359,9 +3359,10 @@ def main():
                             sniper_shares = window_state.get('capture_99c_filled_up', 0) + window_state.get('capture_99c_filled_down', 0)
 
                             if window_state.get('capture_99c_hedged'):
-                                # Hedged: loss = (0.99 + hedge_price) - 1.00 per share
+                                # Hedged: loss = (entry_price + hedge_price) - 1.00 per share
                                 hedge_price = window_state.get('capture_99c_hedge_price', 0)
-                                sniper_pnl = -(0.99 + hedge_price - 1.00) * sniper_shares
+                                entry_px = window_state.get('capture_99c_fill_price', CAPTURE_99C_BID_PRICE)
+                                sniper_pnl = -(entry_px + hedge_price - 1.00) * sniper_shares
                                 sniper_won = False
                                 print(f"[{ts()}] 99c SNIPER RESULT: HEDGED (loss avoided) P&L=${sniper_pnl:.2f}")
                             else:
@@ -3372,7 +3373,8 @@ def main():
                                     try:
                                         sniper_won = check_99c_outcome(sniper_side, last_slug)
                                         if sniper_won is not None:
-                                            sniper_pnl = sniper_shares * 0.01 if sniper_won else -sniper_shares * 0.99
+                                            entry_px = window_state.get('capture_99c_fill_price', CAPTURE_99C_BID_PRICE)
+                                            sniper_pnl = sniper_shares * (1.00 - entry_px) if sniper_won else -sniper_shares * entry_px
                                             print(f"[{ts()}] 99c SNIPER RESULT: {'WIN' if sniper_won else 'LOSS'} P&L=${sniper_pnl:.2f}")
                                             break
                                         else:
@@ -3391,6 +3393,9 @@ def main():
 
                             # Only send notification if we know the result
                             if sniper_won is not None:
+                                # v1.46: Add sniper P&L to session stats for ROI halt
+                                session_stats['pnl'] += sniper_pnl
+
                                 notify_99c_resolution(sniper_side, sniper_shares, sniper_won, sniper_pnl)
 
                                 # Log outcome to Sheets/Supabase for dashboard tracking
