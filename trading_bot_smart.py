@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.46",
-    "codename": "Finish Line",
+    "version": "v1.47",
+    "codename": "Finish Line II",
     "date": "2026-02-16",
-    "changes": "Trading halt after 45% ROI — bot goes fully idle, resets at midnight EST"
+    "changes": "Hard stop lowered to 40c, OB exit disabled — only exit is hard stop at 40c"
 }
 
 import os
@@ -311,7 +311,7 @@ OB_REVERSAL_PRICE_CONFIRM = 0.03   # Only need 3c price drop when OB confirms re
 # ===========================================
 # 99c EARLY EXIT (OB-BASED) - Cut losses early
 # ===========================================
-OB_EARLY_EXIT_ENABLED = True       # Enable/disable early exit feature
+OB_EARLY_EXIT_ENABLED = False      # DISABLED: Only exit rule is hard stop at 40c
 OB_EARLY_EXIT_THRESHOLD = -0.30    # Exit when sellers > 30% (OB imbalance < -0.30)
 
 # ===========================================
@@ -327,8 +327,8 @@ PRICE_STOP_FLOOR = 0.50            # (legacy) Never sell below 50c
 # Guaranteed emergency exit using Fill-or-Kill market orders.
 # Triggers on BEST BID (not ask) to ensure real liquidity exists.
 # Will sell at any price to avoid riding to $0.
-HARD_STOP_ENABLED = True           # Enable 60¢ hard stop
-HARD_STOP_TRIGGER = 0.60           # Exit when best bid <= 60¢
+HARD_STOP_ENABLED = True           # Enable 40¢ hard stop
+HARD_STOP_TRIGGER = 0.40           # Exit when best bid <= 40¢
 HARD_STOP_FLOOR = 0.01             # Effectively no floor (1¢ minimum)
 HARD_STOP_USE_FOK = True           # Use Fill-or-Kill market orders
 

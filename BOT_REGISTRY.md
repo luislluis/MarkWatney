@@ -1,10 +1,11 @@
 # Polybot Version Registry
 
-## Current Version: v1.46 "Finish Line"
+## Current Version: v1.47 "Finish Line II"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.46 | 2026-02-16 PST | Finish Line | Trading halt after 45% ROI — bot goes fully idle, resets at midnight EST | Active |
+| v1.47 | 2026-02-16 PST | Finish Line II | Hard stop lowered to 40c, OB exit disabled — only exit is hard stop at 40c | Active |
+| v1.46 | 2026-02-16 PST | Finish Line | Trading halt after 45% ROI — bot goes fully idle, resets at midnight EST | Archived |
 | v1.44 | 2026-02-05 PST | Ledger Line | Daily portfolio balance snapshots (positions + USDC) logged at midnight EST | Archived |
 | v1.43 | 2026-02-05 PST | True Price | Fix: Log actual Polymarket execution price in CAPTURE_FILL via /trades API (not limit order price) | Archived |
 | v1.42 | 2026-02-05 PST | Crystal Dashboard | Fix: Dashboard uses CAPTURE_FILL (not CAPTURE_99C) so unfilled orders don't show as pending, prices show correctly | Archived |
