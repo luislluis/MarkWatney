@@ -341,8 +341,8 @@ MIN_TIME_FOR_ENTRY = 300           # Never enter with <5 minutes (300s) remainin
 # 99c BID CAPTURE STRATEGY (CONFIDENCE-BASED)
 # ===========================================
 CAPTURE_99C_ENABLED = True         # Enable/disable 99c capture strategy
-CAPTURE_99C_MAX_SPEND = 6.00       # Max $6 per window on this strategy (6 shares @ 99c)
-CAPTURE_99C_BID_PRICE = 0.99       # Place bid at 99c
+CAPTURE_99C_MAX_SPEND = 6.00       # Max $6 per window on this strategy
+CAPTURE_99C_BID_PRICE = 0.95       # Place bid at 95c
 CAPTURE_99C_MIN_TIME = 10          # Need at least 10 seconds to settle order
 CAPTURE_99C_MIN_CONFIDENCE = 0.95  # Only bet when 95%+ confident
 CAPTURE_99C_MAX_ASK = 1.01         # Allow placing bids even when ask is at 99-100c (if doesn't fill, no harm)
