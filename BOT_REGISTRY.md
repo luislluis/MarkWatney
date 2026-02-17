@@ -1,10 +1,11 @@
 # Polybot Version Registry
 
-## Current Version: v1.48 "Finish Line III"
+## Current Version: v1.49 "Ground Truth"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.48 | 2026-02-16 PST | Finish Line III | Fix ROI formula to match dashboard (pnl/avg_trade_cost), fix null shares in WIN events | Active |
+| v1.49 | 2026-02-17 PST | Ground Truth | ROI halt uses Polymarket Activity API (same data source as dashboard) for 100% accuracy | Active |
+| v1.48 | 2026-02-16 PST | Finish Line III | Fix ROI formula to match dashboard (pnl/avg_trade_cost), fix null shares in WIN events | Archived |
 | v1.47 | 2026-02-16 PST | Finish Line II | Hard stop lowered to 40c, OB exit disabled — only exit is hard stop at 40c | Archived |
 | v1.46 | 2026-02-16 PST | Finish Line | Trading halt after 45% ROI — bot goes fully idle, resets at midnight EST | Archived |
 | v1.44 | 2026-02-05 PST | Ledger Line | Daily portfolio balance snapshots (positions + USDC) logged at midnight EST | Archived |

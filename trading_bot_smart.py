@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.48",
-    "codename": "Finish Line III",
-    "date": "2026-02-16",
-    "changes": "Fix ROI formula to match dashboard (pnl/avg_trade_cost), fix null shares in WIN events"
+    "version": "v1.49",
+    "codename": "Ground Truth",
+    "date": "2026-02-17",
+    "changes": "ROI halt uses Polymarket Activity API (same data source as dashboard) for 100% accuracy"
 }
 
 import os
@@ -3241,29 +3241,165 @@ def get_midnight_est_utc():
     midnight_est = now_est.replace(hour=0, minute=0, second=0, microsecond=0)
     return midnight_est.astimezone(timezone.utc).isoformat()
 
+def get_roi_from_activity_api() -> dict:
+    """
+    Query Polymarket Activity API for today's ROI.
+    Uses same data source and logic as dashboard — single source of truth.
+    Returns dict with: total_pnl, avg_trade_cost, roi, capital_deployed, wins, losses, exits, pending, trades
+    Returns None on error.
+    """
+    try:
+        EST = ZoneInfo("America/New_York")
+        now_est = datetime.now(EST)
+        midnight_est = now_est.replace(hour=0, minute=0, second=0, microsecond=0)
+        midnight_ts = midnight_est.timestamp()
+
+        url = f"https://data-api.polymarket.com/activity?user={WALLET_ADDRESS}&limit=1000"
+        resp = http_session.get(url, timeout=10)
+        resp.raise_for_status()
+        all_activity = resp.json()
+
+        # Split into trades and redeems
+        poly_trades = [a for a in all_activity if a.get('type') == 'TRADE']
+        redeem_events = [a for a in all_activity if a.get('type') == 'REDEEM']
+        redeemed = {r['slug'] for r in redeem_events if r.get('slug')}
+
+        # Filter trades to today (midnight EST)
+        today_trades = [t for t in poly_trades if t.get('timestamp', 0) >= midnight_ts]
+
+        print(f"[{ts()}] ACTIVITY_API: {len(all_activity)} events, "
+              f"{len(today_trades)} today, {len(redeemed)} redeemed slugs")
+
+        if not today_trades:
+            return {"total_pnl": 0, "avg_trade_cost": 0, "roi": 0,
+                    "wins": 0, "losses": 0, "exits": 0, "pending": 0,
+                    "trades": 0, "capital_deployed": 0}
+
+        # Group by slug|outcome (same key as dashboard)
+        grouped = {}
+        for t in today_trades:
+            key = f"{t.get('slug', '')}|{t.get('outcome', '')}"
+            if key not in grouped:
+                grouped[key] = {"buys": [], "sells": [], "slug": t.get('slug', '')}
+            entry = {
+                "size": float(t.get('size', 0) or 0),
+                "price": float(t.get('price', 0) or 0),
+                "timestamp": float(t.get('timestamp', 0) or 0),
+            }
+            if t.get('side') == 'SELL':
+                grouped[key]["sells"].append(entry)
+            else:
+                grouped[key]["buys"].append(entry)
+
+        # Process each group: FIFO match sells to buys, classify
+        trades_out = []
+        now_ts = time.time()
+
+        for key, group in grouped.items():
+            slug = group["slug"]
+            if not group["buys"]:
+                continue
+            won = slug in redeemed
+
+            group["buys"].sort(key=lambda x: x["timestamp"])
+            group["sells"].sort(key=lambda x: x["timestamp"])
+
+            # FIFO: match sells against buys (same as dashboard lines 972-985)
+            sell_pool = [{"remaining": s["size"], "price": s["price"]} for s in group["sells"]]
+            buy_exit = [{"exit_shares": 0.0, "exit_revenue": 0.0} for _ in group["buys"]]
+
+            for sell in sell_pool:
+                for i, buy in enumerate(group["buys"]):
+                    if sell["remaining"] <= 0.001:
+                        break
+                    can_match = buy["size"] - buy_exit[i]["exit_shares"]
+                    if can_match <= 0.001:
+                        continue
+                    matched = min(sell["remaining"], can_match)
+                    buy_exit[i]["exit_shares"] += matched
+                    buy_exit[i]["exit_revenue"] += matched * sell["price"]
+                    sell["remaining"] -= matched
+
+            # Classify each buy (same as dashboard lines 988-1053)
+            for i, buy in enumerate(group["buys"]):
+                info = buy_exit[i]
+                cost = buy["size"] * buy["price"]
+                exited_all = info["exit_shares"] >= buy["size"] - 0.02
+
+                if exited_all:
+                    pnl = info["exit_revenue"] - cost
+                    trades_out.append({"status": "EXIT", "pnl": round(pnl, 2),
+                                       "cost": round(cost, 2), "slug": slug})
+                elif info["exit_shares"] > 0.001:
+                    # Partial exit: split into EXIT portion + remainder
+                    exit_cost = info["exit_shares"] * buy["price"]
+                    exit_pnl = info["exit_revenue"] - exit_cost
+                    trades_out.append({"status": "EXIT", "pnl": round(exit_pnl, 2),
+                                       "cost": round(exit_cost, 2), "slug": slug})
+                    remain = buy["size"] - info["exit_shares"]
+                    remain_cost = remain * buy["price"]
+                    age = now_ts - buy["timestamp"]
+                    status = "WIN" if won else ("LOSS" if age > 1800 else "PENDING")
+                    remain_pnl = (remain * (1 - buy["price"]) if status == "WIN"
+                                  else (-remain_cost if status == "LOSS" else 0))
+                    trades_out.append({"status": status, "pnl": round(remain_pnl, 2),
+                                       "cost": round(remain_cost, 2), "slug": slug})
+                else:
+                    # No exit — resolve via redemption
+                    age = now_ts - buy["timestamp"]
+                    status = "WIN" if won else ("LOSS" if age > 1800 else "PENDING")
+                    pnl = (buy["size"] * (1 - buy["price"]) if status == "WIN"
+                           else (-cost if status == "LOSS" else 0))
+                    trades_out.append({"status": status, "pnl": round(pnl, 2),
+                                       "cost": round(cost, 2), "slug": slug})
+
+        # Calculate ROI (dashboard formula: lines 1095-1106)
+        total_pnl = sum(t["pnl"] for t in trades_out)
+        total_cost = sum(t["cost"] for t in trades_out)
+        window_ids = set(t["slug"] for t in trades_out)
+        num_windows = len(window_ids)
+        avg_trade_cost = total_cost / num_windows if num_windows > 0 else 0
+        roi = total_pnl / avg_trade_cost if avg_trade_cost > 0 else 0
+
+        wins = sum(1 for t in trades_out if t["status"] == "WIN")
+        losses = sum(1 for t in trades_out if t["status"] == "LOSS")
+        exits = sum(1 for t in trades_out if t["status"] == "EXIT")
+        pending = sum(1 for t in trades_out if t["status"] == "PENDING")
+
+        return {
+            "total_pnl": total_pnl, "avg_trade_cost": avg_trade_cost,
+            "roi": roi, "capital_deployed": total_cost,
+            "wins": wins, "losses": losses, "exits": exits,
+            "pending": pending, "trades": num_windows
+        }
+    except Exception as e:
+        print(f"[{ts()}] ACTIVITY_API_ERROR: {e}")
+        return None
+
+
 def check_daily_roi():
     """
-    Check cumulative daily ROI from Supabase.
-    Returns (should_halt, roi_data) where roi_data is the dict from supabase_get_daily_roi.
+    Check cumulative daily ROI via Polymarket Activity API.
+    Returns (should_halt, roi_data).
     """
     global trading_halted, capital_deployed
     try:
-        midnight_utc = get_midnight_est_utc()
-        roi_data = supabase_get_daily_roi(midnight_utc)
+        roi_data = get_roi_from_activity_api()
         if roi_data is None:
-            print(f"[{ts()}] ROI_CHECK: Supabase unavailable, skipping")
+            print(f"[{ts()}] ROI_CHECK: Activity API unavailable, skipping")
             return False, None
 
         daily_capital = roi_data['capital_deployed']
         daily_pnl = roi_data['total_pnl']
         daily_roi = roi_data['roi']
+        avg_cost = roi_data.get('avg_trade_cost', 0)
 
         # Update session tracking with cumulative daily values
         capital_deployed = daily_capital
 
-        avg_cost = roi_data.get('avg_trade_cost', 0)
-        print(f"[{ts()}] ROI CHECK (daily): PnL=${daily_pnl:.2f} / AvgTrade=${avg_cost:.2f} "
+        print(f"[{ts()}] ROI CHECK: PnL=${daily_pnl:.2f} / AvgTrade=${avg_cost:.2f} "
               f"= {daily_roi*100:.1f}% | W:{roi_data['wins']} L:{roi_data['losses']} "
+              f"E:{roi_data.get('exits', 0)} P:{roi_data.get('pending', 0)} "
               f"Windows:{roi_data['trades']} Capital=${daily_capital:.2f}")
 
         if daily_roi >= ROI_HALT_THRESHOLD and not trading_halted:
@@ -3273,12 +3409,12 @@ def check_daily_roi():
             print("┌──────────────────────────────────────────────────────────┐")
             print(f"│  TRADING HALTED - Daily ROI: {daily_roi*100:.1f}% >= {ROI_HALT_THRESHOLD*100:.0f}%".ljust(57) + "│")
             print(f"│  PnL: ${daily_pnl:.2f} on ${daily_capital:.2f} deployed".ljust(57) + "│")
-            print(f"│  W:{roi_data['wins']} L:{roi_data['losses']} ({roi_data['trades']} fills)".ljust(57) + "│")
+            print(f"│  W:{roi_data['wins']} L:{roi_data['losses']} E:{roi_data.get('exits',0)} ({roi_data['trades']} windows)".ljust(57) + "│")
             print(f"│  Bot idle until midnight EST reset".ljust(57) + "│")
             print("└──────────────────────────────────────────────────────────┘")
             print()
             try:
-                send_telegram(f"TRADING HALTED\nDaily ROI: {daily_roi*100:.1f}% (target: {ROI_HALT_THRESHOLD*100:.0f}%)\nPnL: ${daily_pnl:.2f} on ${daily_capital:.2f}\nW:{roi_data['wins']} L:{roi_data['losses']}\nBot idle until midnight EST")
+                send_telegram(f"TRADING HALTED\nDaily ROI: {daily_roi*100:.1f}% (target: {ROI_HALT_THRESHOLD*100:.0f}%)\nPnL: ${daily_pnl:.2f} on ${daily_capital:.2f}\nW:{roi_data['wins']} L:{roi_data['losses']} E:{roi_data.get('exits',0)}\nBot idle until midnight EST")
             except:
                 pass
             log_event("TRADING_HALTED", "",
@@ -3341,11 +3477,19 @@ def main():
         print("  Supabase logger: DISABLED (module not found)")
 
     # v1.46: Check daily ROI from Supabase at startup (overrides state file)
-    if not trading_halted:
-        print("  Checking daily ROI from Supabase...")
-        halted, roi_data = check_daily_roi()
-        if halted:
-            print(f"  *** HALTED at startup: daily ROI {roi_data['roi']*100:.1f}% >= {ROI_HALT_THRESHOLD*100:.0f}% ***")
+    # Always check daily ROI at startup (self-corrects stale halt files)
+    print("  Checking daily ROI from Activity API...")
+    halted, roi_data = check_daily_roi()
+    if halted:
+        print(f"  *** HALTED at startup: daily ROI {roi_data['roi']*100:.1f}% >= {ROI_HALT_THRESHOLD*100:.0f}% ***")
+    elif trading_halted and roi_data and roi_data['roi'] < ROI_HALT_THRESHOLD:
+        # Stale halt file from previous day — self-correct
+        print(f"  *** Clearing stale halt: daily ROI {roi_data['roi']*100:.1f}% < {ROI_HALT_THRESHOLD*100:.0f}% ***")
+        trading_halted = False
+        try:
+            os.remove(ROI_HALT_STATE_FILE)
+        except:
+            pass
     print()
 
     print("STRATEGY: HARD HEDGE INVARIANT + SMART SIGNALS")
