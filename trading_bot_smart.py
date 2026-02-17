@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.47",
-    "codename": "Finish Line II",
+    "version": "v1.48",
+    "codename": "Finish Line III",
     "date": "2026-02-16",
-    "changes": "Hard stop lowered to 40c, OB exit disabled — only exit is hard stop at 40c"
+    "changes": "Fix ROI formula to match dashboard (pnl/avg_trade_cost), fix null shares in WIN events"
 }
 
 import os
@@ -51,7 +51,8 @@ try:
                                  flush_ticks as supabase_flush_ticks,
                                  buffer_activity as supabase_buffer_activity,
                                  flush_activities as supabase_flush_activities,
-                                 log_event as supabase_log_event)
+                                 log_event as supabase_log_event,
+                                 get_daily_roi as supabase_get_daily_roi)
     SUPABASE_LOGGER_AVAILABLE = True
 except ImportError:
     SUPABASE_LOGGER_AVAILABLE = False
@@ -62,6 +63,7 @@ except ImportError:
     supabase_buffer_activity = lambda *args, **kwargs: None
     supabase_flush_activities = lambda: False
     supabase_log_event = lambda *args, **kwargs: False
+    supabase_get_daily_roi = lambda *args, **kwargs: None
 
 # Unified logging functions
 def buffer_tick(*args, **kwargs):
@@ -3232,6 +3234,62 @@ def load_halt_state():
         print(f"[{ts()}] HALT_STATE_LOAD_ERROR: {e} - defaulting to HALTED for safety")
         return True  # Corrupted file = assume halted (safe default)
 
+def get_midnight_est_utc():
+    """Get today's midnight EST as a UTC ISO string for Supabase queries."""
+    EST = ZoneInfo("America/New_York")
+    now_est = datetime.now(EST)
+    midnight_est = now_est.replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight_est.astimezone(timezone.utc).isoformat()
+
+def check_daily_roi():
+    """
+    Check cumulative daily ROI from Supabase.
+    Returns (should_halt, roi_data) where roi_data is the dict from supabase_get_daily_roi.
+    """
+    global trading_halted, capital_deployed
+    try:
+        midnight_utc = get_midnight_est_utc()
+        roi_data = supabase_get_daily_roi(midnight_utc)
+        if roi_data is None:
+            print(f"[{ts()}] ROI_CHECK: Supabase unavailable, skipping")
+            return False, None
+
+        daily_capital = roi_data['capital_deployed']
+        daily_pnl = roi_data['total_pnl']
+        daily_roi = roi_data['roi']
+
+        # Update session tracking with cumulative daily values
+        capital_deployed = daily_capital
+
+        avg_cost = roi_data.get('avg_trade_cost', 0)
+        print(f"[{ts()}] ROI CHECK (daily): PnL=${daily_pnl:.2f} / AvgTrade=${avg_cost:.2f} "
+              f"= {daily_roi*100:.1f}% | W:{roi_data['wins']} L:{roi_data['losses']} "
+              f"Windows:{roi_data['trades']} Capital=${daily_capital:.2f}")
+
+        if daily_roi >= ROI_HALT_THRESHOLD and not trading_halted:
+            trading_halted = True
+            save_halt_state(daily_pnl, daily_capital, daily_roi)
+            print()
+            print("┌──────────────────────────────────────────────────────────┐")
+            print(f"│  TRADING HALTED - Daily ROI: {daily_roi*100:.1f}% >= {ROI_HALT_THRESHOLD*100:.0f}%".ljust(57) + "│")
+            print(f"│  PnL: ${daily_pnl:.2f} on ${daily_capital:.2f} deployed".ljust(57) + "│")
+            print(f"│  W:{roi_data['wins']} L:{roi_data['losses']} ({roi_data['trades']} fills)".ljust(57) + "│")
+            print(f"│  Bot idle until midnight EST reset".ljust(57) + "│")
+            print("└──────────────────────────────────────────────────────────┘")
+            print()
+            try:
+                send_telegram(f"TRADING HALTED\nDaily ROI: {daily_roi*100:.1f}% (target: {ROI_HALT_THRESHOLD*100:.0f}%)\nPnL: ${daily_pnl:.2f} on ${daily_capital:.2f}\nW:{roi_data['wins']} L:{roi_data['losses']}\nBot idle until midnight EST")
+            except:
+                pass
+            log_event("TRADING_HALTED", "",
+                pnl=daily_pnl, capital=daily_capital, roi=daily_roi)
+            return True, roi_data
+
+        return False, roi_data
+    except Exception as e:
+        print(f"[{ts()}] ROI_CHECK_ERROR: {e}")
+        return False, None
+
 # ============================================================================
 # MAIN BOT
 # ============================================================================
@@ -3281,6 +3339,13 @@ def main():
             print("  Supabase logger: DISABLED (connection failed)")
     else:
         print("  Supabase logger: DISABLED (module not found)")
+
+    # v1.46: Check daily ROI from Supabase at startup (overrides state file)
+    if not trading_halted:
+        print("  Checking daily ROI from Supabase...")
+        halted, roi_data = check_daily_roi()
+        if halted:
+            print(f"  *** HALTED at startup: daily ROI {roi_data['roi']*100:.1f}% >= {ROI_HALT_THRESHOLD*100:.0f}% ***")
     print()
 
     print("STRATEGY: HARD HEDGE INVARIANT + SMART SIGNALS")
@@ -3332,26 +3397,9 @@ def main():
                         print(f"│  💵 Session PnL: ${session_stats['pnl']:.2f}".ljust(55) + "│")
                         print("└────────────────────────────────────────────────────────┘")
 
-                        # v1.46: Check ROI and halt trading if threshold reached
-                        if not trading_halted and capital_deployed > 0:
-                            current_roi = session_stats['pnl'] / capital_deployed
-                            print(f"[{ts()}] ROI CHECK: PnL=${session_stats['pnl']:.2f} / Capital=${capital_deployed:.2f} = {current_roi*100:.1f}%")
-                            if current_roi >= ROI_HALT_THRESHOLD:
-                                trading_halted = True
-                                save_halt_state(session_stats['pnl'], capital_deployed, current_roi)
-                                print()
-                                print("┌──────────────────────────────────────────────────────────┐")
-                                print(f"│  TRADING HALTED - ROI target reached: {current_roi*100:.1f}% >= {ROI_HALT_THRESHOLD*100:.0f}%".ljust(57) + "│")
-                                print(f"│  PnL: ${session_stats['pnl']:.2f} on ${capital_deployed:.2f} deployed".ljust(57) + "│")
-                                print(f"│  Bot will idle until midnight EST reset".ljust(57) + "│")
-                                print("└──────────────────────────────────────────────────────────┘")
-                                print()
-                                try:
-                                    send_telegram(f"TRADING HALTED\\nROI: {current_roi*100:.1f}% (target: {ROI_HALT_THRESHOLD*100:.0f}%)\\nPnL: ${session_stats['pnl']:.2f} on ${capital_deployed:.2f}\\nBot idle until midnight EST")
-                                except:
-                                    pass
-                                log_event("TRADING_HALTED", window_state.get('window_id', ''),
-                                    pnl=session_stats['pnl'], capital=capital_deployed, roi=current_roi)
+                        # v1.46: Check daily cumulative ROI from Supabase
+                        if not trading_halted:
+                            check_daily_roi()
 
                         # 99c Sniper Resolution Notification
                         if window_state.get('capture_99c_fill_notified'):

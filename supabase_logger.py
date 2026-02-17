@@ -260,6 +260,103 @@ def flush_activities() -> bool:
     return True
 
 
+def get_daily_roi(midnight_utc: str) -> dict:
+    """
+    Query Supabase for today's cumulative ROI from CAPTURE_FILL and CAPTURE_99C_WIN/LOSS events.
+
+    Uses same ROI formula as dashboard: roi = total_pnl / avg_trade_cost
+    where avg_trade_cost = total_capital / num_windows.
+
+    Args:
+        midnight_utc: ISO timestamp for midnight EST in UTC (e.g. '2026-02-17T05:00:00Z')
+
+    Returns:
+        dict with keys: capital_deployed, total_pnl, roi, avg_trade_cost, wins, losses, trades
+        Returns None if Supabase unavailable.
+    """
+    if not _logger or not _logger.enabled or not _logger.client:
+        return None
+
+    try:
+        # Get CAPTURE_FILL events (capital deployed) — includes Window ID for grouping
+        fills = (_logger.client.table(EVENTS_TABLE)
+                 .select("Window ID,Shares,Price")
+                 .eq("Event", "CAPTURE_FILL")
+                 .gte("Timestamp", midnight_utc)
+                 .execute())
+
+        capital = 0.0
+        # Build per-window fill data (for fallback when WIN/LOSS has null Shares)
+        window_fills = {}  # window_id -> {shares, price, cost}
+        for row in fills.data:
+            shares = float(row.get("Shares", 0) or 0)
+            price = float(row.get("Price", 0) or 0)
+            cost = shares * price
+            capital += cost
+            wid = row.get("Window ID", "")
+            if wid:
+                window_fills[wid] = {"shares": shares, "price": price, "cost": cost}
+
+        num_windows = len(window_fills)
+
+        # Get WIN events
+        wins = (_logger.client.table(EVENTS_TABLE)
+                .select("Window ID,Shares,Price")
+                .eq("Event", "CAPTURE_99C_WIN")
+                .gte("Timestamp", midnight_utc)
+                .execute())
+
+        total_pnl = 0.0
+        win_count = 0
+        for row in wins.data:
+            shares = float(row.get("Shares", 0) or 0)
+            price = float(row.get("Price", 0) or 0)
+            wid = row.get("Window ID", "")
+            # Fall back to FILL data when WIN event has null Shares
+            if shares == 0 and wid in window_fills:
+                shares = window_fills[wid]["shares"]
+                price = window_fills[wid]["price"]
+            total_pnl += shares * (1.00 - price)  # profit per share
+            win_count += 1
+
+        # Get LOSS events
+        losses = (_logger.client.table(EVENTS_TABLE)
+                  .select("Window ID,Shares,Price")
+                  .eq("Event", "CAPTURE_99C_LOSS")
+                  .gte("Timestamp", midnight_utc)
+                  .execute())
+
+        loss_count = 0
+        for row in losses.data:
+            shares = float(row.get("Shares", 0) or 0)
+            price = float(row.get("Price", 0) or 0)
+            wid = row.get("Window ID", "")
+            # Fall back to FILL data when LOSS event has null Shares
+            if shares == 0 and wid in window_fills:
+                shares = window_fills[wid]["shares"]
+                price = window_fills[wid]["price"]
+            total_pnl -= shares * price  # loss per share
+            loss_count += 1
+
+        # Match dashboard formula: roi = total_pnl / avg_trade_cost
+        # where avg_trade_cost = total_capital / num_windows
+        avg_trade_cost = capital / num_windows if num_windows > 0 else 0.0
+        roi = total_pnl / avg_trade_cost if avg_trade_cost > 0 else 0.0
+
+        return {
+            "capital_deployed": capital,
+            "total_pnl": total_pnl,
+            "roi": roi,
+            "avg_trade_cost": avg_trade_cost,
+            "wins": win_count,
+            "losses": loss_count,
+            "trades": num_windows
+        }
+    except Exception as e:
+        print(f"[SUPABASE] get_daily_roi error: {e}")
+        return None
+
+
 # Test function - requires SUPABASE_KEY env var to be set
 if __name__ == "__main__":
     if init_supabase_logger():
