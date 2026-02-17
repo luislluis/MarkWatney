@@ -343,7 +343,8 @@ MIN_TIME_FOR_ENTRY = 300           # Never enter with <5 minutes (300s) remainin
 # 99c BID CAPTURE STRATEGY (CONFIDENCE-BASED)
 # ===========================================
 CAPTURE_99C_ENABLED = True         # Enable/disable 99c capture strategy
-CAPTURE_99C_MAX_SPEND = 6.00       # Max $6 per window on this strategy
+CAPTURE_99C_MAX_SPEND = 6.00       # Fallback max spend if portfolio balance unavailable
+TRADE_SIZE_PCT = 0.10              # 10% of portfolio per trade
 CAPTURE_99C_BID_PRICE = 0.95       # Place bid at 95c
 CAPTURE_99C_MIN_TIME = 10          # Need at least 10 seconds to settle order
 CAPTURE_99C_MIN_CONFIDENCE = 0.95  # Only bet when 95%+ confident
@@ -418,6 +419,9 @@ window_state = None
 # v1.46: Trading halt state (set in main(), checked in order functions)
 trading_halted = False
 capital_deployed = 0.0
+
+# v1.49: Dynamic trade sizing — cached at window start
+cached_portfolio_total = 0.0
 
 # Session counters
 session_counters = {
@@ -2153,7 +2157,13 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
     """
     global window_state, session_counters
 
-    shares = int(CAPTURE_99C_MAX_SPEND / CAPTURE_99C_BID_PRICE)  # ~5 shares
+    # Dynamic sizing: 10% of portfolio, rounded up. Fallback to MAX_SPEND if balance unavailable.
+    if cached_portfolio_total > 0:
+        trade_budget = cached_portfolio_total * TRADE_SIZE_PCT
+        shares = math.ceil(trade_budget / CAPTURE_99C_BID_PRICE)
+        shares = min(shares, FAILSAFE_MAX_SHARES)
+    else:
+        shares = int(CAPTURE_99C_MAX_SPEND / CAPTURE_99C_BID_PRICE)
     token = window_state['up_token'] if side == 'UP' else window_state['down_token']
 
     print()
@@ -3432,7 +3442,7 @@ def check_daily_roi():
 
 def main():
     global window_state, trades_log, error_count, clob_client
-    global trading_halted, capital_deployed
+    global trading_halted, capital_deployed, cached_portfolio_total
 
     # v1.46: Trading halt state
     trading_halted = load_halt_state()
@@ -3682,6 +3692,15 @@ def main():
 
                     # Daily balance snapshot (once per EST day)
                     check_and_log_balance()
+
+                    # Portfolio balance for dynamic trade sizing (every window)
+                    _pos_val, _usdc_val = get_portfolio_balance()
+                    cached_portfolio_total = _pos_val + _usdc_val
+                    if cached_portfolio_total > 0:
+                        _trade_budget = cached_portfolio_total * TRADE_SIZE_PCT
+                        _trade_shares = math.ceil(_trade_budget / CAPTURE_99C_BID_PRICE)
+                        print(f"[{ts()}] 💰 Balance snapshot: ${cached_portfolio_total:.2f} (positions: ${_pos_val:.2f}, USDC: ${_usdc_val:.2f})")
+                        print(f"[{ts()}] 📐 Trade size: {_trade_shares} shares (${_trade_budget:.2f} = 10% of ${cached_portfolio_total:.2f})")
 
                     print("=" * 100)
 
