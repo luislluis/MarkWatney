@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.50",
-    "codename": "Silent Shield",
-    "date": "2026-02-19",
-    "changes": "Fix: 99c capture no longer triggers false PAIRING_MODE; imbalance check gated behind ARB_ENABLED"
+    "version": "v1.54",
+    "codename": "Steady Hand",
+    "date": "2026-02-25",
+    "changes": "Hard stop requires 2 consecutive ticks below 40c (prevents single-tick panic sells)"
 }
 
 import os
@@ -189,8 +189,8 @@ TICK = 0.01
 # ===========================================
 FAILSAFE_MAX_BUY_PRICE = 0.85     # NEVER buy above 85c
 FAILSAFE_MIN_BUY_PRICE = 0.05     # NEVER buy below 5c (garbage)
-FAILSAFE_MAX_SHARES = 50          # NEVER buy more than 50 shares at once
-FAILSAFE_MAX_ORDER_COST = 10.00   # NEVER place order costing more than $10
+FAILSAFE_MAX_SHARES = 999999      # No practical limit (portfolio-sized trades)
+FAILSAFE_MAX_ORDER_COST = 999999  # No practical limit (portfolio-sized trades)
 
 # Timing
 CLOSE_GUARD_SECONDS = 10
@@ -249,7 +249,7 @@ ARB_ENABLED = False                # Disable ARB strategy, 99c sniper only
 # ===========================================
 # ROI HALT SETTINGS (v1.46)
 # ===========================================
-ROI_HALT_THRESHOLD = 0.45          # Halt all trading at 45% ROI
+ROI_HALT_THRESHOLD = 0.60          # Halt all trading at 60% ROI
 ROI_HALT_STATE_FILE = os.path.expanduser("~/polybot/trading_halt_state.json")
 
 # ===========================================
@@ -333,6 +333,7 @@ HARD_STOP_ENABLED = True           # Enable 40¢ hard stop
 HARD_STOP_TRIGGER = 0.40           # Exit when best bid <= 40¢
 HARD_STOP_FLOOR = 0.01             # Effectively no floor (1¢ minimum)
 HARD_STOP_USE_FOK = True           # Use Fill-or-Kill market orders
+HARD_STOP_CONSECUTIVE_REQUIRED = 2 # Require 2 consecutive ticks below trigger before firing
 
 # ===========================================
 # ENTRY RESTRICTIONS
@@ -344,7 +345,7 @@ MIN_TIME_FOR_ENTRY = 300           # Never enter with <5 minutes (300s) remainin
 # ===========================================
 CAPTURE_99C_ENABLED = True         # Enable/disable 99c capture strategy
 CAPTURE_99C_MAX_SPEND = 6.00       # Fallback max spend if portfolio balance unavailable
-TRADE_SIZE_PCT = 0.10              # 10% of portfolio per trade
+TRADE_SIZE_PCT = 0.42              # 42% of portfolio per trade
 CAPTURE_99C_BID_PRICE = 0.95       # Place bid at 95c
 CAPTURE_99C_MIN_TIME = 10          # Need at least 10 seconds to settle order
 CAPTURE_99C_MIN_CONFIDENCE = 0.95  # Only bet when 95%+ confident
@@ -422,6 +423,8 @@ capital_deployed = 0.0
 
 # v1.49: Dynamic trade sizing — cached at window start
 cached_portfolio_total = 0.0
+# v1.54: Lock trade size for the entire day (set once at first window after midnight EST)
+daily_trade_shares = 0
 
 # Session counters
 session_counters = {
@@ -491,6 +494,7 @@ def reset_window_state(slug):
         "capture_99c_hedge_price": 0,        # 99c capture: price paid for hedge
         "capture_99c_exited": False,         # 99c capture: whether we've early-exited this position
         "ob_negative_ticks": 0,              # 99c early exit: consecutive negative OB ticks
+        "hard_stop_consecutive_ticks": 0,    # hard stop: consecutive ticks below trigger
         "started_mid_window": False,         # True if bot started mid-window (skip trading)
         "pairing_start_time": None,          # When PAIRING_MODE was entered
         "best_distance_seen": None,          # Best (lowest) distance from profit target (in cents)
@@ -2157,11 +2161,12 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
     """
     global window_state, session_counters
 
-    # Dynamic sizing: 10% of portfolio, rounded up. Fallback to MAX_SPEND if balance unavailable.
-    if cached_portfolio_total > 0:
+    # Use daily locked trade size. Fallback to MAX_SPEND if not yet set.
+    if daily_trade_shares > 0:
+        shares = daily_trade_shares
+    elif cached_portfolio_total > 0:
         trade_budget = cached_portfolio_total * TRADE_SIZE_PCT
         shares = math.ceil(trade_budget / CAPTURE_99C_BID_PRICE)
-        shares = min(shares, FAILSAFE_MAX_SHARES)
     else:
         shares = int(CAPTURE_99C_MAX_SPEND / CAPTURE_99C_BID_PRICE)
     token = window_state['up_token'] if side == 'UP' else window_state['down_token']
@@ -3441,7 +3446,7 @@ def check_daily_roi():
 
 def main():
     global window_state, trades_log, error_count, clob_client
-    global trading_halted, capital_deployed, cached_portfolio_total
+    global trading_halted, capital_deployed, cached_portfolio_total, daily_trade_shares
 
     # v1.46: Trading halt state
     trading_halted = load_halt_state()
@@ -3692,14 +3697,20 @@ def main():
                     # Daily balance snapshot (once per EST day)
                     check_and_log_balance()
 
-                    # Portfolio balance for dynamic trade sizing (every window)
+                    # Portfolio balance for dynamic trade sizing
                     _pos_val, _usdc_val = get_portfolio_balance()
                     cached_portfolio_total = _pos_val + _usdc_val
                     if cached_portfolio_total > 0:
-                        _trade_budget = cached_portfolio_total * TRADE_SIZE_PCT
-                        _trade_shares = math.ceil(_trade_budget / CAPTURE_99C_BID_PRICE)
                         print(f"[{ts()}] 💰 Balance snapshot: ${cached_portfolio_total:.2f} (positions: ${_pos_val:.2f}, USDC: ${_usdc_val:.2f})")
-                        print(f"[{ts()}] 📐 Trade size: {_trade_shares} shares (${_trade_budget:.2f} = 10% of ${cached_portfolio_total:.2f})")
+                        # Lock trade size once per day (first window only)
+                        if daily_trade_shares == 0:
+                            _trade_budget = cached_portfolio_total * TRADE_SIZE_PCT
+                            daily_trade_shares = math.ceil(_trade_budget / CAPTURE_99C_BID_PRICE)
+                            print(f"[{ts()}] 📐 DAILY trade size LOCKED: {daily_trade_shares} shares (${_trade_budget:.2f} = {TRADE_SIZE_PCT*100:.0f}% of ${cached_portfolio_total:.2f})")
+                        else:
+                            _current_budget = cached_portfolio_total * TRADE_SIZE_PCT
+                            _current_shares = math.ceil(_current_budget / CAPTURE_99C_BID_PRICE)
+                            print(f"[{ts()}] 📐 Trade size: {daily_trade_shares} shares (locked) | current would be {_current_shares}")
 
                     print("=" * 100)
 
@@ -3845,12 +3856,21 @@ def main():
 
                     capture_side = window_state.get('capture_99c_side')
 
-                    # Check if hard stop should trigger (based on best bid)
+                    # Check if hard stop should trigger (based on best bid, requires consecutive ticks)
                     should_trigger, best_bid = check_hard_stop_trigger(books, capture_side)
 
                     if should_trigger:
-                        print(f"[{ts()}] 🛑 HARD STOP: {capture_side} best bid at {best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c trigger")
-                        execute_hard_stop(capture_side, books)
+                        window_state['hard_stop_consecutive_ticks'] += 1
+                        ticks_so_far = window_state['hard_stop_consecutive_ticks']
+                        if ticks_so_far >= HARD_STOP_CONSECUTIVE_REQUIRED:
+                            print(f"[{ts()}] 🛑 HARD STOP: {capture_side} best bid at {best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c for {ticks_so_far} consecutive ticks")
+                            execute_hard_stop(capture_side, books)
+                        else:
+                            print(f"[{ts()}] ⚠️ HARD_STOP WARNING: tick {ticks_so_far}/{HARD_STOP_CONSECUTIVE_REQUIRED}: best_bid={best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c")
+                    else:
+                        if window_state['hard_stop_consecutive_ticks'] > 0:
+                            print(f"[{ts()}] HARD_STOP: Reset consecutive counter (bid recovered to {best_bid*100:.0f}c)")
+                        window_state['hard_stop_consecutive_ticks'] = 0
 
                 # === 99c OB-BASED EARLY EXIT CHECK ===
                 # Exit early if OB shows sellers dominating for 3 consecutive ticks
