@@ -654,6 +654,7 @@
         <span class="logo-text">POLYBOT</span>
       </div>
       <p class="date" id="date"><span class="status-dot"></span>Loading...</p>
+      <p class="date" id="clock" style="font-size:12px; opacity:0.7;"></p>
     </header>
 
     <!-- Tab Bar -->
@@ -1611,6 +1612,17 @@
       // Yellow after 90s (3 missed flushes), red after 300s
       el.className = 'live-stale' + (age < 90 ? '' : age < 300 ? ' warning' : ' stale');
     }, 1000);
+
+    // Clock — PST & EST updated every second
+    function updateClock() {
+      const now = new Date();
+      const fmt = { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true };
+      const pst = now.toLocaleTimeString('en-US', { ...fmt, timeZone: 'America/Los_Angeles' });
+      const est = now.toLocaleTimeString('en-US', { ...fmt, timeZone: 'America/New_York' });
+      document.getElementById('clock').textContent = pst + ' PST  · ' + est + ' EST';
+    }
+    updateClock();
+    setInterval(updateClock, 1000);
 
     // ── Live Chart ──────────────────────────────────────────
 
