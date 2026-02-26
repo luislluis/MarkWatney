@@ -346,6 +346,43 @@
     .trade-pnl.negative { color: var(--red-primary); }
     .trade-pnl.pending { color: var(--yellow-primary); font-size: 11px; }
 
+    /* Window-grouped trades */
+    .window-group { margin-bottom: 2px; }
+    .window-summary { cursor: pointer; user-select: none; }
+    .window-summary:hover { background: rgba(255,255,255,0.04); }
+    .window-summary .fill-count {
+      font-size: 10px;
+      color: var(--text-muted);
+      opacity: 0.7;
+    }
+    .window-summary .chevron {
+      font-size: 10px;
+      color: var(--text-muted);
+      transition: transform 0.15s ease;
+      display: inline-block;
+      margin-right: 2px;
+    }
+    .window-summary.expanded .chevron { transform: rotate(90deg); }
+    .window-fills {
+      display: none;
+      padding-left: 40px;
+    }
+    .window-fills.open { display: block; }
+    .window-fills .trade-item {
+      padding: 6px 12px;
+      opacity: 0.7;
+    }
+    .window-fills .trade-pair { font-size: 12px; }
+    .window-fills .trade-pnl { font-size: 12px; }
+    .window-fills .trade-detail { font-size: 10px; }
+    .window-fills .trade-meta { display: none; }
+    .window-fills .trade-status {
+      width: 20px;
+      height: 20px;
+      font-size: 11px;
+      margin-right: 8px;
+    }
+
     /* History */
     .history-card {
       padding: 4px;
@@ -1218,6 +1255,20 @@
       }
     }
 
+    function groupTradesByWindow(trades) {
+      const groups = {};
+      const order = [];
+      for (const t of trades) {
+        const key = t.window_id || t.timestamp;
+        if (!groups[key]) {
+          groups[key] = [];
+          order.push(key);
+        }
+        groups[key].push(t);
+      }
+      return order.map(key => groups[key]);
+    }
+
     function renderDashboard(summary, trades) {
       const today = getLocalDate();
 
@@ -1256,60 +1307,153 @@
         el.roi.textContent = '';
       }
 
-      // Recent trades with date separators
+      // Recent trades grouped by window
       if (trades.length > 0) {
+        const windowGroups = groupTradesByWindow(trades);
         let lastDate = null;
-        const tradesHtml = trades.map(t => {
-          const status = t.status || 'PENDING';
-          const pnl = parsePnl(t.profit_loss);
-          const isPending = status === 'PENDING';
-          const isWin = status === 'WIN';
-          const price = fmtPrice(t.entry_price ?? 0.99);
-          const tradeDate = new Date(t.timestamp);
-          const time = tradeDate.toLocaleTimeString('en-US', {
-            hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York'
-          });
-          const dateStr = tradeDate.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-          const side = escapeHtml(t.side ?? '?');
-          const rawShares = t.shares || 0;
-          const shares = rawShares % 1 < 0.01 ? Math.round(rawShares) : rawShares.toFixed(2);
+        const statusPriority = { EXIT: 3, LOSS: 2, WIN: 1, PENDING: 0 };
 
-          const isExit = status === 'EXIT';
-          const statusClass = isPending ? 'pending' : isExit ? 'exit' : (isWin ? 'win' : 'loss');
-          const statusIcon = isPending ? '◷' : isExit ? '↩' : (isWin ? '✓' : '✗');
-          const pnlClass = isPending ? 'pending' : isExit ? 'exit' : (isWin ? 'positive' : 'negative');
-          const pnlText = isPending ? 'pending' : fmtPnl(pnl);
+        const tradesHtml = windowGroups.map(group => {
+          const first = group[0];
+          const firstDate = new Date(first.timestamp);
+          const dateStr = firstDate.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 
-          // Add date separator when day changes
+          // Date separator
           let separator = '';
           if (lastDate !== dateStr) {
-            const displayDate = tradeDate.toLocaleDateString('en-US', {
+            const displayDate = firstDate.toLocaleDateString('en-US', {
               weekday: 'short', month: 'short', day: 'numeric', timeZone: 'America/New_York'
             });
             separator = `<div class="date-separator">${displayDate}</div>`;
             lastDate = dateStr;
           }
 
-          const costBasis = t.cost_basis ?? (t.shares * t.entry_price);
-          const roiPct = costBasis > 0 && !isPending ? Math.round(pnl / costBasis * 1000) / 10 : null;
+          // Single-fill window: render as regular trade row (unchanged)
+          if (group.length === 1) {
+            const t = first;
+            const status = t.status || 'PENDING';
+            const pnl = parsePnl(t.profit_loss);
+            const isPending = status === 'PENDING';
+            const isWin = status === 'WIN';
+            const isExit = status === 'EXIT';
+            const price = fmtPrice(t.entry_price ?? 0.99);
+            const time = firstDate.toLocaleTimeString('en-US', {
+              hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York'
+            });
+            const side = escapeHtml(t.side ?? '?');
+            const rawShares = t.shares || 0;
+            const shares = rawShares % 1 < 0.01 ? Math.round(rawShares) : rawShares.toFixed(2);
+            const statusClass = isPending ? 'pending' : isExit ? 'exit' : (isWin ? 'win' : 'loss');
+            const statusIcon = isPending ? '◷' : isExit ? '↩' : (isWin ? '✓' : '✗');
+            const pnlClass = isPending ? 'pending' : isExit ? 'exit' : (isWin ? 'positive' : 'negative');
+            const pnlText = isPending ? 'pending' : fmtPnl(pnl);
+            const costBasis = t.cost_basis ?? (t.shares * t.entry_price);
+            const roiPct = costBasis > 0 && !isPending ? Math.round(pnl / costBasis * 1000) / 10 : null;
+            const roiText = roiPct !== null ? `<span class="roi ${roiPct >= 0 ? 'positive' : 'negative'}">${roiPct > 0 ? '+' : ''}${roiPct}%</span>` : '';
+
+            return separator + `
+              <div class="trade-item">
+                <div class="trade-status ${statusClass}">${statusIcon}</div>
+                <div class="trade-info">
+                  <div class="trade-pair">${side} ${shares}@${price}${isExit ? ' \u2192 ' + fmtPrice(t.exit_price ?? 0) : ''}</div>
+                  <div class="trade-detail">$${costBasis.toFixed(2)} \u00b7 ${roiText || '--'}</div>
+                  <div class="trade-meta">${(() => {
+                    const title = t.window_title || '';
+                    const m = title.match(/(\d{1,2}:\d{2}[AP]M-\d{1,2}:\d{2}[AP]M\s*ET)/);
+                    return m ? m[1] : time;
+                  })()}</div>
+                </div>
+                <div class="trade-pnl ${pnlClass}">${pnlText}</div>
+              </div>
+            `;
+          }
+
+          // Multi-fill window: render summary + collapsible fills
+          const totalShares = group.reduce((s, t) => s + (t.shares || 0), 0);
+          const totalCost = group.reduce((s, t) => s + (t.cost_basis ?? (t.shares * t.entry_price)), 0);
+          const avgPrice = totalShares > 0 ? totalCost / totalShares : 0;
+          const totalPnl = group.reduce((s, t) => s + parsePnl(t.profit_loss), 0);
+
+          // Window-level status (priority: EXIT > LOSS > WIN > PENDING)
+          const winStatus = group.reduce((best, t) => {
+            const ts = t.status || 'PENDING';
+            return (statusPriority[ts] ?? 0) > (statusPriority[best] ?? 0) ? ts : best;
+          }, group[0].status || 'PENDING');
+
+          const isPending = winStatus === 'PENDING';
+          const isWin = winStatus === 'WIN';
+          const isExit = winStatus === 'EXIT';
+          const statusClass = isPending ? 'pending' : isExit ? 'exit' : (isWin ? 'win' : 'loss');
+          const statusIcon = isPending ? '◷' : isExit ? '↩' : (isWin ? '✓' : '✗');
+          const pnlClass = isPending ? 'pending' : isExit ? 'exit' : (totalPnl >= 0 ? 'positive' : 'negative');
+          const pnlText = isPending ? 'pending' : fmtPnl(totalPnl);
+
+          // Determine side label (handle mixed UP+DN)
+          const sides = [...new Set(group.map(t => t.side).filter(Boolean))];
+          const sideLabel = sides.length > 1 ? sides.join('+') : escapeHtml(sides[0] ?? '?');
+
+          const fmtShares = totalShares % 1 < 0.01 ? Math.round(totalShares) : totalShares.toFixed(2);
+          const roiPct = totalCost > 0 && !isPending ? Math.round(totalPnl / totalCost * 1000) / 10 : null;
           const roiText = roiPct !== null ? `<span class="roi ${roiPct >= 0 ? 'positive' : 'negative'}">${roiPct > 0 ? '+' : ''}${roiPct}%</span>` : '';
 
-          return separator + `
-            <div class="trade-item">
+          // Window time from first trade's window_title
+          const windowTime = (() => {
+            const title = first.window_title || '';
+            const m = title.match(/(\d{1,2}:\d{2}[AP]M-\d{1,2}:\d{2}[AP]M\s*ET)/);
+            if (m) return m[1];
+            return firstDate.toLocaleTimeString('en-US', {
+              hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York'
+            });
+          })();
+
+          // Summary row
+          const summaryHtml = `
+            <div class="trade-item window-summary">
               <div class="trade-status ${statusClass}">${statusIcon}</div>
               <div class="trade-info">
-                <div class="trade-pair">${side} ${shares}@${price}${isExit ? ' → ' + fmtPrice(t.exit_price ?? 0) : ''}</div>
-                <div class="trade-detail">$${costBasis.toFixed(2)} · ${roiText || '--'}</div>
-                <div class="trade-meta">${(() => {
-                  const title = t.window_title || '';
-                  const m = title.match(/(\d{1,2}:\d{2}[AP]M-\d{1,2}:\d{2}[AP]M\s*ET)/);
-                  return m ? m[1] : time;
-                })()}</div>
+                <div class="trade-pair"><span class="chevron">\u25B6</span>${sideLabel} ${fmtShares}@${fmtPrice(avgPrice)}</div>
+                <div class="trade-detail">$${totalCost.toFixed(2)} \u00b7 ${roiText || '--'}</div>
+                <div class="trade-meta">${windowTime} \u00b7 <span class="fill-count">${group.length} fills</span></div>
               </div>
               <div class="trade-pnl ${pnlClass}">${pnlText}</div>
             </div>
           `;
+
+          // Individual fill rows
+          const fillsHtml = group.map(t => {
+            const s = t.status || 'PENDING';
+            const pnl = parsePnl(t.profit_loss);
+            const sp = s === 'PENDING';
+            const sw = s === 'WIN';
+            const se = s === 'EXIT';
+            const sc = sp ? 'pending' : se ? 'exit' : (sw ? 'win' : 'loss');
+            const si = sp ? '◷' : se ? '↩' : (sw ? '✓' : '✗');
+            const pc = sp ? 'pending' : se ? 'exit' : (sw ? 'positive' : 'negative');
+            const pt = sp ? 'pending' : fmtPnl(pnl);
+            const side = escapeHtml(t.side ?? '?');
+            const rawS = t.shares || 0;
+            const sh = rawS % 1 < 0.01 ? Math.round(rawS) : rawS.toFixed(2);
+            const cb = t.cost_basis ?? (t.shares * t.entry_price);
+            return `
+              <div class="trade-item">
+                <div class="trade-status ${sc}">${si}</div>
+                <div class="trade-info">
+                  <div class="trade-pair">${side} ${sh}@${fmtPrice(t.entry_price ?? 0.99)}${se ? ' \u2192 ' + fmtPrice(t.exit_price ?? 0) : ''}</div>
+                  <div class="trade-detail">$${cb.toFixed(2)}</div>
+                </div>
+                <div class="trade-pnl ${pc}">${pt}</div>
+              </div>
+            `;
+          }).join('');
+
+          return separator + `
+            <div class="window-group">
+              ${summaryHtml}
+              <div class="window-fills">${fillsHtml}</div>
+            </div>
+          `;
         }).join('');
+
         el.trades.innerHTML = tradesHtml;
       } else {
         el.trades.innerHTML = '<p class="empty-state">No trades yet</p>';
@@ -1934,6 +2078,17 @@
       renderDashboard(currentSummary, trades);
       document.getElementById('tradesToggle').textContent = showingAll ? 'TODAY' : 'SHOW ALL';
       document.querySelector('.section-title').textContent = showingAll ? 'All Trades' : "Today's Trades";
+    });
+
+    // Expand/collapse window fill groups
+    el.trades.addEventListener('click', (e) => {
+      const summary = e.target.closest('.window-summary');
+      if (!summary) return;
+      summary.classList.toggle('expanded');
+      const fills = summary.nextElementSibling;
+      if (fills && fills.classList.contains('window-fills')) {
+        fills.classList.toggle('open');
+      }
     });
 
     // Initial load and setup
