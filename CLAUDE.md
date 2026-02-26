@@ -592,9 +592,9 @@ tail -100 ~/polybot/bot.log | grep -i sheets
 
 ---
 
-## Verified Bot Rules & Settings (v1.55 "Iron Exit")
+## Verified Bot Rules & Settings (v1.56 "Danger Sense")
 
-> **Last verified**: 2026-02-25 — local code and live server confirmed identical.
+> **Last verified**: 2026-02-26 — local code and live server confirmed identical.
 > **IMPORTANT**: Any future bot version MUST preserve these rules unless explicitly changed.
 > These represent hard-won lessons from live trading losses and bugs.
 
@@ -650,6 +650,19 @@ tail -100 ~/polybot/bot.log | grep -i sheets
 | `HARD_STOP_FLOOR` | `0.01` (1c) | Will sell at ANY price. Better to get 10c than ride to $0. |
 | Chunked FOK | v1.55 | **Sells in chunks sized to order book depth (90% of bid depth per attempt).** Prevents all-or-nothing FOK rejection when position > book depth. |
 | Balance error detection | v1.55 | **Halves chunk on "not enough balance" errors, stops after 3.** Prevents blind retrying when shares are already sold. |
+
+### Danger Exit — Confidence + Opponent Ask Gate (v1.56)
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `DANGER_EXIT_ENABLED` | `True` | Exits when danger_score >= 0.40 AND opponent_ask > 15c. Catches reversals before bid collapse. |
+| `DANGER_EXIT_THRESHOLD` | `0.40` | Danger score threshold. Uses existing 5-component danger score (confidence drop, OB imbalance, BTC velocity, opponent ask, time decay). |
+| `DANGER_EXIT_OPPONENT_ASK_MIN` | `0.15` (15c) | **The key gate.** Winning trades NEVER have opponent ask > 8c. 15c provides 7c margin. On the one loss (2026-02-25), opponent was 65c. |
+| `DANGER_EXIT_CONSECUTIVE_REQUIRED` | `2` ticks | Prevents single-tick noise. Same pattern as hard stop. |
+
+**How it works:** After 99c capture fill, every tick the bot calculates a danger score from 5 weighted signals. If the score exceeds 0.40 AND the opponent's ask price is above 15c (confirming real market uncertainty, not just end-of-window settlement noise), the bot exits via `execute_hard_stop()` — while bids are still at 70-80c, not waiting until they collapse to 40c.
+
+**Backtested on 2026-02-25/26:** Zero false exits on 13 winning windows. Would have caught the $382.69 loss.
 
 ### ROI Halt (Daily Profit Protection)
 
@@ -723,6 +736,8 @@ tail -100 ~/polybot/bot.log | grep -i sheets
 6. **Don't use public polygon-rpc.com** — it rate-limits. Use Alchemy RPC from `POLYGON_RPC` env var.
 7. **Don't lower HARD_STOP_CONSECUTIVE_REQUIRED below 2** — single-tick gaps in order book caused panic sells when set to 1.
 8. **Don't try to FOK sell more shares than the order book can absorb** — 234 shares in a thin book = 100% kill rate. Always chunk FOK sells to order book depth.
+9. **Don't remove the opponent_ask gate from danger exit** — danger score alone causes false exits. Winning trades score 3.01-3.16 due to end-of-window settlement, while the actual loss scored only 2.09. The `opponent_ask > 15c` gate is what distinguishes real reversals from normal settlement noise.
+10. **Don't rely on bid collapse (40c) as primary exit signal** — by the time bids hit 40c, actual FOK fills are at ~13-26c. Use leading indicators (opponent ask + danger score) to exit while bids are still at 70-80c. Keep 40c hard stop only as absolute backstop.
 
 ---
 

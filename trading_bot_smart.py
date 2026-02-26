@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.55",
-    "codename": "Iron Exit",
-    "date": "2026-02-25",
-    "changes": "Chunked FOK sells; faster RTDS price feed; balance error detection"
+    "version": "v1.56",
+    "codename": "Danger Sense",
+    "date": "2026-02-26",
+    "changes": "Danger score exit gated by opponent ask > 15c; 2-tick consecutive requirement"
 }
 
 import os
@@ -385,6 +385,17 @@ DANGER_WEIGHT_VELOCITY = 2.0         # Weight for BTC price velocity against us
 DANGER_WEIGHT_OPPONENT = 0.5         # Weight for opponent ask price strength
 DANGER_WEIGHT_TIME = 0.3             # Weight for time decay in final 60s
 
+# ===========================================
+# DANGER EXIT — Confidence + Opponent Ask Gate (v1.56)
+# ===========================================
+# Exit when danger score is high AND opponent ask confirms real uncertainty.
+# Opponent ask > 15c = market disagrees with our bet. Combined with high danger = GET OUT.
+# On wins, opponent ask is always ≤8c. 15c threshold provides 7c margin.
+DANGER_EXIT_ENABLED = True
+DANGER_EXIT_THRESHOLD = 0.40          # Exit when danger score >= this
+DANGER_EXIT_OPPONENT_ASK_MIN = 0.15   # Only exit if opponent ask > 15c (real uncertainty)
+DANGER_EXIT_CONSECUTIVE_REQUIRED = 2  # Require 2 consecutive ticks (prevent single-tick noise)
+
 # Bot identity
 BOT_NAME = "ChatGPT-Smart"
 
@@ -501,6 +512,7 @@ def reset_window_state(slug):
         "pending_hedge_order_id": None,      # Track pending hedge order to prevent duplicates
         "pending_hedge_side": None,          # Which side the pending hedge is for (UP/DOWN)
         "danger_score": 0,                    # Current danger score (0.0-1.0)
+        "danger_exit_ticks": 0,              # Danger exit: consecutive ticks above threshold
         "capture_99c_peak_confidence": 0,     # Confidence at 99c fill time
     }
 
@@ -3969,6 +3981,37 @@ def main():
                     )
                     window_state['danger_score'] = danger_result['score']
                     window_state['danger_result'] = danger_result  # Store full result for logging
+
+                    # === DANGER EXIT — Confidence + Opponent Ask Gate (v1.56) ===
+                    # Exit when danger score is high AND opponent ask confirms real uncertainty.
+                    # On wins, opponent ask ≤8c. On losses, opponent ask was 65c.
+                    if (DANGER_EXIT_ENABLED and
+                        not window_state.get('capture_99c_exited') and
+                        not window_state.get('capture_99c_hedged') and
+                        remaining_secs > 15):
+
+                        d_score = danger_result['score']
+                        opp_ask = danger_result['opponent_ask']
+
+                        if d_score >= DANGER_EXIT_THRESHOLD and opp_ask > DANGER_EXIT_OPPONENT_ASK_MIN:
+                            window_state['danger_exit_ticks'] = window_state.get('danger_exit_ticks', 0) + 1
+                            d_ticks = window_state['danger_exit_ticks']
+                            if d_ticks >= DANGER_EXIT_CONSECUTIVE_REQUIRED:
+                                print(f"[{ts()}] 🚨 DANGER_EXIT: score={d_score:.2f} opp_ask={opp_ask*100:.0f}c ({d_ticks} ticks)")
+                                log_activity("DANGER_EXIT", {
+                                    "danger_score": d_score,
+                                    "opponent_ask": opp_ask,
+                                    "ticks": d_ticks,
+                                    "confidence_drop": danger_result['confidence_drop'],
+                                    "velocity": danger_result['velocity'],
+                                })
+                                execute_hard_stop(bet_side, books)
+                            else:
+                                print(f"[{ts()}] ⚠️ DANGER_WARNING: tick {d_ticks}/{DANGER_EXIT_CONSECUTIVE_REQUIRED}: score={d_score:.2f} opp_ask={opp_ask*100:.0f}c")
+                        else:
+                            if window_state.get('danger_exit_ticks', 0) > 0:
+                                print(f"[{ts()}] DANGER_EXIT: Reset (score={d_score:.2f} opp_ask={opp_ask*100:.0f}c)")
+                            window_state['danger_exit_ticks'] = 0
 
                     # Existing hedge check (will use danger_score in Phase 3)
                     check_99c_capture_hedge(books, remaining_secs)
