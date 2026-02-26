@@ -435,7 +435,34 @@ capital_deployed = 0.0
 # v1.49: Dynamic trade sizing — cached at window start
 cached_portfolio_total = 0.0
 # v1.54: Lock trade size for the entire day (set once at first window after midnight EST)
-daily_trade_shares = 0
+# v1.56: Persisted to file so restarts don't reset the lock
+DAILY_TRADE_SIZE_FILE = os.path.expanduser("~/.polybot_daily_trade_size.json")
+
+def _load_daily_trade_shares() -> int:
+    """Load today's locked trade size from file. Returns 0 if stale/missing."""
+    try:
+        with open(DAILY_TRADE_SIZE_FILE, 'r') as f:
+            data = json.load(f)
+        est_now = datetime.now(ZoneInfo("America/New_York"))
+        if data.get('date') == est_now.strftime("%Y-%m-%d"):
+            shares = int(data['shares'])
+            print(f"[{ts()}] 📐 Restored daily trade size from file: {shares} shares (locked {data['date']})")
+            return shares
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
+        pass
+    return 0
+
+def _save_daily_trade_shares(shares: int):
+    """Persist today's locked trade size to file."""
+    est_now = datetime.now(ZoneInfo("America/New_York"))
+    data = {"date": est_now.strftime("%Y-%m-%d"), "shares": shares}
+    try:
+        with open(DAILY_TRADE_SIZE_FILE, 'w') as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"[{ts()}] WARNING: Failed to save daily trade size: {e}")
+
+daily_trade_shares = _load_daily_trade_shares()
 
 # Session counters
 session_counters = {
@@ -3744,6 +3771,7 @@ def main():
                         if daily_trade_shares == 0:
                             _trade_budget = cached_portfolio_total * TRADE_SIZE_PCT
                             daily_trade_shares = math.ceil(_trade_budget / CAPTURE_99C_BID_PRICE)
+                            _save_daily_trade_shares(daily_trade_shares)
                             print(f"[{ts()}] 📐 DAILY trade size LOCKED: {daily_trade_shares} shares (${_trade_budget:.2f} = {TRADE_SIZE_PCT*100:.0f}% of ${cached_portfolio_total:.2f})")
                         else:
                             _current_budget = cached_portfolio_total * TRADE_SIZE_PCT
