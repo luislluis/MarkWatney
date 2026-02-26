@@ -446,7 +446,7 @@ def _load_daily_trade_shares() -> int:
         est_now = datetime.now(ZoneInfo("America/New_York"))
         if data.get('date') == est_now.strftime("%Y-%m-%d"):
             shares = int(data['shares'])
-            print(f"[{ts()}] 📐 Restored daily trade size from file: {shares} shares (locked {data['date']})")
+            print(f"[STARTUP] Restored daily trade size from file: {shares} shares (locked {data['date']})")
             return shares
     except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
         pass
@@ -460,7 +460,7 @@ def _save_daily_trade_shares(shares: int):
         with open(DAILY_TRADE_SIZE_FILE, 'w') as f:
             json.dump(data, f)
     except Exception as e:
-        print(f"[{ts()}] WARNING: Failed to save daily trade size: {e}")
+        print(f"WARNING: Failed to save daily trade size: {e}")
 
 daily_trade_shares = _load_daily_trade_shares()
 
