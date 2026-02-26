@@ -1119,8 +1119,9 @@
               }
             }
 
-            // Create one row per buy
+            // Create one row per buy (skip dust < 0.1 shares)
             group.buys.forEach((buy, i) => {
+              if (buy.size < 0.1) return;
               const info = buyExitInfo[i];
               const cost = buy.size * buy.price;
               const exitedAll = info.exitShares >= buy.size - 0.02;
