@@ -1,10 +1,11 @@
 # Polybot Version Registry
 
-## Current Version: v1.54 "Steady Hand"
+## Current Version: v1.55 "Iron Exit"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.54 | 2026-02-25 PST | Steady Hand | Hard stop requires 2 consecutive ticks below 40c (prevents single-tick panic sells) | Active |
+| v1.55 | 2026-02-25 PST | Iron Exit | BTC delta exit at $45 threshold; chunked FOK sells; faster RTDS price feed | Active |
+| v1.54 | 2026-02-25 PST | Steady Hand | Hard stop requires 2 consecutive ticks below 40c (prevents single-tick panic sells) | Archived |
 | v1.53 | 2026-02-25 PST | Iron Hammer III | Remove max shares/order cost failsafes (portfolio-sized trades) | Archived |
 | v1.52 | 2026-02-25 PST | Iron Hammer II | Raise failsafes: max order cost $10->$100, max shares 50->100 (supports 42% trade sizing) | Archived |
 | v1.51 | 2026-02-24 PST | Iron Hammer | Trade sizing 10% -> 42% of portfolio; ROI halt 45% -> 60% | Archived |

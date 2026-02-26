@@ -57,7 +57,7 @@ class RTDSPriceFeed:
 
     async def _connect(self):
         """Connect to RTDS WebSocket and receive price updates."""
-        RESUB_INTERVAL = 3  # Re-subscribe every 3 seconds to get fresh batch data
+        RESUB_INTERVAL = 1  # Re-subscribe every 1 second for fresher data (v1.55)
 
         while not self._stop_event.is_set():
             try:
@@ -194,8 +194,8 @@ class RTDSPriceFeed:
         """Check if WebSocket is connected and receiving data."""
         if not self._connected:
             return False
-        # Consider stale if no update in 30 seconds
-        return (time.time() - self.last_update) < 30
+        # Consider stale if no update in 10 seconds (v1.55: was 30s)
+        return (time.time() - self.last_update) < 10
 
     def stop(self):
         """Stop the WebSocket connection."""

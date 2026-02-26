@@ -592,14 +592,165 @@ tail -100 ~/polybot/bot.log | grep -i sheets
 
 ---
 
+## Verified Bot Rules & Settings (v1.55 "Iron Exit")
+
+> **Last verified**: 2026-02-25 — local code and live server confirmed identical.
+> **IMPORTANT**: Any future bot version MUST preserve these rules unless explicitly changed.
+> These represent hard-won lessons from live trading losses and bugs.
+
+### Active Strategy
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `ARB_ENABLED` | `False` | ARB strategy disabled. Bot is **99c sniper only**. ARB was unprofitable and added risk. |
+| `CAPTURE_99C_ENABLED` | `True` | 99c capture is the sole active strategy. |
+
+### 99c Sniper Entry Rules
+
+| Rule | Setting | Value | Lesson |
+|------|---------|-------|--------|
+| Min confidence | `CAPTURE_99C_MIN_CONFIDENCE` | `0.95` (95%) | Lower values lost money. A 95% trade lost once at 98c ask, T-69s. |
+| Bid price | `CAPTURE_99C_BID_PRICE` | `0.95` (95c) | We bid at 95c, not 99c. Gets better fills. |
+| Max ask | `CAPTURE_99C_MAX_ASK` | `1.01` | Skip if ask > 1.01 (no market). |
+| Min time | `CAPTURE_99C_MIN_TIME` | `10` seconds | Need time for order to settle on blockchain. |
+| One per window | `capture_99c_used` flag | Once | Prevents duplicate orders in same window. |
+
+**Confidence formula**: `confidence = ask_price - time_penalty`
+
+| Time Remaining | Penalty | Example: 99c ask = confidence |
+|----------------|---------|-------------------------------|
+| < 60 seconds | 0% | 99% |
+| 60-120 seconds | 3% | 96% |
+| 2-5 minutes | 8% | 91% |
+| 5+ minutes | 15% | 84% |
+
+**Entry filters** (`ENTRY_FILTER_ENABLED = True`):
+- **Stability**: Last 3 ticks must ALL be >= 97c (prevents entering on spikes)
+- **Low volatility**: No tick-to-tick jump > 8c in past 10 ticks
+- **Opposing side low**: Opposing side never > 15c in past 30 ticks
+- Logic: Enter if stable at 97c+ OR (low volatility AND opposing low)
+- **WHY**: Analysis of historical losses showed entries during volatile spikes always lost.
+
+### Trade Sizing
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `TRADE_SIZE_PCT` | `0.42` (42%) | 42% of portfolio per trade. |
+| Daily lock | Locked once per day | Prevents position size growing mid-day as portfolio grows from wins. Shares calculated on first window after midnight EST, frozen for 24h. |
+| `CAPTURE_99C_MAX_SPEND` | `$6.00` | Fallback if portfolio balance API fails. |
+
+### Hard Stop (Emergency Exit)
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `HARD_STOP_ENABLED` | `True` | Always on. Last line of defense. |
+| `HARD_STOP_TRIGGER` | `0.40` (40c best bid) | Exit when best bid <= 40c. Triggers on BID not ask (real liquidity). |
+| `HARD_STOP_CONSECUTIVE_REQUIRED` | `2` ticks | **v1.54**: Requires 2 consecutive ticks below 40c. Prevents single-tick panic sells from momentary order book gaps. |
+| `HARD_STOP_USE_FOK` | `True` | Fill-or-Kill market orders for guaranteed execution. |
+| `HARD_STOP_FLOOR` | `0.01` (1c) | Will sell at ANY price. Better to get 10c than ride to $0. |
+| Chunked FOK | v1.55 | **Sells in chunks sized to order book depth (90% of bid depth per attempt).** Prevents all-or-nothing FOK rejection when position > book depth. |
+| Balance error detection | v1.55 | **Halves chunk on "not enough balance" errors, stops after 3.** Prevents blind retrying when shares are already sold. |
+
+### BTC Delta Exit (v1.55 — Primary Defense)
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `BTC_DELTA_EXIT_ENABLED` | `True` | Exit before bids collapse. Fires while bids are still 70-80c, not 13c. |
+| `BTC_DELTA_EXIT_THRESHOLD` | `$45` | Exit when BTC is within $45 of flipping against our bet side. |
+| Timing | Every tick after fill | Checks every tick after 99c capture fill. No time restriction. |
+| Consecutive ticks | `2` | Requires 2 consecutive ticks in danger zone (prevents single-tick false alarm). |
+| How it works | UP holder: exits when BTC delta drops to +$45 or lower. DOWN holder: exits when BTC delta rises to -$45 or higher. |
+
+### ROI Halt (Daily Profit Protection)
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `ROI_HALT_THRESHOLD` | `0.60` (60%) | Stop trading when daily ROI hits 60%. Lock in profits, don't give back. |
+| Reset | Midnight EST | Cron job deletes state file. Bot self-corrects stale halt at startup. |
+
+### Disabled Features (DO NOT RE-ENABLE without good reason)
+
+| Feature | Setting | Why Disabled |
+|---------|---------|--------------|
+| OB Early Exit | `OB_EARLY_EXIT_ENABLED = False` | Was causing premature exits. Only hard stop at 40c now. |
+| Price Stop Loss | `PRICE_STOP_ENABLED = False` | Legacy. Replaced by hard stop which uses FOK orders. |
+| 99c Hedge | `CAPTURE_99C_HEDGE_ENABLED = False` | Was triggering on normal end-of-window price death (50c/1c is expected at resolution). |
+| Smart Signals | `USE_SMART_SIGNALS = False` | Signals were 50/50 accuracy. Trade on price divergence alone. |
+| ARB Strategy | `ARB_ENABLED = False` | Unprofitable. 99c sniper only. |
+
+### Failsafe Price Limits (NEVER VIOLATE)
+
+| Limit | Value | Notes |
+|-------|-------|-------|
+| `FAILSAFE_MAX_BUY_PRICE` | `0.85` (85c) | 99c capture BYPASSES this (intentionally above 85c). |
+| `FAILSAFE_MIN_BUY_PRICE` | `0.05` (5c) | Never buy garbage prices. |
+| Max shares/cost | `999999` | No practical limit (portfolio-sized trades). |
+
+### Timing Constants
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| `MIN_TIME_FOR_ENTRY` | `300` (5 min) | Never enter ARB with <5 min remaining. |
+| `ORDER_COOLDOWN_SECONDS` | `3.0` | Prevent rapid-fire duplicate orders. |
+| `ORDER_SETTLE_DELAY` | `7.0` | Wait for blockchain settlement after order. |
+| `PAIR_DEADLINE_SECONDS` | `90` | Start forced pairing 90s before close. |
+| `HARD_FLATTEN_SECONDS` | `10` | Emergency flatten at 10s before close. |
+| `BAIL_TIME_REMAINING` | `90` | Force bail at 90s remaining (NO EXCEPTIONS). |
+| `PAIR_WINDOW_SECONDS` | `5` | If second leg doesn't fill in 5s, bail immediately. |
+
+### Position Tracking (Critical Bug Fixes)
+
+| Rule | Why |
+|------|-----|
+| Positions can only INCREASE, never decrease | API returns stale 0/0 sometimes. If we know we have fills, never overwrite with lower values. |
+| Dual-source verification | Check BOTH order status AND position API, use `max()` across all sources. |
+| `MICRO_IMBALANCE_TOLERANCE = 0.5` | Treats <0.5 share difference as balanced. Fixed bug where 4.9 vs 5.0 triggered rebalancing. |
+| 99c captures excluded from ARB imbalance | `get_arb_imbalance()` subtracts 99c fills. Prevents false PAIRING_MODE entry. |
+| Don't set fill counts at order time | Fill tracking happens in main loop detection ONLY. Setting at order time causes phantom negative imbalance. |
+
+### Order Book Signals (Logging Only)
+
+| Setting | Value | Notes |
+|---------|-------|-------|
+| `USE_ORDERBOOK_SIGNALS` | `True` | **Logging only** — signals do NOT affect trading decisions. |
+| Accuracy | ~50% | Signals were wrong as often as right. Kept for data collection only. |
+
+### Gas Monitoring
+
+| Threshold | Value | Action |
+|-----------|-------|--------|
+| `GAS_LOW_THRESHOLD` | `0.1` MATIC | Telegram warning (~4 days of gas). |
+| `GAS_CRITICAL_THRESHOLD` | `0.03` MATIC | Telegram CRITICAL alert (~1 day of gas). |
+| Alert cooldown | 1 hour | Prevent spam. |
+
+### Common Mistakes to Avoid
+
+1. **Don't set capture_99c_filled_up/down at order time** — only on confirmed fill. Setting early causes `get_arb_imbalance()` to return a phantom negative, triggering false PAIRING_MODE.
+2. **Don't trust API position counts to decrease** — API caches are stale. Only use `max(local, api)`.
+3. **Don't use `slug` variable in `check_and_place_arb()`** — use `window_state.get('window_id', '')`. Slug is only defined in `main()`.
+4. **Don't re-enable 99c hedge** — end-of-window price death (50c/1c) is NORMAL at resolution. Hedging against it wastes money.
+5. **Don't run long SSH one-liners to start the bot** — they break due to line wrapping. Always SSH in interactively.
+6. **Don't use public polygon-rpc.com** — it rate-limits. Use Alchemy RPC from `POLYGON_RPC` env var.
+7. **Don't lower HARD_STOP_CONSECUTIVE_REQUIRED below 2** — single-tick gaps in order book caused panic sells when set to 1.
+8. **Never react only to order book bid collapse for exits** — by the time bids hit 40c, actual FOK fills land at 13c due to liquidity death. Use BTC delta to exit while bids are still at 70-80c. The BTC delta exit ($45 threshold) is the primary defense; hard stop at 40c is the last-resort backup.
+9. **Don't try to FOK sell more shares than the order book can absorb** — 234 shares in a thin book = 100% kill rate. Always chunk FOK sells to order book depth.
+
+---
+
 ## Quick Reference
 
 ```
-To hit 98% confidence:
-  - 98c @ <60s remaining = 98%
-  - 99c @ <60s remaining = 99%
-  - 99c @ 60-120s = 96% (not enough)
+To hit 95% confidence (current threshold):
+  - 95c ask @ any time = 95% (just barely triggers)
+  - 98c ask @ <60s remaining = 98%
+  - 99c ask @ <60s remaining = 99%
+  - 99c ask @ 60-120s = 96% (triggers)
+  - 98c ask @ 2-5min = 90% (does NOT trigger)
 
 Current threshold: 95%
-Recommended: Consider 98% for more conservative trading
+Current bid price: 95c
+Trade size: 42% of portfolio (locked daily)
+BTC delta exit: $45 threshold (primary defense, every tick after fill)
+Hard stop: 40c best bid (backup, 2 consecutive ticks, chunked FOK)
+ROI halt: 60% daily
 ```
