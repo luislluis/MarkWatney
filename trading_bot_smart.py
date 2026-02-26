@@ -24,7 +24,7 @@ BOT_VERSION = {
     "version": "v1.55",
     "codename": "Iron Exit",
     "date": "2026-02-25",
-    "changes": "BTC delta exit at $45 threshold; chunked FOK sells; faster RTDS price feed"
+    "changes": "Chunked FOK sells; faster RTDS price feed; balance error detection"
 }
 
 import os
@@ -336,15 +336,6 @@ HARD_STOP_USE_FOK = True           # Use Fill-or-Kill market orders
 HARD_STOP_CONSECUTIVE_REQUIRED = 2 # Require 2 consecutive ticks below trigger before firing
 
 # ===========================================
-# BTC DELTA EXIT - Exit before liquidity death (v1.55)
-# ===========================================
-# Exit when BTC price delta from window start approaches the "flip zone"
-# where our bet side would lose. This fires BEFORE bids collapse.
-BTC_DELTA_EXIT_ENABLED = True
-BTC_DELTA_EXIT_THRESHOLD = 45     # Exit when BTC is within $45 of flipping against us
-# No time restriction — checks every tick after 99c capture fill
-
-# ===========================================
 # ENTRY RESTRICTIONS
 # ===========================================
 MIN_TIME_FOR_ENTRY = 300           # Never enter with <5 minutes (300s) remaining
@@ -504,7 +495,6 @@ def reset_window_state(slug):
         "capture_99c_exited": False,         # 99c capture: whether we've early-exited this position
         "ob_negative_ticks": 0,              # 99c early exit: consecutive negative OB ticks
         "hard_stop_consecutive_ticks": 0,    # hard stop: consecutive ticks below trigger
-        "btc_delta_exit_ticks": 0,             # BTC delta exit: consecutive ticks in danger zone
         "started_mid_window": False,         # True if bot started mid-window (skip trading)
         "pairing_start_time": None,          # When PAIRING_MODE was entered
         "best_distance_seen": None,          # Best (lowest) distance from profit target (in cents)
@@ -1336,61 +1326,6 @@ def place_fok_market_sell(token_id: str, shares: float) -> tuple:
         print(f"[{ts()}] HARD_STOP_ERROR: FOK order failed: {e}" + (" [BALANCE ERROR]" if is_balance_error else ""))
         log_activity("FOK_ERROR", {"error": str(e), "balance_error": is_balance_error})
         return False, "", 0.0, is_balance_error
-
-
-def check_btc_delta_exit(side: str, remaining_secs: int) -> tuple:
-    """
-    Check if BTC delta from window start is dangerously close to flipping against us.
-    Fires BEFORE order book bids collapse — exit while liquidity is still healthy.
-
-    Args:
-        side: "UP" or "DOWN" - our position side
-        remaining_secs: seconds left in window
-
-    Returns:
-        tuple: (should_exit, btc_delta, reason)
-    """
-    if not BTC_DELTA_EXIT_ENABLED:
-        return False, None, ""
-
-    # Don't check in final 15s (hard flatten handles that)
-    if remaining_secs < 15:
-        return False, None, ""
-
-    # Must have RTDS connected with valid delta
-    if not (RTDS_AVAILABLE and rtds_feed and rtds_feed.is_connected()):
-        return False, None, "no_rtds"
-
-    btc_delta = rtds_feed.get_window_delta()
-    if btc_delta is None:
-        return False, None, "no_delta"
-
-    # Determine if delta is adverse:
-    # - We hold UP shares → BTC going DOWN (negative delta) is bad
-    # - We hold DOWN shares → BTC going UP (positive delta) is bad
-    if side == "UP":
-        # UP wins if BTC > start price (delta > 0)
-        # Danger: delta shrinking toward 0 or going negative
-        adverse_delta = -btc_delta  # positive when BTC is below start (bad for UP)
-    else:
-        # DOWN wins if BTC < start price (delta < 0)
-        # Danger: delta rising toward 0 or going positive
-        adverse_delta = btc_delta   # positive when BTC is above start (bad for DOWN)
-
-    threshold = BTC_DELTA_EXIT_THRESHOLD  # $45
-
-    # Exit if BTC is within $45 of flipping against us (or already against us)
-    # Examples for DOWN holder:
-    #   BTC +$40 above start → adverse_delta=40, >= -45 → EXIT (only $40 from losing)
-    #   BTC -$100 below start → adverse_delta=-100, < -45 → SAFE (winning by $100)
-    # Examples for UP holder:
-    #   BTC -$30 below start → adverse_delta=30, >= -45 → EXIT (only $30 from losing)
-    #   BTC +$200 above start → adverse_delta=-200, < -45 → SAFE (winning by $200)
-    if adverse_delta >= -threshold:
-        reason = f"BTC delta ${btc_delta:+,.0f} within ${threshold:.0f} of flipping against {side}"
-        return True, btc_delta, reason
-
-    return False, btc_delta, ""
 
 
 def check_hard_stop_trigger(books: dict, side: str) -> tuple:
@@ -3962,30 +3897,6 @@ def main():
                         if window_state['hard_stop_consecutive_ticks'] > 0:
                             print(f"[{ts()}] HARD_STOP: Reset consecutive counter (bid recovered to {best_bid*100:.0f}c)")
                         window_state['hard_stop_consecutive_ticks'] = 0
-
-                # === BTC DELTA EXIT (v1.55) ===
-                # Exit before liquidity death when BTC delta approaches flip zone
-                if (BTC_DELTA_EXIT_ENABLED and
-                    window_state.get('capture_99c_fill_notified') and
-                    not window_state.get('capture_99c_exited') and
-                    not window_state.get('capture_99c_hedged') and
-                    remaining_secs > 15):
-
-                    capture_side = window_state.get('capture_99c_side')
-                    should_exit, btc_delta_val, exit_reason = check_btc_delta_exit(capture_side, remaining_secs)
-
-                    if should_exit:
-                        window_state['btc_delta_exit_ticks'] = window_state.get('btc_delta_exit_ticks', 0) + 1
-                        ticks = window_state['btc_delta_exit_ticks']
-                        if ticks >= 2:  # Require 2 consecutive ticks (same as hard stop)
-                            print(f"[{ts()}] BTC_DELTA_EXIT: {exit_reason}")
-                            execute_hard_stop(capture_side, books)
-                        else:
-                            print(f"[{ts()}] BTC_DELTA_WARNING: tick {ticks}/2: {exit_reason}")
-                    else:
-                        if window_state.get('btc_delta_exit_ticks', 0) > 0:
-                            print(f"[{ts()}] BTC_DELTA: Reset (delta recovered)")
-                        window_state['btc_delta_exit_ticks'] = 0
 
                 # === 99c OB-BASED EARLY EXIT CHECK ===
                 # Exit early if OB shows sellers dominating for 3 consecutive ticks

@@ -4,7 +4,7 @@
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.55 | 2026-02-25 PST | Iron Exit | BTC delta exit at $45 threshold; chunked FOK sells; faster RTDS price feed | Active |
+| v1.55 | 2026-02-25 PST | Iron Exit | Chunked FOK sells; faster RTDS price feed; balance error detection | Active |
 | v1.54 | 2026-02-25 PST | Steady Hand | Hard stop requires 2 consecutive ticks below 40c (prevents single-tick panic sells) | Archived |
 | v1.53 | 2026-02-25 PST | Iron Hammer III | Remove max shares/order cost failsafes (portfolio-sized trades) | Archived |
 | v1.52 | 2026-02-25 PST | Iron Hammer II | Raise failsafes: max order cost $10->$100, max shares 50->100 (supports 42% trade sizing) | Archived |

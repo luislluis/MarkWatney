@@ -651,16 +651,6 @@ tail -100 ~/polybot/bot.log | grep -i sheets
 | Chunked FOK | v1.55 | **Sells in chunks sized to order book depth (90% of bid depth per attempt).** Prevents all-or-nothing FOK rejection when position > book depth. |
 | Balance error detection | v1.55 | **Halves chunk on "not enough balance" errors, stops after 3.** Prevents blind retrying when shares are already sold. |
 
-### BTC Delta Exit (v1.55 — Primary Defense)
-
-| Setting | Value | Why |
-|---------|-------|-----|
-| `BTC_DELTA_EXIT_ENABLED` | `True` | Exit before bids collapse. Fires while bids are still 70-80c, not 13c. |
-| `BTC_DELTA_EXIT_THRESHOLD` | `$45` | Exit when BTC is within $45 of flipping against our bet side. |
-| Timing | Every tick after fill | Checks every tick after 99c capture fill. No time restriction. |
-| Consecutive ticks | `2` | Requires 2 consecutive ticks in danger zone (prevents single-tick false alarm). |
-| How it works | UP holder: exits when BTC delta drops to +$45 or lower. DOWN holder: exits when BTC delta rises to -$45 or higher. |
-
 ### ROI Halt (Daily Profit Protection)
 
 | Setting | Value | Why |
@@ -732,8 +722,7 @@ tail -100 ~/polybot/bot.log | grep -i sheets
 5. **Don't run long SSH one-liners to start the bot** — they break due to line wrapping. Always SSH in interactively.
 6. **Don't use public polygon-rpc.com** — it rate-limits. Use Alchemy RPC from `POLYGON_RPC` env var.
 7. **Don't lower HARD_STOP_CONSECUTIVE_REQUIRED below 2** — single-tick gaps in order book caused panic sells when set to 1.
-8. **Never react only to order book bid collapse for exits** — by the time bids hit 40c, actual FOK fills land at 13c due to liquidity death. Use BTC delta to exit while bids are still at 70-80c. The BTC delta exit ($45 threshold) is the primary defense; hard stop at 40c is the last-resort backup.
-9. **Don't try to FOK sell more shares than the order book can absorb** — 234 shares in a thin book = 100% kill rate. Always chunk FOK sells to order book depth.
+8. **Don't try to FOK sell more shares than the order book can absorb** — 234 shares in a thin book = 100% kill rate. Always chunk FOK sells to order book depth.
 
 ---
 
@@ -750,7 +739,6 @@ To hit 95% confidence (current threshold):
 Current threshold: 95%
 Current bid price: 95c
 Trade size: 42% of portfolio (locked daily)
-BTC delta exit: $45 threshold (primary defense, every tick after fill)
-Hard stop: 40c best bid (backup, 2 consecutive ticks, chunked FOK)
+Hard stop: 40c best bid (2 consecutive ticks, chunked FOK)
 ROI halt: 60% daily
 ```
