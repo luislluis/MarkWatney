@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.58",
-    "codename": "Profit Lock",
+    "version": "v1.59",
+    "codename": "Book Walker",
     "date": "2026-02-27",
-    "changes": "Auto-sell at 99c on fill; cancel if bid < 60c; 45c hard stop as backstop"
+    "changes": "OB-aware chunked exit (walk bid levels); fixed 25-share sizing; OB snapshot + exit summary logging; recovery tracking"
 }
 
 import os
@@ -345,7 +345,8 @@ MIN_TIME_FOR_ENTRY = 300           # Never enter with <5 minutes (300s) remainin
 # ===========================================
 CAPTURE_99C_ENABLED = True         # Enable/disable 99c capture strategy
 CAPTURE_99C_MAX_SPEND = 6.00       # Fallback max spend if portfolio balance unavailable
-TRADE_SIZE_PCT = 0.42              # 42% of portfolio per trade
+TRADE_SIZE_PCT = 0.42              # 42% of portfolio per trade (used only when FIXED_TRADE_SHARES is 0)
+FIXED_TRADE_SHARES = 25            # Fixed trade size in shares. Set >0 to override portfolio-based sizing.
 CAPTURE_99C_BID_PRICE = 0.95       # Place bid at 95c
 CAPTURE_99C_MIN_TIME = 10          # Need at least 10 seconds to settle order
 CAPTURE_99C_MIN_CONFIDENCE = 0.95  # Only bet when 95%+ confident
@@ -1572,6 +1573,491 @@ P&L: ${total_pnl:.2f}
     return True, total_pnl
 
 
+# ============================================================================
+# ORDER-BOOK-AWARE CHUNKED EXIT (v1.59)
+# ============================================================================
+
+HARD_STOP_MAX_SHARES = 10  # If more than this many shares remain after chunked exit, run a second chunked pass instead of FOK
+
+# Recovery tracking: list of (exit_timestamp, exit_price, side, token, market) tuples
+# Background thread checks prices at +1m, +5m, +15m after each exit
+_recovery_checks_pending = []
+
+def _log_ob_snapshot(side: str, bids_sorted: list):
+    """Log full order book state before exit for post-hoc analysis."""
+    print(f"[{ts()}] OB_SNAPSHOT ({side}) — {len(bids_sorted)} bid levels:")
+    total_depth = 0
+    for level in bids_sorted:
+        price = float(level['price'])
+        size = float(level['size'])
+        total_depth += size
+        print(f"[{ts()}]   {price*100:6.1f}c | {size:>10.1f} shares | cumulative: {total_depth:.0f}")
+    print(f"[{ts()}] OB_SNAPSHOT TOTAL: {total_depth:.0f} shares across {len(bids_sorted)} levels")
+
+def _schedule_recovery_check(exit_time: float, exit_price: float, side: str):
+    """Schedule background recovery price checks at +1m, +5m, +15m after exit."""
+    import threading
+
+    def _check():
+        delays = [(60, "+1min"), (300, "+5min"), (900, "+15min")]
+        results = {}
+        for delay_sec, label in delays:
+            wait = exit_time + delay_sec - time.time()
+            if wait > 0:
+                time.sleep(wait)
+            # Fetch current best bid for this side
+            try:
+                slug, _ = get_current_slug()
+                market = get_market_data(slug)
+                if market:
+                    fresh_books = get_order_books(market)
+                    if fresh_books:
+                        bids = fresh_books.get(f'{side.lower()}_bids', [])
+                        if bids:
+                            price = float(bids[0]['price'])
+                            results[label] = price
+                        else:
+                            results[label] = 0.0
+                    else:
+                        results[label] = 0.0
+                else:
+                    results[label] = 0.0
+            except Exception:
+                results[label] = 0.0
+
+        p1 = results.get("+1min", 0)
+        p5 = results.get("+5min", 0)
+        p15 = results.get("+15min", 0)
+        recovered = "YES" if max(p1, p5, p15) >= 0.80 else "NO"
+
+        line = (f"RECOVERY CHECK: [{ts()}] | Exit price: {exit_price*100:.0f}c "
+                f"| Price at +1min: {p1*100:.0f}c | Price at +5min: {p5*100:.0f}c "
+                f"| Price at +15min: {p15*100:.0f}c | Would have recovered: {recovered}")
+        print(f"[{ts()}] {line}")
+        log_activity("RECOVERY_CHECK", {
+            "exit_price": exit_price, "side": side,
+            "price_1m": p1, "price_5m": p5, "price_15m": p15,
+            "recovered": recovered
+        })
+
+    t = threading.Thread(target=_check, daemon=True)
+    t.start()
+
+
+def _walk_bids(side: str, token: str, entry_price: float, remaining: float, pass_label: str) -> tuple:
+    """
+    Walk the order book bid levels top-down, placing limit sells matched to
+    each level's available size. Re-fetches the order book every 3 chunks.
+
+    Args:
+        side: "UP" or "DOWN"
+        token: Token ID to sell
+        entry_price: Entry price for P&L calculation
+        remaining: Shares left to sell
+        pass_label: "PASS_1" or "PASS_2" for log clarity
+
+    Returns:
+        tuple: (confirmed_filled, total_pnl, remaining, fill_log, orders_placed, pending_order_ids)
+    """
+    OB_EXIT_FILL_TIMEOUT = 3.0
+    OB_EXIT_POLL_INTERVAL = 0.5
+    OB_REFRESH_EVERY = 3  # Re-fetch order book every N chunks
+
+    confirmed_filled = 0.0
+    total_pnl = 0.0
+    fill_log = []
+    orders_placed = 0
+    pending_order_ids = []
+    chunks_since_refresh = 0
+
+    # Fetch initial order book
+    books = get_order_books(window_state['cached_market']) if window_state.get('cached_market') else None
+    if books is None:
+        return 0.0, 0.0, remaining, [], 0, []
+
+    bids_key = f'{side.lower()}_bids'
+
+    while remaining > 0:
+        # Refresh order book every OB_REFRESH_EVERY chunks
+        if chunks_since_refresh >= OB_REFRESH_EVERY and window_state.get('cached_market'):
+            print(f"[{ts()}] OB REFRESH: [{pass_label}] Chunks placed so far: {orders_placed} "
+                  f"| Confirmed fills so far: {confirmed_filled:.0f} shares "
+                  f"| Remaining: {remaining:.0f} shares | Refreshing order book")
+            log_activity("OB_REFRESH", {
+                "pass": pass_label, "orders_placed": orders_placed,
+                "confirmed_filled": confirmed_filled, "remaining": remaining
+            })
+            books = get_order_books(window_state['cached_market'])
+            if books is None:
+                print(f"[{ts()}] OB_EXIT [{pass_label}]: Refresh failed, stopping walk")
+                break
+            chunks_since_refresh = 0
+
+        bids = books.get(bids_key, [])
+        bids_sorted = sorted(bids, key=lambda x: float(x['price']), reverse=True)
+
+        if not bids_sorted:
+            print(f"[{ts()}] OB_EXIT [{pass_label}]: No bids remaining in book")
+            break
+
+        # Walk current snapshot
+        made_progress = False
+        for level in bids_sorted:
+            if remaining <= 0:
+                break
+
+            bid_price = float(level['price'])
+            bid_size = float(level['size'])
+
+            if bid_size <= 0:
+                continue
+
+            chunk = min(bid_size, remaining)
+
+            print(f"[{ts()}] OB_EXIT [{pass_label}]: Selling {chunk:.1f} @ {bid_price*100:.0f}c (bid depth: {bid_size:.0f})")
+
+            success, result = place_limit_order(token, bid_price, chunk, side="SELL")
+
+            if not success:
+                print(f"[{ts()}] OB_EXIT [{pass_label}]:   -> ORDER FAILED: {result}")
+                fill_log.append({"price": bid_price, "size": chunk, "order_id": None,
+                                 "success": False, "filled": 0})
+                continue
+
+            orders_placed += 1
+            chunks_since_refresh += 1
+            order_id = result
+            pending_order_ids.append(order_id)
+            made_progress = True
+
+            # Wait for fill confirmation with timeout
+            filled_shares = 0.0
+            fill_start = time.time()
+            while time.time() - fill_start < OB_EXIT_FILL_TIMEOUT:
+                status = get_order_status(order_id)
+                filled_shares = status.get('filled', 0)
+                if status.get('fully_filled'):
+                    break
+                time.sleep(OB_EXIT_POLL_INTERVAL)
+
+            # Final status check
+            if filled_shares <= 0:
+                status = get_order_status(order_id)
+                filled_shares = status.get('filled', 0)
+
+            chunk_pnl = (bid_price - entry_price) * filled_shares if filled_shares > 0 else 0
+            unfilled = chunk - filled_shares
+
+            fill_log.append({
+                "price": bid_price, "size": chunk, "order_id": order_id,
+                "success": True, "filled": filled_shares, "unfilled": unfilled,
+                "pnl": chunk_pnl,
+            })
+
+            if filled_shares > 0:
+                confirmed_filled += filled_shares
+                total_pnl += chunk_pnl
+                remaining -= filled_shares
+                print(f"[{ts()}] OB_EXIT [{pass_label}]:   -> FILLED: {filled_shares:.0f}/{chunk:.0f} @ {bid_price*100:.0f}c "
+                      f"(P&L: ${chunk_pnl:+.2f}) [ID: {order_id[:8]}...]")
+                log_activity("OB_EXIT_CHUNK", {
+                    "pass": pass_label, "side": side, "price": bid_price,
+                    "size": chunk, "filled": filled_shares,
+                    "pnl": round(chunk_pnl, 4), "order_id": order_id,
+                    "remaining": remaining
+                })
+            else:
+                print(f"[{ts()}] OB_EXIT [{pass_label}]:   -> NOT FILLED in {OB_EXIT_FILL_TIMEOUT}s, cancelling [ID: {order_id[:8]}...]")
+
+            # Cancel unfilled portion immediately
+            if unfilled > 0:
+                cancel_order(order_id)
+                print(f"[{ts()}] OB_EXIT [{pass_label}]:   -> Cancelled {unfilled:.0f} unfilled @ {bid_price*100:.0f}c")
+
+            # Check if we need an OB refresh mid-walk
+            if chunks_since_refresh >= OB_REFRESH_EVERY and remaining > 0:
+                break  # Break inner for-loop to trigger refresh in outer while-loop
+
+        # If we walked the entire snapshot without placing any orders, stop
+        if not made_progress:
+            break
+
+    # Safety sweep: cancel any remaining open orders
+    for oid in pending_order_ids:
+        try:
+            status = get_order_status(oid)
+            if not status.get('fully_filled') and status.get('status') not in ('CANCELLED', 'EXPIRED'):
+                cancel_order(oid)
+        except Exception:
+            pass
+
+    return confirmed_filled, total_pnl, remaining, fill_log, orders_placed, pending_order_ids
+
+
+def execute_ob_exit(side: str, books: dict = None) -> tuple:
+    """
+    Sell position by walking the order book and placing limit sells
+    matched to each bid level's available size.
+
+    Flow:
+      1. Fetch fresh order book, log snapshot
+      2. First pass: walk bids top-down (refreshing every 3 chunks)
+      3. If >HARD_STOP_MAX_SHARES remain: re-fetch book, run second chunked pass
+      4. If <=HARD_STOP_MAX_SHARES remain: single FOK to clean up
+      5. If FOK fails: log + alert (never leave orphaned positions silently)
+
+    Falls back to execute_hard_stop (FOK) only for small remainders or total failure.
+
+    Args:
+        side: "UP" or "DOWN" - which side we're liquidating
+        books: Order book data (will be fetched fresh regardless)
+
+    Returns:
+        tuple: (success, total_pnl, fill_log)
+    """
+    global window_state
+
+    exit_start = time.time()
+
+    # --- Determine shares to sell ---
+    tracked_shares = window_state.get(f'capture_99c_filled_{side.lower()}', 0)
+    api_pos = verify_position_from_api()
+
+    if api_pos is not None:
+        actual_shares = api_pos[0] if side == 'UP' else api_pos[1]
+        if abs(actual_shares - tracked_shares) > 0.01 and actual_shares > 0:
+            print(f"[{ts()}] OB_EXIT: Position mismatch - API={actual_shares:.4f} tracked={tracked_shares:.4f}, using API")
+        shares = actual_shares if actual_shares > 0 else tracked_shares
+    else:
+        print(f"[{ts()}] OB_EXIT: API unavailable, using tracked shares={tracked_shares}")
+        shares = tracked_shares
+
+    if shares <= 0:
+        print(f"[{ts()}] OB_EXIT: No shares to sell for {side}")
+        return False, 0.0, []
+
+    token = window_state.get(f'{side.lower()}_token')
+    entry_price = window_state.get('capture_99c_fill_price', 0.99)
+
+    # --- Fetch FRESH order book for initial snapshot log ---
+    if window_state.get('cached_market'):
+        books = get_order_books(window_state['cached_market'])
+
+    if books is None:
+        print(f"[{ts()}] OB_EXIT: Cannot fetch order book, falling back to hard stop")
+        hs_success, hs_pnl = execute_hard_stop(side, {})
+        return hs_success, hs_pnl, []
+
+    print()
+    print("=" * 55)
+    print(f"  OB_EXIT: Selling {shares:.0f} {side} shares via order book walk")
+    print(f"  Entry: {entry_price*100:.0f}c | Token: {token[:12]}...")
+    print("=" * 55)
+
+    # --- Order book snapshot before any orders ---
+    bids_key = f'{side.lower()}_bids'
+    bids_sorted = sorted(books.get(bids_key, []), key=lambda x: float(x['price']), reverse=True)
+    _log_ob_snapshot(side, bids_sorted)
+
+    if not bids_sorted:
+        print(f"[{ts()}] OB_EXIT: No bids in book, falling back to hard stop")
+        hs_success, hs_pnl = execute_hard_stop(side, books)
+        return hs_success, hs_pnl, []
+
+    # ========== FIRST PASS ==========
+    print(f"[{ts()}] OB_EXIT: Starting PASS 1 — {shares:.0f} shares to sell")
+    p1_filled, p1_pnl, remaining, p1_log, p1_orders, _ = _walk_bids(
+        side, token, entry_price, shares, "PASS_1")
+
+    total_pnl = p1_pnl
+    all_fills = list(p1_log)
+    total_orders = p1_orders
+    confirmed_filled = p1_filled
+
+    # ========== SECOND PASS (if >HARD_STOP_MAX_SHARES remain) ==========
+    if remaining > HARD_STOP_MAX_SHARES:
+        print()
+        print(f"[{ts()}] SECOND PASS: Remaining shares: {remaining:.0f} "
+              f"| Re-fetching order book for second chunked exit attempt")
+        log_activity("SECOND_PASS", {
+            "remaining": remaining, "first_pass_filled": p1_filled,
+            "first_pass_orders": p1_orders
+        })
+
+        p2_filled, p2_pnl, remaining, p2_log, p2_orders, _ = _walk_bids(
+            side, token, entry_price, remaining, "PASS_2")
+
+        total_pnl += p2_pnl
+        all_fills.extend(p2_log)
+        total_orders += p2_orders
+        confirmed_filled += p2_filled
+
+    # ========== FOK CLEANUP (if <=HARD_STOP_MAX_SHARES remain) ==========
+    if 0 < remaining <= HARD_STOP_MAX_SHARES:
+        print(f"[{ts()}] OB_EXIT: {remaining:.0f} shares remain (<= {HARD_STOP_MAX_SHARES}), using FOK to clean up")
+        window_state[f'capture_99c_filled_{side.lower()}'] = remaining
+        hs_success, hs_pnl = execute_hard_stop(side, books)
+        total_pnl += hs_pnl
+        if hs_success:
+            remaining = 0
+    elif remaining > HARD_STOP_MAX_SHARES:
+        # Both passes exhausted and still >HARD_STOP_MAX_SHARES remain — FOK as last resort
+        print(f"[{ts()}] OB_EXIT: {remaining:.0f} shares STILL remain after 2 passes, FOK last resort")
+        window_state[f'capture_99c_filled_{side.lower()}'] = remaining
+        hs_success, hs_pnl = execute_hard_stop(side, books)
+        total_pnl += hs_pnl
+        if hs_success:
+            remaining = 0
+
+    # ========== AUTOMATED LAST RESORT — never end a window holding shares ==========
+    if remaining > 0:
+        print(f"[{ts()}] OB_EXIT: FOK failed, {remaining:.0f} shares stuck. Entering last resort sequence.")
+        send_telegram(f"<b>OB EXIT: FOK FAILED</b>\nStuck: {remaining:.0f} {side}\nEntering last resort sequence...")
+
+        # Step 1: Wait 5s, re-fetch book, one more chunked pass at any price
+        print(f"[{ts()}] LAST RESORT: Waiting 5s then attempting emergency chunked exit...")
+        time.sleep(5)
+        lr_filled, lr_pnl, remaining, lr_log, lr_orders, _ = _walk_bids(
+            side, token, entry_price, remaining, "LAST_RESORT_CHUNKED")
+        total_pnl += lr_pnl
+        all_fills.extend(lr_log)
+        total_orders += lr_orders
+        confirmed_filled += lr_filled
+        if remaining <= 0:
+            print(f"[{ts()}] LAST RESORT: Emergency chunked exit succeeded! All shares sold.")
+
+        # Step 2: Retry FOK every 10s until flat
+        LAST_RESORT_MAX_ATTEMPTS = 30  # 30 * 10s = 5 minutes max
+        lr_attempt = 0
+        while remaining > 0 and lr_attempt < LAST_RESORT_MAX_ATTEMPTS:
+            lr_attempt += 1
+            time.sleep(10)
+
+            # Re-fetch book for current best bid
+            lr_books = get_order_books(window_state['cached_market']) if window_state.get('cached_market') else None
+            lr_bids = []
+            best_bid_price = 0
+            if lr_books:
+                lr_bids = lr_books.get(f'{side.lower()}_bids', [])
+                if lr_bids:
+                    best_bid_price = float(sorted(lr_bids, key=lambda x: float(x['price']), reverse=True)[0]['price'])
+
+            print(f"[{ts()}] LAST RESORT: Attempt {lr_attempt} | Shares remaining: {remaining:.0f} "
+                  f"| Best bid: {best_bid_price*100:.0f}c")
+
+            if not lr_bids or best_bid_price <= 0:
+                result_msg = "failed (no bids)"
+                print(f"[{ts()}] LAST RESORT: [{ts()}] | Attempt {lr_attempt} | Shares remaining: {remaining:.0f} "
+                      f"| Best bid: 0c | Result: {result_msg}")
+                log_activity("LAST_RESORT", {
+                    "attempt": lr_attempt, "remaining": remaining,
+                    "best_bid": 0, "result": result_msg
+                })
+                continue
+
+            # Try FOK for remaining shares
+            window_state[f'capture_99c_filled_{side.lower()}'] = remaining
+            fok_success, fok_oid, fok_filled, fok_bal_err = place_fok_market_sell(token, remaining)
+
+            if fok_success and fok_filled > 0:
+                fok_pnl = (best_bid_price - entry_price) * fok_filled
+                total_pnl += fok_pnl
+                confirmed_filled += fok_filled
+                remaining -= fok_filled
+                result_msg = f"filled {fok_filled:.0f}"
+            else:
+                result_msg = "failed"
+                if fok_bal_err:
+                    # Balance error likely means shares already sold
+                    remaining = remaining / 2
+                    if remaining < 1:
+                        remaining = 0
+                    result_msg = f"balance error, halved to {remaining:.0f}"
+
+            print(f"[{ts()}] LAST RESORT: [{ts()}] | Attempt {lr_attempt} | Shares remaining: {remaining:.0f} "
+                  f"| Best bid: {best_bid_price*100:.0f}c | Result: {result_msg}")
+            log_activity("LAST_RESORT", {
+                "attempt": lr_attempt, "remaining": remaining,
+                "best_bid": best_bid_price, "result": result_msg
+            })
+
+        if remaining > 0:
+            print(f"[{ts()}] LAST RESORT EXHAUSTED: {remaining:.0f} shares could not be sold after {lr_attempt} attempts!")
+            send_telegram(
+                f"<b>LAST RESORT EXHAUSTED</b>\n"
+                f"Side: {side}\n"
+                f"Stuck shares: {remaining:.0f}\n"
+                f"Attempts: {lr_attempt}\n"
+                f"<i>All automated exits failed</i>")
+        else:
+            print(f"[{ts()}] LAST RESORT: Successfully exited all shares after {lr_attempt} attempt(s)")
+            send_telegram(f"LAST RESORT: Exited all {side} shares after {lr_attempt} retry attempt(s)")
+
+    # --- EXIT SUMMARY ---
+    exit_elapsed_ms = (time.time() - exit_start) * 1000
+
+    if all_fills:
+        prices = [f["price"] for f in all_fills if f.get("filled", 0) > 0]
+        sizes = [f["filled"] for f in all_fills if f.get("filled", 0) > 0]
+        if prices:
+            avg_fill = sum(p * s for p, s in zip(prices, sizes)) / sum(sizes)
+            best_fill = max(prices)
+            worst_fill = min(prices)
+        else:
+            avg_fill = best_fill = worst_fill = 0
+    else:
+        avg_fill = best_fill = worst_fill = 0
+
+    summary = (f"EXIT SUMMARY: [{ts()}] | Shares: {shares:.0f} | Filled: {confirmed_filled:.0f} "
+               f"| Avg fill price: {avg_fill*100:.0f}c "
+               f"| Chunks: {total_orders} | Best fill: {best_fill*100:.0f}c | Worst fill: {worst_fill*100:.0f}c "
+               f"| Total P&L: ${total_pnl:+.2f} | Time to complete: {exit_elapsed_ms:.0f}ms"
+               f"| Unfilled: {remaining:.0f}")
+    print()
+    print(summary)
+    print()
+    log_activity("EXIT_SUMMARY", {
+        "shares": shares, "confirmed_filled": confirmed_filled,
+        "avg_fill": round(avg_fill, 4),
+        "chunks": total_orders, "best_fill": best_fill, "worst_fill": worst_fill,
+        "pnl": round(total_pnl, 4), "elapsed_ms": round(exit_elapsed_ms),
+        "unfilled": remaining
+    })
+
+    log_event("OB_EXIT", window_state.get('window_id', ''),
+              side=side, shares=shares, covered=confirmed_filled,
+              orders=total_orders, pnl=round(total_pnl, 4),
+              uncovered=remaining, avg_fill=round(avg_fill, 4),
+              elapsed_ms=round(exit_elapsed_ms))
+
+    # Telegram notification
+    msg = f"""{'='*20}
+<b>OB EXIT ({side})</b>
+{'='*20}
+Shares: {shares:.0f}
+Confirmed filled: {confirmed_filled:.0f} across {total_orders} orders
+Avg fill: {avg_fill*100:.0f}c | Best: {best_fill*100:.0f}c | Worst: {worst_fill*100:.0f}c
+Entry: {entry_price*100:.0f}c
+P&L: ${total_pnl:+.2f} ({exit_elapsed_ms:.0f}ms)"""
+    if remaining > 0:
+        msg += f"\n{remaining:.0f} shares STUCK — manual check needed"
+    send_telegram(msg)
+
+    # --- Recovery tracking ---
+    exit_bid = float(bids_sorted[0]['price']) if bids_sorted else HARD_STOP_TRIGGER
+    _schedule_recovery_check(time.time(), exit_bid, side)
+
+    # --- Update state ---
+    if remaining <= 0:
+        window_state['capture_99c_exited'] = True
+        window_state['capture_99c_exit_reason'] = 'ob_exit'
+        window_state[f'capture_99c_filled_{side.lower()}'] = 0
+        return True, total_pnl, all_fills
+    else:
+        window_state[f'capture_99c_filled_{side.lower()}'] = remaining
+        return False, total_pnl, all_fills
+
+
 def cancel_order(order_id):
     try:
         clob_client.cancel(order_id)
@@ -1937,14 +2423,18 @@ def execute_99c_early_exit(side: str, trigger_value: float, books: dict, reason:
     """
     global window_state
 
-    # === HARD STOP FALLBACK (v1.34) ===
-    # If hard stop conditions are met, escalate to FOK market orders
+    # === OB EXIT (v1.59) — walks order book, falls back to hard stop ===
     if HARD_STOP_ENABLED:
         should_trigger, best_bid = check_hard_stop_trigger(books, side)
         if should_trigger:
-            print(f"[{ts()}] EARLY_EXIT: Escalating to HARD STOP (best_bid={best_bid*100:.0f}c)")
-            success, pnl = execute_hard_stop(side, books)
-            return success
+            print(f"[{ts()}] EARLY_EXIT: Triggering OB EXIT (best_bid={best_bid*100:.0f}c)")
+            ob_success, ob_pnl, ob_fills = execute_ob_exit(side, books)
+            if ob_success:
+                return True
+            # OB exit failed entirely — hard stop as full fallback
+            print(f"[{ts()}] EARLY_EXIT: OB EXIT failed, falling back to hard stop")
+            hs_success, hs_pnl = execute_hard_stop(side, books)
+            return hs_success
 
     shares = window_state.get(f'capture_99c_filled_{side.lower()}', 0)
     if shares <= 0:
@@ -2238,8 +2728,10 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
     """
     global window_state, session_counters
 
-    # Use daily locked trade size. Fallback to MAX_SPEND if not yet set.
-    if daily_trade_shares > 0:
+    # Trade sizing: FIXED_TRADE_SHARES takes priority if set
+    if FIXED_TRADE_SHARES > 0:
+        shares = FIXED_TRADE_SHARES
+    elif daily_trade_shares > 0:
         shares = daily_trade_shares
     elif cached_portfolio_total > 0:
         trade_budget = cached_portfolio_total * TRADE_SIZE_PCT
@@ -3968,8 +4460,11 @@ def main():
                         window_state['hard_stop_consecutive_ticks'] += 1
                         ticks_so_far = window_state['hard_stop_consecutive_ticks']
                         if ticks_so_far >= HARD_STOP_CONSECUTIVE_REQUIRED:
-                            print(f"[{ts()}] 🛑 HARD STOP: {capture_side} best bid at {best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c for {ticks_so_far} consecutive ticks")
-                            execute_hard_stop(capture_side, books)
+                            print(f"[{ts()}] 🛑 EXIT TRIGGER: {capture_side} best bid at {best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c for {ticks_so_far} consecutive ticks")
+                            ob_success, ob_pnl, ob_fills = execute_ob_exit(capture_side, books)
+                            if not ob_success:
+                                print(f"[{ts()}] OB EXIT failed, falling back to hard stop")
+                                execute_hard_stop(capture_side, books)
                         else:
                             print(f"[{ts()}] ⚠️ HARD_STOP WARNING: tick {ticks_so_far}/{HARD_STOP_CONSECUTIVE_REQUIRED}: best_bid={best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c")
                     else:
@@ -4115,7 +4610,10 @@ def main():
                                     "confidence_drop": danger_result['confidence_drop'],
                                     "velocity": danger_result['velocity'],
                                 })
-                                execute_hard_stop(bet_side, books)
+                                ob_success, ob_pnl, ob_fills = execute_ob_exit(bet_side, books)
+                                if not ob_success:
+                                    print(f"[{ts()}] OB EXIT failed on danger exit, falling back to hard stop")
+                                    execute_hard_stop(bet_side, books)
                             else:
                                 print(f"[{ts()}] ⚠️ DANGER_WARNING: tick {d_ticks}/{DANGER_EXIT_CONSECUTIVE_REQUIRED}: score={d_score:.2f} opp_ask={opp_ask*100:.0f}c")
                         else:

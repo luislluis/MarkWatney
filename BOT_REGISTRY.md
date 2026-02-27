@@ -1,10 +1,11 @@
 # Polybot Version Registry
 
-## Current Version: v1.58 "Profit Lock"
+## Current Version: v1.59 "Book Walker"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.58 | 2026-02-27 PST | Profit Lock | Auto-sell at 99c on fill; cancel if bid < 60c; 45c hard stop as backstop | Active |
+| v1.59 | 2026-02-27 PST | Book Walker | OB-aware chunked exit (walk bid levels instead of FOK); fixed 25-share sizing; OB snapshot + exit summary logging; recovery tracking (+1m/+5m/+15m) | Active |
+| v1.58 | 2026-02-27 PST | Profit Lock | Auto-sell at 99c on fill; cancel if bid < 60c; 45c hard stop as backstop | Archived |
 | v1.57 | 2026-02-26 PST | Clean Slate | Disable danger exit (false exits); hard stop raised to 45c | Archived |
 | v1.56 | 2026-02-26 PST | Danger Sense | Danger score exit gated by opponent ask > 15c; 2-tick consecutive requirement | Archived |
 | v1.55 | 2026-02-25 PST | Iron Exit | Chunked FOK sells; faster RTDS price feed; balance error detection | Archived |
