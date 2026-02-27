@@ -1691,6 +1691,7 @@
     // ── Event Feed ──────────────────────────────────────────
 
     function getEventStyle(evt) {
+      if (evt === 'PROFIT_LOCK_FILLED') return { icon: '\uD83D\uDCB0', color: 'green' };
       if (/WIN|FILL|PROFIT/.test(evt)) return { icon: '\u2713', color: 'green' };
       if (/LOSS|ERROR|STOP|EXIT|FLATTEN/.test(evt)) return { icon: '\u2717', color: 'red' };
       if (/BAIL|HEDGE/.test(evt)) return { icon: '!', color: 'yellow' };
@@ -1706,6 +1707,7 @@
       switch (evt) {
         case 'CAPTURE_99C': return '99c snipe: ' + side + ' @ ' + Math.round(price * 100) + '\u00A2';
         case 'CAPTURE_FILL': return 'Filled: ' + shares + ' ' + side + ' @ ' + Math.round(price * 100) + '\u00A2';
+        case 'PROFIT_LOCK_FILLED': return '\uD83D\uDCB0 Sold ' + shares + ' ' + side + ' @ 99\u00A2 — profit locked';
         case 'CAPTURE_99C_WIN': return 'WIN +$' + parseFloat(pnl || 0).toFixed(2);
         case 'CAPTURE_99C_LOSS': return 'LOSS -$' + Math.abs(parseFloat(pnl || 0)).toFixed(2);
         case '99C_EARLY_EXIT': return 'Early exit: ' + side;

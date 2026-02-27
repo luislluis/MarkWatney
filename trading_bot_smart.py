@@ -3994,10 +3994,15 @@ def main():
                         print(f"[{ts()}] 🔒✅ PROFIT_LOCK FILLED: Sold {filled_shares:.0f} {capture_side} @ 99c")
                         window_state['profit_lock_filled'] = True
                         window_state['capture_99c_exited'] = True
+                        entry_px = window_state.get('capture_99c_fill_price', CAPTURE_99C_BID_PRICE)
+                        lock_pnl = filled_shares * (PROFIT_LOCK_SELL_PRICE - entry_px)
                         log_activity("PROFIT_LOCK_FILLED", {
                             "side": capture_side, "shares": filled_shares,
                             "price": PROFIT_LOCK_SELL_PRICE
                         })
+                        log_event("PROFIT_LOCK_FILLED", slug,
+                            side=capture_side, shares=filled_shares,
+                            price=PROFIT_LOCK_SELL_PRICE, pnl=lock_pnl)
                     elif not window_state.get('profit_lock_cancelled'):
                         # Check if we need to cancel (best bid dropped below 60c)
                         if capture_side == "UP":
