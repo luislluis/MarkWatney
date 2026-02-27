@@ -2758,6 +2758,7 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
         window_state['capture_99c_order'] = order_id
         window_state['capture_99c_side'] = side
         window_state['capture_99c_shares'] = shares
+        window_state['capture_99c_token'] = token
         # NOTE: Do NOT set capture_99c_filled_up/down here.
         # Fill tracking happens in the main loop fill detection (line ~3830).
         # Setting it here causes get_arb_imbalance() to return a phantom
@@ -4433,27 +4434,85 @@ def main():
                         log_event("CAPTURE_FILL", slug, side=side, shares=filled,
                                         price=fill_price, pnl=actual_pnl)
 
-                        # === INSTANT PROFIT LOCK (v1.58) ===
-                        # Immediately place sell at 99c to lock in profit
+                        # === INSTANT PROFIT LOCK (v1.58, fixed v1.60) ===
+                        # After fill, update balance allowance then place sell at 99c
                         if PROFIT_LOCK_ENABLED and not window_state.get('profit_lock_order_id'):
                             sell_token = window_state['up_token'] if side == "UP" else window_state['down_token']
+                            buy_token = window_state.get('capture_99c_token', 'unknown')
                             sell_price = PROFIT_LOCK_SELL_PRICE
                             sell_shares = filled
 
-                            print(f"[{ts()}] 🔒 PROFIT_LOCK: Placing sell {sell_shares:.0f} {side} @ {sell_price*100:.0f}c")
-                            pl_success, pl_result = place_limit_order(
-                                sell_token, sell_price, sell_shares,
-                                side="SELL", bypass_price_failsafe=True
-                            )
+                            print(f"[{ts()}] 🔒 PROFIT_LOCK: buy_token={buy_token[:12]}... sell_token={sell_token[:12]}... shares={sell_shares:.0f}")
+
+                            # Step 1: Update balance allowance so CLOB knows we hold these tokens
+                            try:
+                                from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+                                clob_client.update_balance_allowance(
+                                    BalanceAllowanceParams(
+                                        asset_type=AssetType.CONDITIONAL,
+                                        token_id=sell_token
+                                    )
+                                )
+                                print(f"[{ts()}] 🔒 PROFIT_LOCK: Balance allowance updated for {side} token")
+                            except Exception as e:
+                                print(f"[{ts()}] 🔒 PROFIT_LOCK: update_balance_allowance error (non-fatal): {e}")
+
+                            # Step 2: Wait for shares to settle — poll every 0.5s for up to 5s
+                            pl_success = False
+                            pl_result = None
+                            for pl_attempt in range(10):  # 10 x 0.5s = 5s max
+                                # Check balance before attempting sell
+                                try:
+                                    bal = clob_client.get_balance_allowance(
+                                        BalanceAllowanceParams(
+                                            asset_type=AssetType.CONDITIONAL,
+                                            token_id=sell_token
+                                        )
+                                    )
+                                    bal_amount = float(bal.get('balance', 0)) if bal else 0
+                                    print(f"[{ts()}] 🔒 PROFIT_LOCK: Balance check #{pl_attempt+1}: {bal_amount:.1f} shares (need {sell_shares:.0f})")
+                                except Exception as e:
+                                    bal_amount = 0
+                                    print(f"[{ts()}] 🔒 PROFIT_LOCK: Balance check error: {e}")
+
+                                if bal_amount >= sell_shares:
+                                    # Balance sufficient — place sell
+                                    print(f"[{ts()}] 🔒 PROFIT_LOCK: Placing sell {sell_shares:.0f} {side} @ {sell_price*100:.0f}c")
+                                    pl_success, pl_result = place_limit_order(
+                                        sell_token, sell_price, sell_shares,
+                                        side="SELL", bypass_price_failsafe=True
+                                    )
+                                    if pl_success:
+                                        break
+                                    else:
+                                        print(f"[{ts()}] 🔒 PROFIT_LOCK: Sell failed (attempt {pl_attempt+1}): {pl_result}")
+                                        # Re-update allowance and retry
+                                        try:
+                                            clob_client.update_balance_allowance(
+                                                BalanceAllowanceParams(
+                                                    asset_type=AssetType.CONDITIONAL,
+                                                    token_id=sell_token
+                                                )
+                                            )
+                                        except Exception:
+                                            pass
+
+                                time.sleep(0.5)
+
                             if pl_success:
                                 window_state['profit_lock_order_id'] = pl_result
-                                print(f"[{ts()}] 🔒 PROFIT_LOCK: Sell order placed (ID: {pl_result[:8]}...)")
+                                print(f"[{ts()}] PROFIT_LOCK_CONFIRMED: Sell order placed successfully | {sell_shares:.0f} shares @ {sell_price*100:.0f}c | Order ID: {pl_result[:8]}...")
                                 log_activity("PROFIT_LOCK_PLACED", {
                                     "side": side, "shares": sell_shares,
-                                    "sell_price": sell_price, "order_id": pl_result
+                                    "sell_price": sell_price, "order_id": pl_result,
+                                    "attempts": pl_attempt + 1
                                 })
                             else:
-                                print(f"[{ts()}] PROFIT_LOCK_ERROR: Failed to place sell: {pl_result}")
+                                print(f"[{ts()}] PROFIT_LOCK_ERROR: Failed after {pl_attempt+1} attempts. Last error: {pl_result}")
+                                log_activity("PROFIT_LOCK_FAILED", {
+                                    "side": side, "shares": sell_shares,
+                                    "error": str(pl_result), "attempts": pl_attempt + 1
+                                })
 
                 # === 60¢ HARD STOP CHECK (v1.34) ===
                 # Exit immediately using FOK market orders if best bid <= 60¢
