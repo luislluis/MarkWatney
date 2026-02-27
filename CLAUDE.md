@@ -513,6 +513,22 @@ tail -100 ~/polybot/bot.log | grep -i sheets
 
 ## Session Log
 
+### 2026-02-27
+- **Deployed v1.59 "Book Walker"** - OB-aware chunked exit
+  - `execute_ob_exit()`: walks bid levels top-down, places limit sells matched to each level
+  - 6-layer exit escalation: chunked pass → 2nd pass → FOK → emergency chunked → FOK retry loop → Telegram alert
+  - Fixed trade size: `FIXED_TRADE_SHARES = 25`
+  - OB snapshot logging, exit summary, recovery tracking (+1m/+5m/+15m)
+- **Deployed v1.60 "Night Watch"** - Fix end-of-window blackout
+  - **Root cause**: `remaining_secs > 15` gates disabled ALL exit checks in final 15 seconds
+  - Removed gates from hard stop (line 4452), OB early exit (line 4524), danger exit (line 4596)
+  - Moved 99c outcome resolution (5-30s blocking) to background thread
+  - Added `WINDOW_END_SAFETY_PRICE = 0.80` — safety exit at T-10s if bid < 80c
+  - Added `FINAL_SECONDS` logging every tick in last 15s while holding position
+  - 5x monitoring frequency (0.2s sleep vs 0.5s) in final 15 seconds
+  - Fixed `CLOSE_GUARD_SECONDS` bypass — no longer skips loop when holding 99c position
+  - **Discovered**: Server has `polybot.service` systemd service — use `systemctl restart polybot.service` instead of manual nohup
+
 ### 2026-01-24
 - **Deployed v1.19 "Laser Falcon"** - ARB disabled, 99c sniper only mode
   - Added `ARB_ENABLED = False` flag to disable arbitrage trading
@@ -592,7 +608,7 @@ tail -100 ~/polybot/bot.log | grep -i sheets
 
 ---
 
-## Verified Bot Rules & Settings (v1.58 "Profit Lock")
+## Verified Bot Rules & Settings (v1.60 "Night Watch")
 
 > **Last verified**: 2026-02-26 — local code and live server confirmed identical.
 > **IMPORTANT**: Any future bot version MUST preserve these rules unless explicitly changed.
@@ -644,8 +660,8 @@ tail -100 ~/polybot/bot.log | grep -i sheets
 | Setting | Value | Why |
 |---------|-------|-----|
 | `HARD_STOP_ENABLED` | `True` | Always on. Last line of defense. |
-| `HARD_STOP_TRIGGER` | `0.40` (40c best bid) | Exit when best bid <= 40c. Triggers on BID not ask (real liquidity). |
-| `HARD_STOP_CONSECUTIVE_REQUIRED` | `2` ticks | **v1.54**: Requires 2 consecutive ticks below 40c. Prevents single-tick panic sells from momentary order book gaps. |
+| `HARD_STOP_TRIGGER` | `0.45` (45c best bid) | Exit when best bid <= 45c. Triggers on BID not ask (real liquidity). |
+| `HARD_STOP_CONSECUTIVE_REQUIRED` | `2` ticks | **v1.54**: Requires 2 consecutive ticks below 45c. Prevents single-tick panic sells from momentary order book gaps. |
 | `HARD_STOP_USE_FOK` | `True` | Fill-or-Kill market orders for guaranteed execution. |
 | `HARD_STOP_FLOOR` | `0.01` (1c) | Will sell at ANY price. Better to get 10c than ride to $0. |
 | Chunked FOK | v1.55 | **Sells in chunks sized to order book depth (90% of bid depth per attempt).** Prevents all-or-nothing FOK rejection when position > book depth. |
@@ -675,6 +691,19 @@ tail -100 ~/polybot/bot.log | grep -i sheets
 **How it works:** On 99c capture fill, immediately place a sell limit at 99c for the full fill quantity. If sell fills → profit locked (4c/share), no settlement risk. If best bid drops below 60c → cancel sell, 45c hard stop takes over. Sell order also cancelled at window end if still open.
 
 **Why this is critical:** On 2026-02-27, held 280 DOWN shares while BTC reversed in final 30 seconds. DOWN went from 99c to $0 at settlement — $277.20 loss. For 29 seconds after fill, DN bids were at 91-98c. This feature would have sold at 99c = +$11.20 profit instead.
+
+### End-of-Window Monitoring (v1.60 "Night Watch")
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| Exit triggers in final 15s | **ACTIVE** | v1.60 removed `remaining_secs > 15` gates. Hard stop, danger exit, OB exit all fire through T-0s. |
+| `WINDOW_END_SAFETY_PRICE` | `0.80` (80c) | In final 10 seconds, exit if best bid < 80c. Don't wait for 45c hard stop when time is running out. |
+| CLOSE_GUARD bypass | When holding position | `CLOSE_GUARD_SECONDS` no longer skips the loop when holding a 99c capture position. |
+| Monitoring frequency | 5 ticks/sec in final 15s | Loop sleep drops from 0.5s to 0.2s when holding position in last 15 seconds. |
+| `FINAL_SECONDS` logging | Every tick in last 15s | Logs UP/DN bid prices + danger score as proof monitoring is active. |
+| 99c resolution | Background thread | `check_99c_outcome` retry loop (5-30s blocking) moved to daemon thread. Main loop never blocks. |
+
+**Why this is critical:** On 2026-02-27, all exit checks were gated by `remaining_secs > 15`, creating a 15-second blackout at window end. The bot went dark, price dropped below 45c, exit trigger never fired, shares went to $0 at settlement. v1.60 ensures the monitoring loop NEVER pauses while holding a position.
 
 ### ROI Halt (Daily Profit Protection)
 
@@ -751,6 +780,9 @@ tail -100 ~/polybot/bot.log | grep -i sheets
 9. **Don't remove the opponent_ask gate from danger exit** — danger score alone causes false exits. Winning trades score 3.01-3.16 due to end-of-window settlement, while the actual loss scored only 2.09. The `opponent_ask > 15c` gate is what distinguishes real reversals from normal settlement noise.
 10. **Don't rely on bid collapse (40c) as primary exit signal** — by the time bids hit 40c, actual FOK fills are at ~13-26c. Use leading indicators (opponent ask + danger score) to exit while bids are still at 70-80c. Keep 40c hard stop only as absolute backstop.
 11. **Don't remove the profit lock sell order** — holding to settlement risks 100% loss on last-second BTC reversals. Selling at 99c gives 4c/share profit with zero risk. The 1c "lost" from not settling at $1.00 is insurance worth paying.
+12. **Don't gate exit checks on `remaining_secs > 15`** — this creates a 15-second blackout at window end where NO exit triggers fire. The bot must monitor and exit through T-0s. v1.60 removed all such gates.
+13. **Don't block the main loop with `time.sleep()` during window transitions** — 99c outcome resolution retries (5s x 6 = 30s) must run in a background thread. Main loop must never pause while holding a position.
+14. **Use `systemctl restart polybot.service` to restart the bot** — the server has a systemd service. Using `nohup` manually creates duplicate processes.
 
 ---
 
@@ -767,6 +799,7 @@ To hit 95% confidence (current threshold):
 Current threshold: 95%
 Current bid price: 95c
 Trade size: 42% of portfolio (locked daily)
-Hard stop: 40c best bid (2 consecutive ticks, chunked FOK)
+Hard stop: 45c best bid (2 consecutive ticks, OB exit → hard stop fallback)
+Safety exit: 80c best bid in final 10 seconds
 ROI halt: 60% daily
 ```
