@@ -384,6 +384,78 @@
     }
 
     /* History */
+    /* Fill Rate Analytics */
+    .fillrate-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+      text-align: center;
+    }
+    .fillrate-stat {
+      padding: 8px;
+      background: rgba(255,255,255,0.02);
+      border-radius: 8px;
+    }
+    .fillrate-hours {
+      display: flex;
+      gap: 3px;
+      align-items: flex-end;
+      height: 48px;
+    }
+    .fillrate-bar {
+      flex: 1;
+      border-radius: 3px 3px 0 0;
+      position: relative;
+      min-width: 0;
+      cursor: default;
+    }
+    .fillrate-bar-label {
+      position: absolute;
+      bottom: -16px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 9px;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+    .fillrate-table {
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    .fillrate-row {
+      display: grid;
+      grid-template-columns: 90px 40px 50px 50px 60px;
+      gap: 8px;
+      align-items: center;
+      padding: 5px 4px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--text-secondary);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .fillrate-row.header {
+      color: var(--text-muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .fillrate-pct { text-align: right; }
+    .fillrate-pct.green { color: var(--green-primary); }
+    .fillrate-pct.orange { color: var(--yellow-primary); }
+    .fillrate-pct.white { color: var(--text-primary); }
+
+    .fill-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: rgba(255,255,255,0.06);
+      color: var(--text-secondary);
+      vertical-align: middle;
+    }
+    .fill-badge.green { color: var(--green-primary); background: var(--green-glow); }
+    .fill-badge.orange { color: var(--yellow-primary); background: rgba(251, 191, 36, 0.12); }
+
     .history-card {
       padding: 4px;
     }
@@ -723,6 +795,38 @@
       </div>
     </div>
 
+    <!-- Fill Rate Analytics -->
+    <div class="animate-in delay-1" id="fillRateSection" style="display:none; margin-bottom: 20px;">
+      <div class="section-header">
+        <span class="section-title">Fill Rate Analytics</span>
+        <span class="section-badge" id="fillRateCount">0 fills</span>
+      </div>
+      <div class="card" style="padding: 16px;">
+        <div class="fillrate-grid">
+          <div class="fillrate-stat">
+            <div class="stat-label">Avg Fill Rate</div>
+            <div class="stat-value" id="avgFillRate" style="font-size:24px">--</div>
+          </div>
+          <div class="fillrate-stat">
+            <div class="stat-label">UP Fills</div>
+            <div class="stat-value" id="upFillRate" style="font-size:24px">--</div>
+          </div>
+          <div class="fillrate-stat">
+            <div class="stat-label">DOWN Fills</div>
+            <div class="stat-value" id="dnFillRate" style="font-size:24px">--</div>
+          </div>
+        </div>
+        <div style="margin-top: 14px;">
+          <div class="stat-label" style="margin-bottom: 8px;">Fill Rate by Hour (EST)</div>
+          <div id="fillRateByHour" class="fillrate-hours"></div>
+        </div>
+        <div style="margin-top: 14px;">
+          <div class="stat-label" style="margin-bottom: 8px;">Recent Fills</div>
+          <div id="fillRateTable" class="fillrate-table"></div>
+        </div>
+      </div>
+    </div>
+
     <div class="main-grid">
       <!-- Recent Trades -->
       <div class="animate-in delay-2">
@@ -1049,13 +1153,49 @@
       }
     }
 
+    // Build fill rate lookup: slug+side -> { fillRate, ordered, filled }
+    async function buildFillRateMap() {
+      try {
+        const [fillRes, orderRes] = await Promise.all([
+          db.from('Polymarket Bot Log - Events').select('Window ID, Side, Shares, Details')
+            .eq('Event', 'CAPTURE_FILL').order('Timestamp', { ascending: false }).limit(200),
+          db.from('Polymarket Bot Log - Events').select('Window ID, Side, Shares')
+            .eq('Event', 'CAPTURE_99C').order('Timestamp', { ascending: false }).limit(200)
+        ]);
+        const fills = fillRes.data || [];
+        const orders = orderRes.data || [];
+        const orderMap = {};
+        for (const o of orders) {
+          if (o['Window ID']) orderMap[o['Window ID']] = parseFloat(o.Shares) || 0;
+        }
+        const map = {};
+        for (const f of fills) {
+          const wid = f['Window ID'];
+          const side = (f.Side || '').toUpperCase();
+          const filled = parseFloat(f.Shares) || 0;
+          let fillRate = null, ordered = null;
+          try {
+            const d = typeof f.Details === 'string' ? JSON.parse(f.Details || '{}') : (f.Details || {});
+            if (d.fill_rate != null) { fillRate = parseFloat(d.fill_rate); ordered = parseFloat(d.ordered_shares) || filled; }
+          } catch (e) {}
+          if (fillRate == null && orderMap[wid] && orderMap[wid] > 0) { ordered = orderMap[wid]; fillRate = filled / ordered; }
+          if (wid) map[wid + '|' + side] = { fillRate, ordered, filled };
+        }
+        return map;
+      } catch (e) {
+        console.warn('[FILLRATE] buildFillRateMap error:', e);
+        return {};
+      }
+    }
+
     async function loadData() {
       try {
-        // All data from Polymarket Activity API — single source of truth
-        // /activity returns TRADE + REDEEM events (more complete than /trades)
+        // Fetch Polymarket Activity API + Supabase fill data in parallel
         const activityUrl = `https://data-api.polymarket.com/activity?user=${CONFIG.walletAddress}&limit=1000`;
-        const allActivity = await fetch(activityUrl)
-          .then(r => r.ok ? r.json() : Promise.reject(new Error('Activity API: ' + r.status)));
+        const [allActivity, fillRateMap] = await Promise.all([
+          fetch(activityUrl).then(r => r.ok ? r.json() : Promise.reject(new Error('Activity API: ' + r.status))),
+          buildFillRateMap()
+        ]);
         const polyTrades = allActivity.filter(a => a.type === 'TRADE');
         const redeemEvents = allActivity.filter(a => a.type === 'REDEEM');
 
@@ -1191,6 +1331,13 @@
           }
         }
 
+        // Enrich trades with fill rate from Supabase data
+        for (const t of trades) {
+          const key = (t.window_id || '') + '|' + (t.side || '').toUpperCase();
+          const fr = fillRateMap[key];
+          t.fill_rate = fr ? fr.fillRate : null;
+        }
+
         // Sort by timestamp descending
         trades.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
@@ -1250,10 +1397,156 @@
         const displayTrades = showingAll ? allTrades : getTodayTrades();
         renderDashboard(filteredSummary, displayTrades);
         updateBalanceChart(summary);
+
+        // Fill Rate Analytics — fetch from Supabase in background (non-blocking)
+        fetchFillRateData().catch(e => console.warn('[FILLRATE] Error:', e));
       } catch (error) {
         console.error('Dashboard error:', error);
         showError(error.message + ' - will retry');
       }
+    }
+
+    // ── Fill Rate Analytics ───────────────────────────────────
+
+    async function fetchFillRateData() {
+      const [fillRes, orderRes] = await Promise.all([
+        db.from('Polymarket Bot Log - Events').select('*')
+          .eq('Event', 'CAPTURE_FILL')
+          .order('Timestamp', { ascending: false })
+          .limit(200),
+        db.from('Polymarket Bot Log - Events').select('Window ID, Shares')
+          .eq('Event', 'CAPTURE_99C')
+          .order('Timestamp', { ascending: false })
+          .limit(200)
+      ]);
+
+      const fills = fillRes.data || [];
+      const orders = orderRes.data || [];
+      if (!fills.length) {
+        document.getElementById('fillRateSection').style.display = 'none';
+        return;
+      }
+
+      // Build order lookup: Window ID -> ordered shares
+      const orderMap = {};
+      for (const o of orders) {
+        if (o['Window ID']) orderMap[o['Window ID']] = parseFloat(o.Shares) || 0;
+      }
+
+      // Build fill rate records
+      const fillRecords = [];
+      for (const f of fills) {
+        const side = f.Side || '?';
+        const filled = parseFloat(f.Shares) || 0;
+        const ts = f.Timestamp;
+        let fillRate = null;
+        let ordered = null;
+
+        // Try parsing from Details JSON (new events with embedded fill_rate)
+        try {
+          const details = typeof f.Details === 'string' ? JSON.parse(f.Details || '{}') : (f.Details || {});
+          if (details.fill_rate != null) {
+            fillRate = parseFloat(details.fill_rate);
+            ordered = parseFloat(details.ordered_shares) || filled;
+          }
+        } catch (e) { /* ignore parse errors */ }
+
+        // Fallback: join with CAPTURE_99C on Window ID
+        if (fillRate == null) {
+          const ord = orderMap[f['Window ID']];
+          if (ord && ord > 0) {
+            ordered = ord;
+            fillRate = filled / ord;
+          }
+        }
+
+        fillRecords.push({ ts, side, filled, ordered, fillRate });
+      }
+
+      renderFillRateAnalytics(fillRecords);
+    }
+
+    function renderFillRateAnalytics(records) {
+      const section = document.getElementById('fillRateSection');
+      const withRate = records.filter(r => r.fillRate != null);
+
+      if (!withRate.length) {
+        section.style.display = 'none';
+        return;
+      }
+      section.style.display = '';
+
+      // Badge count
+      document.getElementById('fillRateCount').textContent = withRate.length + ' fills';
+
+      // Avg fill rate
+      const avgRate = withRate.reduce((s, r) => s + r.fillRate, 0) / withRate.length;
+      const avgEl = document.getElementById('avgFillRate');
+      avgEl.textContent = Math.round(avgRate * 100) + '%';
+      avgEl.className = 'stat-value ' + (avgRate >= 1 ? 'positive' : avgRate >= 0.8 ? '' : 'negative');
+
+      // By direction
+      const upRates = withRate.filter(r => (r.side || '').toUpperCase() === 'UP');
+      const dnRates = withRate.filter(r => (r.side || '').toUpperCase() === 'DOWN');
+      const upAvg = upRates.length ? upRates.reduce((s, r) => s + r.fillRate, 0) / upRates.length : null;
+      const dnAvg = dnRates.length ? dnRates.reduce((s, r) => s + r.fillRate, 0) / dnRates.length : null;
+
+      const upEl = document.getElementById('upFillRate');
+      upEl.textContent = upAvg != null ? Math.round(upAvg * 100) + '%' : '--';
+      upEl.className = 'stat-value' + (upAvg != null ? (upAvg >= 1 ? ' positive' : upAvg >= 0.8 ? '' : ' negative') : '');
+
+      const dnEl = document.getElementById('dnFillRate');
+      dnEl.textContent = dnAvg != null ? Math.round(dnAvg * 100) + '%' : '--';
+      dnEl.className = 'stat-value' + (dnAvg != null ? (dnAvg >= 1 ? ' positive' : dnAvg >= 0.8 ? '' : ' negative') : '');
+
+      // By hour (EST)
+      const hourBuckets = {};
+      for (const r of withRate) {
+        const h = new Date(r.ts).toLocaleString('en-US', { hour: 'numeric', hour12: true, timeZone: 'America/New_York' });
+        if (!hourBuckets[h]) hourBuckets[h] = [];
+        hourBuckets[h].push(r.fillRate);
+      }
+      const hourContainer = document.getElementById('fillRateByHour');
+      if (Object.keys(hourBuckets).length > 0) {
+        const bars = Object.entries(hourBuckets)
+          .sort((a, b) => {
+            const toNum = s => { const m = s.match(/(\d+)\s*(AM|PM)/i); if (!m) return 0; let h = parseInt(m[1]); if (m[2].toUpperCase() === 'PM' && h !== 12) h += 12; if (m[2].toUpperCase() === 'AM' && h === 12) h = 0; return h; };
+            return toNum(a[0]) - toNum(b[0]);
+          })
+          .map(([hour, rates]) => {
+            const avg = rates.reduce((s, v) => s + v, 0) / rates.length;
+            const pct = Math.round(avg * 100);
+            const h = Math.max(4, Math.round(avg * 48));
+            const color = avg >= 1 ? 'var(--green-primary)' : avg >= 0.8 ? 'var(--text-secondary)' : 'var(--yellow-primary)';
+            return `<div class="fillrate-bar" style="height:${h}px; background:${color};" title="${hour}: ${pct}% (${rates.length} fills)"><span class="fillrate-bar-label">${hour.replace(' ', '')}</span></div>`;
+          }).join('');
+        hourContainer.innerHTML = bars;
+        hourContainer.style.paddingBottom = '18px';
+      } else {
+        hourContainer.innerHTML = '<span style="color:var(--text-muted); font-size:12px;">No data</span>';
+      }
+
+      // Recent fills table (last 20)
+      const recent = records.slice(0, 20);
+      const tableEl = document.getElementById('fillRateTable');
+      const header = `<div class="fillrate-row header"><span>Time</span><span>Side</span><span>Order</span><span>Fill</span><span class="fillrate-pct">Rate</span></div>`;
+      const rows = recent.map(r => {
+        const time = new Date(r.ts).toLocaleTimeString('en-US', {
+          hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York'
+        });
+        const side = (r.side || '?').toUpperCase();
+        const ord = r.ordered != null ? Math.round(r.ordered) : '--';
+        const fil = Math.round(r.filled);
+        let rateTxt = '--';
+        let rateClass = 'white';
+        if (r.fillRate != null) {
+          const pct = Math.round(r.fillRate * 100);
+          rateTxt = pct + '%';
+          rateClass = pct >= 100 ? 'green' : pct >= 80 ? 'white' : 'orange';
+        }
+        return `<div class="fillrate-row"><span>${time}</span><span>${side}</span><span>${ord}</span><span>${fil}</span><span class="fillrate-pct ${rateClass}">${rateTxt}</span></div>`;
+      }).join('');
+      tableEl.innerHTML = header + rows;
     }
 
     function groupTradesByWindow(trades) {
@@ -1351,12 +1644,14 @@
             const costBasis = t.cost_basis ?? (t.shares * t.entry_price);
             const roiPct = costBasis > 0 && !isPending ? Math.round(pnl / costBasis * 1000) / 10 : null;
             const roiText = roiPct !== null ? `<span class="roi ${roiPct >= 0 ? 'positive' : 'negative'}">${roiPct > 0 ? '+' : ''}${roiPct}%</span>` : '';
+            const fr = t.fill_rate;
+            const frText = fr != null ? `<span class="fill-badge ${fr >= 1 ? 'green' : fr >= 0.8 ? '' : 'orange'}">${Math.round(fr * 100)}%</span>` : '';
 
             return separator + `
               <div class="trade-item">
                 <div class="trade-status ${statusClass}">${statusIcon}</div>
                 <div class="trade-info">
-                  <div class="trade-pair">${side} ${shares}@${price}${isExit ? ' \u2192 ' + fmtPrice(t.exit_price ?? 0) : ''}</div>
+                  <div class="trade-pair">${side} ${shares}@${price}${isExit ? ' \u2192 ' + fmtPrice(t.exit_price ?? 0) : ''}${frText ? ' ' + frText : ''}</div>
                   <div class="trade-detail">$${costBasis.toFixed(2)} \u00b7 ${roiText || '--'}</div>
                   <div class="trade-meta">${(() => {
                     const title = t.window_title || '';
@@ -1407,12 +1702,16 @@
             });
           })();
 
+          // Fill rate for window summary (use first trade's fill_rate)
+          const wFr = first.fill_rate;
+          const wFrText = wFr != null ? `<span class="fill-badge ${wFr >= 1 ? 'green' : wFr >= 0.8 ? '' : 'orange'}">${Math.round(wFr * 100)}%</span>` : '';
+
           // Summary row
           const summaryHtml = `
             <div class="trade-item window-summary">
               <div class="trade-status ${statusClass}">${statusIcon}</div>
               <div class="trade-info">
-                <div class="trade-pair"><span class="chevron">\u25B6</span>${sideLabel} ${fmtShares}@${fmtPrice(avgPrice)}</div>
+                <div class="trade-pair"><span class="chevron">\u25B6</span>${sideLabel} ${fmtShares}@${fmtPrice(avgPrice)}${wFrText ? ' ' + wFrText : ''}</div>
                 <div class="trade-detail">$${totalCost.toFixed(2)} \u00b7 ${roiText || '--'}</div>
                 <div class="trade-meta">${windowTime} \u00b7 <span class="fill-count">${group.length} fills</span></div>
               </div>

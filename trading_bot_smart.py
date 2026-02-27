@@ -4431,8 +4431,11 @@ def main():
                             window_state['capture_99c_filled_down'] = filled
                         # Send Telegram notification
                         notify_99c_fill(side, filled, peak_conf * 100 if peak_conf else 95, remaining_secs)
+                        ordered = window_state.get('capture_99c_shares', 0)
+                        _fill_rate = round(filled / ordered, 4) if ordered > 0 else None
                         log_event("CAPTURE_FILL", slug, side=side, shares=filled,
-                                        price=fill_price, pnl=actual_pnl)
+                                        price=fill_price, pnl=actual_pnl,
+                                        ordered_shares=ordered, fill_rate=_fill_rate)
 
                         # === INSTANT PROFIT LOCK (v1.58, fixed v1.60) ===
                         # After fill, update balance allowance then place sell at 99c.
