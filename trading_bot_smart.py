@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.54",
-    "codename": "Steady Hand",
-    "date": "2026-02-25",
-    "changes": "Hard stop requires 2 consecutive ticks below 40c (prevents single-tick panic sells)"
+    "version": "v1.58",
+    "codename": "Profit Lock",
+    "date": "2026-02-27",
+    "changes": "Auto-sell at 99c on fill; cancel if bid < 60c; 45c hard stop as backstop"
 }
 
 import os
@@ -329,8 +329,8 @@ PRICE_STOP_FLOOR = 0.50            # (legacy) Never sell below 50c
 # Guaranteed emergency exit using Fill-or-Kill market orders.
 # Triggers on BEST BID (not ask) to ensure real liquidity exists.
 # Will sell at any price to avoid riding to $0.
-HARD_STOP_ENABLED = True           # Enable 40¢ hard stop
-HARD_STOP_TRIGGER = 0.40           # Exit when best bid <= 40¢
+HARD_STOP_ENABLED = True           # Enable 45¢ hard stop
+HARD_STOP_TRIGGER = 0.45           # Exit when best bid <= 45¢
 HARD_STOP_FLOOR = 0.01             # Effectively no floor (1¢ minimum)
 HARD_STOP_USE_FOK = True           # Use Fill-or-Kill market orders
 HARD_STOP_CONSECUTIVE_REQUIRED = 2 # Require 2 consecutive ticks below trigger before firing
@@ -385,6 +385,26 @@ DANGER_WEIGHT_VELOCITY = 2.0         # Weight for BTC price velocity against us
 DANGER_WEIGHT_OPPONENT = 0.5         # Weight for opponent ask price strength
 DANGER_WEIGHT_TIME = 0.3             # Weight for time decay in final 60s
 
+# ===========================================
+# DANGER EXIT — Confidence + Opponent Ask Gate (v1.56)
+# ===========================================
+# Exit when danger score is high AND opponent ask confirms real uncertainty.
+# Opponent ask > 15c = market disagrees with our bet. Combined with high danger = GET OUT.
+# On wins, opponent ask is always ≤8c. 15c threshold provides 7c margin.
+DANGER_EXIT_ENABLED = False
+DANGER_EXIT_THRESHOLD = 0.40          # Exit when danger score >= this
+DANGER_EXIT_OPPONENT_ASK_MIN = 0.15   # Only exit if opponent ask > 15c (real uncertainty)
+DANGER_EXIT_CONSECUTIVE_REQUIRED = 2  # Require 2 consecutive ticks (prevent single-tick noise)
+
+# ===========================================
+# INSTANT PROFIT LOCK (v1.58)
+# ===========================================
+# On 99c capture fill, immediately place sell limit at 99c to lock in profit.
+# If market turns (bid < 60c), cancel sell and let hard stop handle exit.
+PROFIT_LOCK_ENABLED = True
+PROFIT_LOCK_SELL_PRICE = 0.99         # Sell limit price (99c)
+PROFIT_LOCK_CANCEL_THRESHOLD = 0.60   # Cancel sell if best bid drops below 60c
+
 # Bot identity
 BOT_NAME = "ChatGPT-Smart"
 
@@ -424,7 +444,34 @@ capital_deployed = 0.0
 # v1.49: Dynamic trade sizing — cached at window start
 cached_portfolio_total = 0.0
 # v1.54: Lock trade size for the entire day (set once at first window after midnight EST)
-daily_trade_shares = 0
+# v1.56: Persisted to file so restarts don't reset the lock
+DAILY_TRADE_SIZE_FILE = os.path.expanduser("~/.polybot_daily_trade_size.json")
+
+def _load_daily_trade_shares() -> int:
+    """Load today's locked trade size from file. Returns 0 if stale/missing."""
+    try:
+        with open(DAILY_TRADE_SIZE_FILE, 'r') as f:
+            data = json.load(f)
+        est_now = datetime.now(ZoneInfo("America/New_York"))
+        if data.get('date') == est_now.strftime("%Y-%m-%d"):
+            shares = int(data['shares'])
+            print(f"[STARTUP] Restored daily trade size from file: {shares} shares (locked {data['date']})")
+            return shares
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
+        pass
+    return 0
+
+def _save_daily_trade_shares(shares: int):
+    """Persist today's locked trade size to file."""
+    est_now = datetime.now(ZoneInfo("America/New_York"))
+    data = {"date": est_now.strftime("%Y-%m-%d"), "shares": shares}
+    try:
+        with open(DAILY_TRADE_SIZE_FILE, 'w') as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"WARNING: Failed to save daily trade size: {e}")
+
+daily_trade_shares = _load_daily_trade_shares()
 
 # Session counters
 session_counters = {
@@ -501,7 +548,11 @@ def reset_window_state(slug):
         "pending_hedge_order_id": None,      # Track pending hedge order to prevent duplicates
         "pending_hedge_side": None,          # Which side the pending hedge is for (UP/DOWN)
         "danger_score": 0,                    # Current danger score (0.0-1.0)
+        "danger_exit_ticks": 0,              # Danger exit: consecutive ticks above threshold
         "capture_99c_peak_confidence": 0,     # Confidence at 99c fill time
+        "profit_lock_order_id": None,        # Profit lock: sell order ID
+        "profit_lock_cancelled": False,      # Profit lock: whether sell was cancelled due to price drop
+        "profit_lock_filled": False,         # Profit lock: whether sell order filled
     }
 
 # 99c Sniper Daily Stats (rolling summary for Telegram notifications)
@@ -1280,20 +1331,20 @@ def place_fok_market_sell(token_id: str, shares: float) -> tuple:
         shares: Number of shares to sell
 
     Returns:
-        tuple: (success, order_id, filled_shares)
+        tuple: (success, order_id, filled_shares, is_balance_error)
     """
     global clob_client
 
     # v1.46: Defense-in-depth - block ALL orders when trading is halted
     if trading_halted:
         print(f"[{ts()}] [HALT] BLOCKED: FOK SELL x{shares} - trading halted (ROI target reached)")
-        return False, None, 0
+        return False, None, 0, False
 
     try:
         from py_clob_client.clob_types import MarketOrderArgs, OrderType
         from py_clob_client.order_builder.constants import SELL
 
-        print(f"[{ts()}] HARD_STOP: Placing FOK market sell: {shares} shares")
+        print(f"[{ts()}] HARD_STOP: Placing FOK market sell: {shares:.1f} shares")
 
         # Create market sell order
         sell_args = MarketOrderArgs(
@@ -1314,16 +1365,18 @@ def place_fok_market_sell(token_id: str, shares: float) -> tuple:
         if status == "MATCHED" or filled > 0:
             print(f"[{ts()}] HARD_STOP: FOK filled {filled}/{shares} shares, order_id={order_id[:8]}...")
             log_activity("FOK_FILLED", {"order_id": order_id, "filled": filled, "requested": shares})
-            return True, order_id, filled
+            return True, order_id, filled, False
         else:
             print(f"[{ts()}] HARD_STOP: FOK rejected, status={status}")
             log_activity("FOK_REJECTED", {"order_id": order_id, "status": status})
-            return False, order_id, 0.0
+            return False, order_id, 0.0, False
 
     except Exception as e:
-        print(f"[{ts()}] HARD_STOP_ERROR: FOK order failed: {e}")
-        log_activity("FOK_ERROR", {"error": str(e)})
-        return False, "", 0.0
+        error_str = str(e).lower()
+        is_balance_error = 'not enough balance' in error_str or 'allowance' in error_str
+        print(f"[{ts()}] HARD_STOP_ERROR: FOK order failed: {e}" + (" [BALANCE ERROR]" if is_balance_error else ""))
+        log_activity("FOK_ERROR", {"error": str(e), "balance_error": is_balance_error})
+        return False, "", 0.0, is_balance_error
 
 
 def check_hard_stop_trigger(books: dict, side: str) -> tuple:
@@ -1405,7 +1458,8 @@ def execute_hard_stop(side: str, books: dict) -> tuple:
     remaining_shares = shares
     total_pnl = 0.0
     attempts = 0
-    max_attempts = 10  # Safety limit
+    max_attempts = 15  # Safety limit (more attempts since we chunk now)
+    balance_errors = 0  # Track consecutive balance errors
 
     print()
     print("=" * 50)
@@ -1442,19 +1496,42 @@ def execute_hard_stop(side: str, books: dict) -> tuple:
         if best_bid < HARD_STOP_FLOOR:
             print(f"[{ts()}] HARD_STOP: Best bid {best_bid*100:.0f}c below floor {HARD_STOP_FLOOR*100:.0f}c, selling anyway")
 
-        # Place FOK market sell for remaining shares
-        success, order_id, filled = place_fok_market_sell(token, remaining_shares)
+        # v1.55: Chunk FOK sells to order book depth (don't try to sell more than book can absorb)
+        total_bid_depth = sum(float(b.get('size', 0)) for b in bids)
+        chunk_size = min(remaining_shares, max(total_bid_depth * 0.9, 1))  # 90% of depth, min 1 share
+        print(f"[{ts()}] HARD_STOP: Book depth={total_bid_depth:.0f}, selling chunk={chunk_size:.1f} of {remaining_shares:.0f} remaining")
+
+        # Place FOK market sell for chunk (not full position)
+        success, order_id, filled, is_balance_error = place_fok_market_sell(token, chunk_size)
 
         if success and filled > 0:
             # Calculate P&L for this fill
             fill_pnl = (best_bid - entry_price) * filled
             total_pnl += fill_pnl
             remaining_shares -= filled
+            balance_errors = 0  # Reset on success
 
             print(f"[{ts()}] HARD_STOP: Filled {filled:.0f} @ ~{best_bid*100:.0f}c, P&L: ${fill_pnl:.2f}, remaining: {remaining_shares:.0f}")
-        else:
-            print(f"[{ts()}] HARD_STOP: FOK rejected, trying again (attempt {attempts})")
+        elif is_balance_error:
+            balance_errors += 1
+            print(f"[{ts()}] HARD_STOP: Balance error #{balance_errors} - shares may already be sold")
+            if balance_errors >= 3:
+                print(f"[{ts()}] HARD_STOP: 3 consecutive balance errors - shares already sold, stopping")
+                remaining_shares = 0  # Assume sold
+                break
+            # Halve the chunk and retry
+            remaining_shares = remaining_shares / 2
+            if remaining_shares < 1:
+                print(f"[{ts()}] HARD_STOP: Chunk too small after halving, stopping")
+                remaining_shares = 0
+                break
             time.sleep(0.5)
+        else:
+            print(f"[{ts()}] HARD_STOP: FOK rejected, refreshing book (attempt {attempts})")
+            time.sleep(0.5)
+            # Refresh order books for next attempt
+            if window_state.get('cached_market'):
+                books = get_order_books(window_state['cached_market'])
 
     if remaining_shares > 0:
         print(f"[{ts()}] HARD_STOP_ERROR: Failed to fully liquidate! {remaining_shares:.0f} shares stuck")
@@ -3643,6 +3720,11 @@ def main():
                         except Exception as e:
                             print(f"[{ts()}] REDEEM_CHECK_ERROR: {e}")
 
+                    # Cancel any open profit lock sell order (v1.58)
+                    if window_state and window_state.get('profit_lock_order_id') and not window_state.get('profit_lock_filled'):
+                        cancel_order(window_state['profit_lock_order_id'])
+                        print(f"[{ts()}] 🔒 PROFIT_LOCK: Cancelled open sell order at window end")
+
                     cancel_all_orders()
                     window_state = reset_window_state(slug)
                     market_price_history.clear()  # v1.24: Clear price history for entry filter
@@ -3706,6 +3788,7 @@ def main():
                         if daily_trade_shares == 0:
                             _trade_budget = cached_portfolio_total * TRADE_SIZE_PCT
                             daily_trade_shares = math.ceil(_trade_budget / CAPTURE_99C_BID_PRICE)
+                            _save_daily_trade_shares(daily_trade_shares)
                             print(f"[{ts()}] 📐 DAILY trade size LOCKED: {daily_trade_shares} shares (${_trade_budget:.2f} = {TRADE_SIZE_PCT*100:.0f}% of ${cached_portfolio_total:.2f})")
                         else:
                             _current_budget = cached_portfolio_total * TRADE_SIZE_PCT
@@ -3845,6 +3928,28 @@ def main():
                         log_event("CAPTURE_FILL", slug, side=side, shares=filled,
                                         price=fill_price, pnl=actual_pnl)
 
+                        # === INSTANT PROFIT LOCK (v1.58) ===
+                        # Immediately place sell at 99c to lock in profit
+                        if PROFIT_LOCK_ENABLED and not window_state.get('profit_lock_order_id'):
+                            sell_token = window_state['up_token'] if side == "UP" else window_state['down_token']
+                            sell_price = PROFIT_LOCK_SELL_PRICE
+                            sell_shares = filled
+
+                            print(f"[{ts()}] 🔒 PROFIT_LOCK: Placing sell {sell_shares:.0f} {side} @ {sell_price*100:.0f}c")
+                            pl_success, pl_result = place_limit_order(
+                                sell_token, sell_price, sell_shares,
+                                side="SELL", bypass_price_failsafe=True
+                            )
+                            if pl_success:
+                                window_state['profit_lock_order_id'] = pl_result
+                                print(f"[{ts()}] 🔒 PROFIT_LOCK: Sell order placed (ID: {pl_result[:8]}...)")
+                                log_activity("PROFIT_LOCK_PLACED", {
+                                    "side": side, "shares": sell_shares,
+                                    "sell_price": sell_price, "order_id": pl_result
+                                })
+                            else:
+                                print(f"[{ts()}] PROFIT_LOCK_ERROR: Failed to place sell: {pl_result}")
+
                 # === 60¢ HARD STOP CHECK (v1.34) ===
                 # Exit immediately using FOK market orders if best bid <= 60¢
                 # Uses best BID (not ask) to ensure real liquidity exists
@@ -3871,6 +3976,49 @@ def main():
                         if window_state['hard_stop_consecutive_ticks'] > 0:
                             print(f"[{ts()}] HARD_STOP: Reset consecutive counter (bid recovered to {best_bid*100:.0f}c)")
                         window_state['hard_stop_consecutive_ticks'] = 0
+
+                # === PROFIT LOCK MONITOR (v1.58) ===
+                # Check if sell order filled, or cancel if best bid dropped below threshold
+                if (PROFIT_LOCK_ENABLED and
+                    window_state.get('profit_lock_order_id') and
+                    not window_state.get('profit_lock_filled') and
+                    not window_state.get('capture_99c_exited')):
+
+                    capture_side = window_state.get('capture_99c_side')
+                    lock_order_id = window_state['profit_lock_order_id']
+
+                    # Check if sell order filled
+                    sell_status = get_order_status(lock_order_id)
+                    if sell_status and sell_status.get('filled', 0) > 0:
+                        filled_shares = sell_status['filled']
+                        print(f"[{ts()}] 🔒✅ PROFIT_LOCK FILLED: Sold {filled_shares:.0f} {capture_side} @ 99c")
+                        window_state['profit_lock_filled'] = True
+                        window_state['capture_99c_exited'] = True
+                        entry_px = window_state.get('capture_99c_fill_price', CAPTURE_99C_BID_PRICE)
+                        lock_pnl = filled_shares * (PROFIT_LOCK_SELL_PRICE - entry_px)
+                        log_activity("PROFIT_LOCK_FILLED", {
+                            "side": capture_side, "shares": filled_shares,
+                            "price": PROFIT_LOCK_SELL_PRICE
+                        })
+                        log_event("PROFIT_LOCK_FILLED", slug,
+                            side=capture_side, shares=filled_shares,
+                            price=PROFIT_LOCK_SELL_PRICE, pnl=lock_pnl)
+                    elif not window_state.get('profit_lock_cancelled'):
+                        # Check if we need to cancel (best bid dropped below 60c)
+                        if capture_side == "UP":
+                            bids = books.get('up_bids', [])
+                        else:
+                            bids = books.get('down_bids', [])
+
+                        best_bid = float(bids[0]['price']) if bids else 0
+                        if best_bid < PROFIT_LOCK_CANCEL_THRESHOLD:
+                            print(f"[{ts()}] 🔒❌ PROFIT_LOCK CANCEL: {capture_side} bid={best_bid*100:.0f}c < {PROFIT_LOCK_CANCEL_THRESHOLD*100:.0f}c")
+                            cancel_order(lock_order_id)
+                            window_state['profit_lock_cancelled'] = True
+                            log_activity("PROFIT_LOCK_CANCELLED", {
+                                "side": capture_side, "best_bid": best_bid,
+                                "reason": "bid_below_threshold"
+                            })
 
                 # === 99c OB-BASED EARLY EXIT CHECK ===
                 # Exit early if OB shows sellers dominating for 3 consecutive ticks
@@ -3943,6 +4091,37 @@ def main():
                     )
                     window_state['danger_score'] = danger_result['score']
                     window_state['danger_result'] = danger_result  # Store full result for logging
+
+                    # === DANGER EXIT — Confidence + Opponent Ask Gate (v1.56) ===
+                    # Exit when danger score is high AND opponent ask confirms real uncertainty.
+                    # On wins, opponent ask ≤8c. On losses, opponent ask was 65c.
+                    if (DANGER_EXIT_ENABLED and
+                        not window_state.get('capture_99c_exited') and
+                        not window_state.get('capture_99c_hedged') and
+                        remaining_secs > 15):
+
+                        d_score = danger_result['score']
+                        opp_ask = danger_result['opponent_ask']
+
+                        if d_score >= DANGER_EXIT_THRESHOLD and opp_ask > DANGER_EXIT_OPPONENT_ASK_MIN:
+                            window_state['danger_exit_ticks'] = window_state.get('danger_exit_ticks', 0) + 1
+                            d_ticks = window_state['danger_exit_ticks']
+                            if d_ticks >= DANGER_EXIT_CONSECUTIVE_REQUIRED:
+                                print(f"[{ts()}] 🚨 DANGER_EXIT: score={d_score:.2f} opp_ask={opp_ask*100:.0f}c ({d_ticks} ticks)")
+                                log_activity("DANGER_EXIT", {
+                                    "danger_score": d_score,
+                                    "opponent_ask": opp_ask,
+                                    "ticks": d_ticks,
+                                    "confidence_drop": danger_result['confidence_drop'],
+                                    "velocity": danger_result['velocity'],
+                                })
+                                execute_hard_stop(bet_side, books)
+                            else:
+                                print(f"[{ts()}] ⚠️ DANGER_WARNING: tick {d_ticks}/{DANGER_EXIT_CONSECUTIVE_REQUIRED}: score={d_score:.2f} opp_ask={opp_ask*100:.0f}c")
+                        else:
+                            if window_state.get('danger_exit_ticks', 0) > 0:
+                                print(f"[{ts()}] DANGER_EXIT: Reset (score={d_score:.2f} opp_ask={opp_ask*100:.0f}c)")
+                            window_state['danger_exit_ticks'] = 0
 
                     # Existing hedge check (will use danger_score in Phase 3)
                     check_99c_capture_hedge(books, remaining_secs)

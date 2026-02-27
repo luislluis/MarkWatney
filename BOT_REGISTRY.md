@@ -1,10 +1,14 @@
 # Polybot Version Registry
 
-## Current Version: v1.54 "Steady Hand"
+## Current Version: v1.58 "Profit Lock"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.54 | 2026-02-25 PST | Steady Hand | Hard stop requires 2 consecutive ticks below 40c (prevents single-tick panic sells) | Active |
+| v1.58 | 2026-02-27 PST | Profit Lock | Auto-sell at 99c on fill; cancel if bid < 60c; 45c hard stop as backstop | Active |
+| v1.57 | 2026-02-26 PST | Clean Slate | Disable danger exit (false exits); hard stop raised to 45c | Archived |
+| v1.56 | 2026-02-26 PST | Danger Sense | Danger score exit gated by opponent ask > 15c; 2-tick consecutive requirement | Archived |
+| v1.55 | 2026-02-25 PST | Iron Exit | Chunked FOK sells; faster RTDS price feed; balance error detection | Archived |
+| v1.54 | 2026-02-25 PST | Steady Hand | Hard stop requires 2 consecutive ticks below 40c (prevents single-tick panic sells) | Archived |
 | v1.53 | 2026-02-25 PST | Iron Hammer III | Remove max shares/order cost failsafes (portfolio-sized trades) | Archived |
 | v1.52 | 2026-02-25 PST | Iron Hammer II | Raise failsafes: max order cost $10->$100, max shares 50->100 (supports 42% trade sizing) | Archived |
 | v1.51 | 2026-02-24 PST | Iron Hammer | Trade sizing 10% -> 42% of portfolio; ROI halt 45% -> 60% | Archived |
