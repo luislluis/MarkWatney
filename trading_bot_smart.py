@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.56",
-    "codename": "Danger Sense",
+    "version": "v1.57",
+    "codename": "Clean Slate",
     "date": "2026-02-26",
-    "changes": "Danger score exit gated by opponent ask > 15c; 2-tick consecutive requirement"
+    "changes": "Disable danger exit (false exits); hard stop raised to 45c"
 }
 
 import os
@@ -329,8 +329,8 @@ PRICE_STOP_FLOOR = 0.50            # (legacy) Never sell below 50c
 # Guaranteed emergency exit using Fill-or-Kill market orders.
 # Triggers on BEST BID (not ask) to ensure real liquidity exists.
 # Will sell at any price to avoid riding to $0.
-HARD_STOP_ENABLED = True           # Enable 40¢ hard stop
-HARD_STOP_TRIGGER = 0.40           # Exit when best bid <= 40¢
+HARD_STOP_ENABLED = True           # Enable 45¢ hard stop
+HARD_STOP_TRIGGER = 0.45           # Exit when best bid <= 45¢
 HARD_STOP_FLOOR = 0.01             # Effectively no floor (1¢ minimum)
 HARD_STOP_USE_FOK = True           # Use Fill-or-Kill market orders
 HARD_STOP_CONSECUTIVE_REQUIRED = 2 # Require 2 consecutive ticks below trigger before firing
@@ -391,7 +391,7 @@ DANGER_WEIGHT_TIME = 0.3             # Weight for time decay in final 60s
 # Exit when danger score is high AND opponent ask confirms real uncertainty.
 # Opponent ask > 15c = market disagrees with our bet. Combined with high danger = GET OUT.
 # On wins, opponent ask is always ≤8c. 15c threshold provides 7c margin.
-DANGER_EXIT_ENABLED = True
+DANGER_EXIT_ENABLED = False
 DANGER_EXIT_THRESHOLD = 0.40          # Exit when danger score >= this
 DANGER_EXIT_OPPONENT_ASK_MIN = 0.15   # Only exit if opponent ask > 15c (real uncertainty)
 DANGER_EXIT_CONSECUTIVE_REQUIRED = 2  # Require 2 consecutive ticks (prevent single-tick noise)
