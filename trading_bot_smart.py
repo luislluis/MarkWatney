@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.59",
-    "codename": "Book Walker",
+    "version": "v1.60",
+    "codename": "Night Watch",
     "date": "2026-02-27",
-    "changes": "OB-aware chunked exit (walk bid levels); fixed 25-share sizing; OB snapshot + exit summary logging; recovery tracking"
+    "changes": "Fix end-of-window blackout: remove T-15s exit gates; background 99c resolution; safety exit at T-10s<80c; FINAL_SECONDS logging; 5x monitoring in last 15s"
 }
 
 import os
@@ -334,6 +334,7 @@ HARD_STOP_TRIGGER = 0.45           # Exit when best bid <= 45¢
 HARD_STOP_FLOOR = 0.01             # Effectively no floor (1¢ minimum)
 HARD_STOP_USE_FOK = True           # Use Fill-or-Kill market orders
 HARD_STOP_CONSECUTIVE_REQUIRED = 2 # Require 2 consecutive ticks below trigger before firing
+WINDOW_END_SAFETY_PRICE = 0.80     # Safety exit below 80c in final 10 seconds (don't wait for 45c)
 
 # ===========================================
 # ENTRY RESTRICTIONS
@@ -4128,89 +4129,97 @@ def main():
                         if not trading_halted:
                             check_daily_roi()
 
-                        # 99c Sniper Resolution Notification
+                        # 99c Sniper Resolution — runs in background to avoid blocking main loop
                         if window_state.get('capture_99c_fill_notified'):
-                            sniper_side = window_state.get('capture_99c_side')
-                            sniper_shares = window_state.get('capture_99c_filled_up', 0) + window_state.get('capture_99c_filled_down', 0)
+                            # Snapshot all values before window_state gets reset
+                            _bg_side = window_state.get('capture_99c_side')
+                            _bg_shares = window_state.get('capture_99c_filled_up', 0) + window_state.get('capture_99c_filled_down', 0)
+                            _bg_hedged = window_state.get('capture_99c_hedged', False)
+                            _bg_hedge_price = window_state.get('capture_99c_hedge_price', 0)
+                            _bg_entry_px = window_state.get('capture_99c_fill_price', CAPTURE_99C_BID_PRICE)
+                            _bg_slug = last_slug
 
-                            if window_state.get('capture_99c_hedged'):
-                                # Hedged: loss = (entry_price + hedge_price) - 1.00 per share
-                                hedge_price = window_state.get('capture_99c_hedge_price', 0)
-                                entry_px = window_state.get('capture_99c_fill_price', CAPTURE_99C_BID_PRICE)
-                                sniper_pnl = -(entry_px + hedge_price - 1.00) * sniper_shares
-                                sniper_won = False
-                                print(f"[{ts()}] 99c SNIPER RESULT: HEDGED (loss avoided) P&L=${sniper_pnl:.2f}")
-                            else:
-                                # Query Polymarket API for actual settlement result
-                                # Retry up to 6 times (30 seconds total) waiting for market resolution
-                                sniper_won = None
-                                for retry in range(6):
+                            def _resolve_99c_outcome(_side=_bg_side, _shares=_bg_shares,
+                                                     _hedged=_bg_hedged, _hedge_price=_bg_hedge_price,
+                                                     _entry_px=_bg_entry_px, _slug=_bg_slug):
+                                try:
+                                    if _hedged:
+                                        _pnl = -(_entry_px + _hedge_price - 1.00) * _shares
+                                        _won = False
+                                        print(f"[{ts()}] 99c SNIPER RESULT: HEDGED (loss avoided) P&L=${_pnl:.2f}")
+                                    else:
+                                        _won = None
+                                        _pnl = 0
+                                        for retry in range(6):
+                                            try:
+                                                _won = check_99c_outcome(_side, _slug)
+                                                if _won is not None:
+                                                    _pnl = _shares * (1.00 - _entry_px) if _won else -_shares * _entry_px
+                                                    print(f"[{ts()}] 99c SNIPER RESULT: {'WIN' if _won else 'LOSS'} P&L=${_pnl:.2f}")
+                                                    break
+                                                else:
+                                                    if retry < 5:
+                                                        print(f"[{ts()}] 99c SNIPER: Market not resolved, retrying in 5s... ({retry+1}/6)")
+                                                        time.sleep(5)
+                                                    else:
+                                                        print(f"[{ts()}] 99c SNIPER RESULT: PENDING after 30s - will resolve on next window")
+                                            except Exception as e:
+                                                print(f"[{ts()}] 99c SNIPER RESULT ERROR (retry {retry+1}): {e}")
+                                                if retry < 5:
+                                                    time.sleep(5)
+                                                _won = None
+                                                _pnl = 0
+
+                                    if _won is not None:
+                                        session_stats['pnl'] += _pnl
+                                        notify_99c_resolution(_side, _shares, _won, _pnl)
+                                        event_type = "CAPTURE_99C_WIN" if _won else "CAPTURE_99C_LOSS"
+                                        log_event(event_type, _slug,
+                                            side=_side, shares=_shares,
+                                            price=_entry_px, pnl=_pnl,
+                                            details=json.dumps({
+                                                "outcome": "WIN" if _won else "LOSS",
+                                                "settlement_price": 1.00 if _won else 0.00,
+                                                "hedged": _hedged
+                                            }))
+                                    else:
+                                        pending_99c_resolutions.append({
+                                            'slug': _slug, 'side': _side,
+                                            'shares': _shares, 'entry_price': _entry_px,
+                                            'timestamp': time.time()
+                                        })
+                                        print(f"[{ts()}] 99c SNIPER: Added to pending queue for later resolution")
+
+                                    # Also handle auto_redeem and tick flush in background
+                                    flush_ticks()
                                     try:
-                                        sniper_won = check_99c_outcome(sniper_side, last_slug)
-                                        if sniper_won is not None:
-                                            entry_px = window_state.get('capture_99c_fill_price', CAPTURE_99C_BID_PRICE)
-                                            sniper_pnl = sniper_shares * (1.00 - entry_px) if sniper_won else -sniper_shares * entry_px
-                                            print(f"[{ts()}] 99c SNIPER RESULT: {'WIN' if sniper_won else 'LOSS'} P&L=${sniper_pnl:.2f}")
-                                            break
-                                        else:
-                                            if retry < 5:
-                                                print(f"[{ts()}] 99c SNIPER: Market not resolved, retrying in 5s... ({retry+1}/6)")
-                                                time.sleep(5)
-                                            else:
-                                                print(f"[{ts()}] 99c SNIPER RESULT: PENDING after 30s - will resolve on next window")
-                                                sniper_pnl = 0
+                                        from auto_redeem import check_and_claim
+                                        claimable = check_and_claim()
+                                        if claimable:
+                                            total = sum(p['claimable_usdc'] for p in claimable)
+                                            print(f"[{ts()}] 💰 CLAIMABLE: ${total:.2f} - check polymarket.com to claim!")
+                                    except ImportError:
+                                        pass
                                     except Exception as e:
-                                        print(f"[{ts()}] 99c SNIPER RESULT ERROR (retry {retry+1}): {e}")
-                                        if retry < 5:
-                                            time.sleep(5)
-                                        sniper_won = None
-                                        sniper_pnl = 0
+                                        print(f"[{ts()}] REDEEM_CHECK_ERROR: {e}")
+                                except Exception as e:
+                                    print(f"[{ts()}] BG_RESOLVE_ERROR: {e}")
 
-                            # Only send notification if we know the result
-                            if sniper_won is not None:
-                                # v1.46: Add sniper P&L to session stats for ROI halt
-                                session_stats['pnl'] += sniper_pnl
-
-                                notify_99c_resolution(sniper_side, sniper_shares, sniper_won, sniper_pnl)
-
-                                # Log outcome to Sheets/Supabase for dashboard tracking
-                                entry_price = window_state.get('capture_99c_fill_price', 0.99)
-                                event_type = "CAPTURE_99C_WIN" if sniper_won else "CAPTURE_99C_LOSS"
-                                log_event(event_type, last_slug,
-                                    side=sniper_side,
-                                    shares=sniper_shares,
-                                    price=entry_price,
-                                    pnl=sniper_pnl,
-                                    details=json.dumps({
-                                        "outcome": "WIN" if sniper_won else "LOSS",
-                                        "settlement_price": 1.00 if sniper_won else 0.00,
-                                        "hedged": window_state.get('capture_99c_hedged', False)
-                                    }))
-                            else:
-                                # Add to pending list to retry on next window
-                                entry_price = window_state.get('capture_99c_fill_price', 0.99)
-                                pending_99c_resolutions.append({
-                                    'slug': last_slug,
-                                    'side': sniper_side,
-                                    'shares': sniper_shares,
-                                    'entry_price': entry_price,
-                                    'timestamp': time.time()
-                                })
-                                print(f"[{ts()}] 99c SNIPER: Added to pending queue for later resolution")
-
-                        flush_ticks()  # Flush any remaining tick data
-
-                        # Check for claimable positions after window closes
-                        try:
-                            from auto_redeem import check_and_claim
-                            claimable = check_and_claim()
-                            if claimable:
-                                total = sum(p['claimable_usdc'] for p in claimable)
-                                print(f"[{ts()}] 💰 CLAIMABLE: ${total:.2f} - check polymarket.com to claim!")
-                        except ImportError:
-                            pass  # auto_redeem module not available
-                        except Exception as e:
-                            print(f"[{ts()}] REDEEM_CHECK_ERROR: {e}")
+                            import threading
+                            threading.Thread(target=_resolve_99c_outcome, daemon=True).start()
+                            print(f"[{ts()}] 99c resolution moved to background — main loop continues immediately")
+                        else:
+                            flush_ticks()
+                            try:
+                                from auto_redeem import check_and_claim
+                                claimable = check_and_claim()
+                                if claimable:
+                                    total = sum(p['claimable_usdc'] for p in claimable)
+                                    print(f"[{ts()}] 💰 CLAIMABLE: ${total:.2f} - check polymarket.com to claim!")
+                            except ImportError:
+                                pass
+                            except Exception as e:
+                                print(f"[{ts()}] REDEEM_CHECK_ERROR: {e}")
 
                     # Cancel any open profit lock sell order (v1.58)
                     if window_state and window_state.get('profit_lock_order_id') and not window_state.get('profit_lock_filled'):
@@ -4305,9 +4314,13 @@ def main():
                     continue
 
                 if remaining_secs <= CLOSE_GUARD_SECONDS:
-                    cancel_all_orders()
-                    time.sleep(0.5)
-                    continue
+                    # Don't skip the loop when holding a 99c position — exit checks must keep running
+                    holding_99c = (window_state.get('capture_99c_fill_notified') and
+                                   not window_state.get('capture_99c_exited'))
+                    if not holding_99c:
+                        cancel_all_orders()
+                        time.sleep(0.5)
+                        continue
 
                 books = get_order_books(cached_market)
                 if not books:
@@ -4448,8 +4461,7 @@ def main():
                 if (HARD_STOP_ENABLED and
                     window_state.get('capture_99c_fill_notified') and
                     not window_state.get('capture_99c_exited') and
-                    not window_state.get('capture_99c_hedged') and
-                    remaining_secs > 15):
+                    not window_state.get('capture_99c_hedged')):
 
                     capture_side = window_state.get('capture_99c_side')
 
@@ -4520,8 +4532,7 @@ def main():
                 if (OB_EARLY_EXIT_ENABLED and
                     window_state.get('capture_99c_fill_notified') and
                     not window_state.get('capture_99c_exited') and
-                    not window_state.get('capture_99c_hedged') and
-                    remaining_secs > 15):
+                    not window_state.get('capture_99c_hedged')):
 
                     capture_side = window_state.get('capture_99c_side')
 
@@ -4592,8 +4603,7 @@ def main():
                     # On wins, opponent ask ≤8c. On losses, opponent ask was 65c.
                     if (DANGER_EXIT_ENABLED and
                         not window_state.get('capture_99c_exited') and
-                        not window_state.get('capture_99c_hedged') and
-                        remaining_secs > 15):
+                        not window_state.get('capture_99c_hedged')):
 
                         d_score = danger_result['score']
                         opp_ask = danger_result['opponent_ask']
@@ -4623,6 +4633,45 @@ def main():
 
                     # Existing hedge check (will use danger_score in Phase 3)
                     check_99c_capture_hedge(books, remaining_secs)
+
+                # === WINDOW END SAFETY EXIT (v1.60) ===
+                # In final 10 seconds, exit if price below 80c — don't wait for 45c hard stop
+                if (window_state.get('capture_99c_fill_notified') and
+                    not window_state.get('capture_99c_exited') and
+                    remaining_secs <= 10):
+
+                    capture_side = window_state.get('capture_99c_side')
+                    if capture_side == "UP":
+                        safety_bids = books.get('up_bids', [])
+                    else:
+                        safety_bids = books.get('down_bids', [])
+                    safety_best_bid = float(safety_bids[0]['price']) if safety_bids else 0
+
+                    if safety_best_bid < WINDOW_END_SAFETY_PRICE:
+                        print(f"[{ts()}] 🚨 SAFETY_EXIT: T-{remaining_secs:.0f}s, {capture_side} best bid {safety_best_bid*100:.0f}c < {WINDOW_END_SAFETY_PRICE*100:.0f}c — exiting to protect position")
+                        log_activity("SAFETY_EXIT", {
+                            "side": capture_side, "best_bid": safety_best_bid,
+                            "remaining_secs": remaining_secs,
+                            "trigger": f"bid<{WINDOW_END_SAFETY_PRICE*100:.0f}c at T-{remaining_secs:.0f}s"
+                        })
+                        ob_success, ob_pnl, ob_fills = execute_ob_exit(capture_side, books)
+                        if not ob_success:
+                            print(f"[{ts()}] SAFETY_EXIT: OB exit failed, falling back to hard stop")
+                            execute_hard_stop(capture_side, books)
+
+                # === FINAL_SECONDS LOGGING (v1.60) ===
+                # Log every tick in last 15 seconds when holding a position — proof of monitoring
+                if (remaining_secs <= 15 and
+                    window_state.get('capture_99c_fill_notified') and
+                    not window_state.get('capture_99c_exited')):
+
+                    capture_side = window_state.get('capture_99c_side')
+                    up_bids = books.get('up_bids', [])
+                    dn_bids = books.get('down_bids', [])
+                    up_bid = float(up_bids[0]['price']) * 100 if up_bids else 0
+                    dn_bid = float(dn_bids[0]['price']) * 100 if dn_bids else 0
+                    d_score = window_state.get('danger_score', 0)
+                    print(f"[{ts()}] FINAL_SECONDS: T-{remaining_secs:.0f}s | UP bid: {up_bid:.0f}c | DN bid: {dn_bid:.0f}c | danger: {d_score:.2f} | monitoring: ACTIVE")
 
                 # State machine
                 if window_state['state'] == STATE_DONE:
@@ -4678,6 +4727,11 @@ def main():
                 elapsed = time.time() - cycle_start
                 if window_state['state'] == STATE_PAIRING:
                     time.sleep(max(0.5, PAIRING_LOOP_DELAY - elapsed))
+                elif (remaining_secs <= 15 and
+                      window_state.get('capture_99c_fill_notified') and
+                      not window_state.get('capture_99c_exited')):
+                    # v1.60: 5 ticks/sec in final 15 seconds when holding position
+                    time.sleep(max(0.05, 0.2 - elapsed))
                 else:
                     time.sleep(max(0.1, 0.5 - elapsed))
 

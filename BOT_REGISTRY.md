@@ -1,10 +1,11 @@
 # Polybot Version Registry
 
-## Current Version: v1.59 "Book Walker"
+## Current Version: v1.60 "Night Watch"
 
 | Version | DateTime | Codename | Changes | Status |
 |---------|----------|----------|---------|--------|
-| v1.59 | 2026-02-27 PST | Book Walker | OB-aware chunked exit (walk bid levels instead of FOK); fixed 25-share sizing; OB snapshot + exit summary logging; recovery tracking (+1m/+5m/+15m) | Active |
+| v1.60 | 2026-02-27 PST | Night Watch | Fix end-of-window blackout: remove T-15s exit gates; background 99c resolution; safety exit at T-10s if bid<80c; FINAL_SECONDS logging; 5x monitoring in last 15s | Active |
+| v1.59 | 2026-02-27 PST | Book Walker | OB-aware chunked exit (walk bid levels instead of FOK); fixed 25-share sizing; OB snapshot + exit summary logging; recovery tracking (+1m/+5m/+15m) | Archived |
 | v1.58 | 2026-02-27 PST | Profit Lock | Auto-sell at 99c on fill; cancel if bid < 60c; 45c hard stop as backstop | Archived |
 | v1.57 | 2026-02-26 PST | Clean Slate | Disable danger exit (false exits); hard stop raised to 45c | Archived |
 | v1.56 | 2026-02-26 PST | Danger Sense | Danger score exit gated by opponent ask > 15c; 2-tick consecutive requirement | Archived |
