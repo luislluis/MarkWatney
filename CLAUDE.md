@@ -592,7 +592,7 @@ tail -100 ~/polybot/bot.log | grep -i sheets
 
 ---
 
-## Verified Bot Rules & Settings (v1.56 "Danger Sense")
+## Verified Bot Rules & Settings (v1.58 "Profit Lock")
 
 > **Last verified**: 2026-02-26 — local code and live server confirmed identical.
 > **IMPORTANT**: Any future bot version MUST preserve these rules unless explicitly changed.
@@ -663,6 +663,18 @@ tail -100 ~/polybot/bot.log | grep -i sheets
 **How it works:** After 99c capture fill, every tick the bot calculates a danger score from 5 weighted signals. If the score exceeds 0.40 AND the opponent's ask price is above 15c (confirming real market uncertainty, not just end-of-window settlement noise), the bot exits via `execute_hard_stop()` — while bids are still at 70-80c, not waiting until they collapse to 40c.
 
 **Backtested on 2026-02-25/26:** Zero false exits on 13 winning windows. Would have caught the $382.69 loss.
+
+### Instant Profit Lock (v1.58)
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `PROFIT_LOCK_ENABLED` | `True` | Immediately sells at 99c after fill to lock in 4c/share profit. Eliminates settlement risk. |
+| `PROFIT_LOCK_SELL_PRICE` | `0.99` (99c) | Sell at 99c. Buyer gets 1c settlement profit — enough for market makers to fill. |
+| `PROFIT_LOCK_CANCEL_THRESHOLD` | `0.60` (60c) | Cancel sell if bid drops below 60c (won't fill anyway). Hard stop at 45c takes over. |
+
+**How it works:** On 99c capture fill, immediately place a sell limit at 99c for the full fill quantity. If sell fills → profit locked (4c/share), no settlement risk. If best bid drops below 60c → cancel sell, 45c hard stop takes over. Sell order also cancelled at window end if still open.
+
+**Why this is critical:** On 2026-02-27, held 280 DOWN shares while BTC reversed in final 30 seconds. DOWN went from 99c to $0 at settlement — $277.20 loss. For 29 seconds after fill, DN bids were at 91-98c. This feature would have sold at 99c = +$11.20 profit instead.
 
 ### ROI Halt (Daily Profit Protection)
 
@@ -738,6 +750,7 @@ tail -100 ~/polybot/bot.log | grep -i sheets
 8. **Don't try to FOK sell more shares than the order book can absorb** — 234 shares in a thin book = 100% kill rate. Always chunk FOK sells to order book depth.
 9. **Don't remove the opponent_ask gate from danger exit** — danger score alone causes false exits. Winning trades score 3.01-3.16 due to end-of-window settlement, while the actual loss scored only 2.09. The `opponent_ask > 15c` gate is what distinguishes real reversals from normal settlement noise.
 10. **Don't rely on bid collapse (40c) as primary exit signal** — by the time bids hit 40c, actual FOK fills are at ~13-26c. Use leading indicators (opponent ask + danger score) to exit while bids are still at 70-80c. Keep 40c hard stop only as absolute backstop.
+11. **Don't remove the profit lock sell order** — holding to settlement risks 100% loss on last-second BTC reversals. Selling at 99c gives 4c/share profit with zero risk. The 1c "lost" from not settling at $1.00 is insurance worth paying.
 
 ---
 

@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.57",
-    "codename": "Clean Slate",
-    "date": "2026-02-26",
-    "changes": "Disable danger exit (false exits); hard stop raised to 45c"
+    "version": "v1.58",
+    "codename": "Profit Lock",
+    "date": "2026-02-27",
+    "changes": "Auto-sell at 99c on fill; cancel if bid < 60c; 45c hard stop as backstop"
 }
 
 import os
@@ -396,6 +396,15 @@ DANGER_EXIT_THRESHOLD = 0.40          # Exit when danger score >= this
 DANGER_EXIT_OPPONENT_ASK_MIN = 0.15   # Only exit if opponent ask > 15c (real uncertainty)
 DANGER_EXIT_CONSECUTIVE_REQUIRED = 2  # Require 2 consecutive ticks (prevent single-tick noise)
 
+# ===========================================
+# INSTANT PROFIT LOCK (v1.58)
+# ===========================================
+# On 99c capture fill, immediately place sell limit at 99c to lock in profit.
+# If market turns (bid < 60c), cancel sell and let hard stop handle exit.
+PROFIT_LOCK_ENABLED = True
+PROFIT_LOCK_SELL_PRICE = 0.99         # Sell limit price (99c)
+PROFIT_LOCK_CANCEL_THRESHOLD = 0.60   # Cancel sell if best bid drops below 60c
+
 # Bot identity
 BOT_NAME = "ChatGPT-Smart"
 
@@ -541,6 +550,9 @@ def reset_window_state(slug):
         "danger_score": 0,                    # Current danger score (0.0-1.0)
         "danger_exit_ticks": 0,              # Danger exit: consecutive ticks above threshold
         "capture_99c_peak_confidence": 0,     # Confidence at 99c fill time
+        "profit_lock_order_id": None,        # Profit lock: sell order ID
+        "profit_lock_cancelled": False,      # Profit lock: whether sell was cancelled due to price drop
+        "profit_lock_filled": False,         # Profit lock: whether sell order filled
     }
 
 # 99c Sniper Daily Stats (rolling summary for Telegram notifications)
@@ -3708,6 +3720,11 @@ def main():
                         except Exception as e:
                             print(f"[{ts()}] REDEEM_CHECK_ERROR: {e}")
 
+                    # Cancel any open profit lock sell order (v1.58)
+                    if window_state and window_state.get('profit_lock_order_id') and not window_state.get('profit_lock_filled'):
+                        cancel_order(window_state['profit_lock_order_id'])
+                        print(f"[{ts()}] 🔒 PROFIT_LOCK: Cancelled open sell order at window end")
+
                     cancel_all_orders()
                     window_state = reset_window_state(slug)
                     market_price_history.clear()  # v1.24: Clear price history for entry filter
@@ -3911,6 +3928,28 @@ def main():
                         log_event("CAPTURE_FILL", slug, side=side, shares=filled,
                                         price=fill_price, pnl=actual_pnl)
 
+                        # === INSTANT PROFIT LOCK (v1.58) ===
+                        # Immediately place sell at 99c to lock in profit
+                        if PROFIT_LOCK_ENABLED and not window_state.get('profit_lock_order_id'):
+                            sell_token = window_state['up_token'] if side == "UP" else window_state['down_token']
+                            sell_price = PROFIT_LOCK_SELL_PRICE
+                            sell_shares = filled
+
+                            print(f"[{ts()}] 🔒 PROFIT_LOCK: Placing sell {sell_shares:.0f} {side} @ {sell_price*100:.0f}c")
+                            pl_success, pl_result = place_limit_order(
+                                sell_token, sell_price, sell_shares,
+                                side="SELL", bypass_price_failsafe=True
+                            )
+                            if pl_success:
+                                window_state['profit_lock_order_id'] = pl_result
+                                print(f"[{ts()}] 🔒 PROFIT_LOCK: Sell order placed (ID: {pl_result[:8]}...)")
+                                log_activity("PROFIT_LOCK_PLACED", {
+                                    "side": side, "shares": sell_shares,
+                                    "sell_price": sell_price, "order_id": pl_result
+                                })
+                            else:
+                                print(f"[{ts()}] PROFIT_LOCK_ERROR: Failed to place sell: {pl_result}")
+
                 # === 60¢ HARD STOP CHECK (v1.34) ===
                 # Exit immediately using FOK market orders if best bid <= 60¢
                 # Uses best BID (not ask) to ensure real liquidity exists
@@ -3937,6 +3976,44 @@ def main():
                         if window_state['hard_stop_consecutive_ticks'] > 0:
                             print(f"[{ts()}] HARD_STOP: Reset consecutive counter (bid recovered to {best_bid*100:.0f}c)")
                         window_state['hard_stop_consecutive_ticks'] = 0
+
+                # === PROFIT LOCK MONITOR (v1.58) ===
+                # Check if sell order filled, or cancel if best bid dropped below threshold
+                if (PROFIT_LOCK_ENABLED and
+                    window_state.get('profit_lock_order_id') and
+                    not window_state.get('profit_lock_filled') and
+                    not window_state.get('capture_99c_exited')):
+
+                    capture_side = window_state.get('capture_99c_side')
+                    lock_order_id = window_state['profit_lock_order_id']
+
+                    # Check if sell order filled
+                    sell_status = get_order_status(lock_order_id)
+                    if sell_status and sell_status.get('filled', 0) > 0:
+                        filled_shares = sell_status['filled']
+                        print(f"[{ts()}] 🔒✅ PROFIT_LOCK FILLED: Sold {filled_shares:.0f} {capture_side} @ 99c")
+                        window_state['profit_lock_filled'] = True
+                        window_state['capture_99c_exited'] = True
+                        log_activity("PROFIT_LOCK_FILLED", {
+                            "side": capture_side, "shares": filled_shares,
+                            "price": PROFIT_LOCK_SELL_PRICE
+                        })
+                    elif not window_state.get('profit_lock_cancelled'):
+                        # Check if we need to cancel (best bid dropped below 60c)
+                        if capture_side == "UP":
+                            bids = books.get('up_bids', [])
+                        else:
+                            bids = books.get('down_bids', [])
+
+                        best_bid = float(bids[0]['price']) if bids else 0
+                        if best_bid < PROFIT_LOCK_CANCEL_THRESHOLD:
+                            print(f"[{ts()}] 🔒❌ PROFIT_LOCK CANCEL: {capture_side} bid={best_bid*100:.0f}c < {PROFIT_LOCK_CANCEL_THRESHOLD*100:.0f}c")
+                            cancel_order(lock_order_id)
+                            window_state['profit_lock_cancelled'] = True
+                            log_activity("PROFIT_LOCK_CANCELLED", {
+                                "side": capture_side, "best_bid": best_bid,
+                                "reason": "bid_below_threshold"
+                            })
 
                 # === 99c OB-BASED EARLY EXIT CHECK ===
                 # Exit early if OB shows sellers dominating for 3 consecutive ticks
