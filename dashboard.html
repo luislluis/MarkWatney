@@ -1595,8 +1595,7 @@
         const pending = todayData.pending ?? 0;
         const exits = todayData.exits ?? 0;
         const cashed = todayData.cashed ?? 0;
-        const totalWins = (todayData.wins ?? 0) + cashed;
-        let recordText = totalWins + 'W';
+        let recordText = (todayData.wins ?? 0) + 'W';
         if (cashed > 0) recordText += ' / ' + cashed + 'C';
         recordText += ' / ' + (todayData.losses ?? 0) + 'L';
         if (exits > 0) recordText += ' / ' + exits + 'E';
@@ -1782,7 +1781,7 @@
           const date = new Date(d.trade_date + 'T12:00:00').toLocaleDateString('en-US', {
             month: 'short', day: 'numeric', timeZone: 'America/New_York'
           });
-          const wins = (d.wins ?? 0) + (d.cashed ?? 0);
+          const wins = d.wins ?? 0;
           const cashed = d.cashed ?? 0;
           const losses = d.losses ?? 0;
           const exits = d.exits ?? 0;
@@ -2333,7 +2332,7 @@
       wrEl.textContent = trades.length > 0 ? winPct + '%' : '--';
       wrEl.className = 'stat-value ' + (winPct >= 50 ? 'positive' : 'neutral');
 
-      let recordText = totalWins + 'W';
+      let recordText = winTrades.length + 'W';
       if (cashedTrades.length > 0) recordText += ' / ' + cashedTrades.length + 'C';
       recordText += ' / ' + lossTrades.length + 'L';
       if (exitTrades.length > 0) recordText += ' / ' + exitTrades.length + 'E';
