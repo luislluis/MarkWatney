@@ -304,6 +304,11 @@
       color: #fb923c;
     }
 
+    .trade-status.profit-lock {
+      background: var(--green-glow);
+      color: var(--green-primary);
+    }
+
     .trade-pnl.exit { color: #fb923c; }
 
     .trade-info {
@@ -1637,9 +1642,10 @@
             const side = escapeHtml(t.side ?? '?');
             const rawShares = t.shares || 0;
             const shares = rawShares % 1 < 0.01 ? Math.round(rawShares) : rawShares.toFixed(2);
-            const statusClass = isPending ? 'pending' : isExit ? 'exit' : (isWin ? 'win' : 'loss');
-            const statusIcon = isPending ? '◷' : isExit ? '↩' : (isWin ? '✓' : '✗');
-            const pnlClass = isPending ? 'pending' : isExit ? 'exit' : (isWin ? 'positive' : 'negative');
+            const isProfitLock = isExit && pnl > 0 && (t.exit_price ?? 0) >= 0.98;
+            const statusClass = isPending ? 'pending' : isProfitLock ? 'profit-lock' : isExit ? 'exit' : (isWin ? 'win' : 'loss');
+            const statusIcon = isPending ? '◷' : isProfitLock ? '💰' : isExit ? '↩' : (isWin ? '✓' : '✗');
+            const pnlClass = isPending ? 'pending' : isProfitLock ? 'positive' : isExit ? 'exit' : (isWin ? 'positive' : 'negative');
             const pnlText = isPending ? 'pending' : fmtPnl(pnl);
             const costBasis = t.cost_basis ?? (t.shares * t.entry_price);
             const roiPct = costBasis > 0 && !isPending ? Math.round(pnl / costBasis * 1000) / 10 : null;
@@ -1679,9 +1685,11 @@
           const isPending = winStatus === 'PENDING';
           const isWin = winStatus === 'WIN';
           const isExit = winStatus === 'EXIT';
-          const statusClass = isPending ? 'pending' : isExit ? 'exit' : (isWin ? 'win' : 'loss');
-          const statusIcon = isPending ? '◷' : isExit ? '↩' : (isWin ? '✓' : '✗');
-          const pnlClass = isPending ? 'pending' : isExit ? 'exit' : (totalPnl >= 0 ? 'positive' : 'negative');
+          const hasExitPrice = group.some(t => (t.exit_price ?? 0) >= 0.98);
+          const isProfitLock = isExit && totalPnl > 0 && hasExitPrice;
+          const statusClass = isPending ? 'pending' : isProfitLock ? 'profit-lock' : isExit ? 'exit' : (isWin ? 'win' : 'loss');
+          const statusIcon = isPending ? '◷' : isProfitLock ? '💰' : isExit ? '↩' : (isWin ? '✓' : '✗');
+          const pnlClass = isPending ? 'pending' : isProfitLock ? 'positive' : isExit ? 'exit' : (totalPnl >= 0 ? 'positive' : 'negative');
           const pnlText = isPending ? 'pending' : fmtPnl(totalPnl);
 
           // Determine side label (handle mixed UP+DN)
