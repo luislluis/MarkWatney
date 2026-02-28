@@ -1273,31 +1273,33 @@
               const hasExit = info.exitShares > 0.001;
 
               if (exitedAll) {
-                // Fully exited — EXIT row
+                // Fully exited — CASHED (profitable sell) or EXIT (loss-saving)
                 const pnl = info.exitRevenue - cost;
                 const exitPrice = info.exitShares > 0 ? info.exitRevenue / info.exitShares : 0;
+                const isCashedOut = pnl > 0 && exitPrice >= 0.98;
                 trades.push({
                   timestamp: new Date(buy.timestamp * 1000).toISOString(),
                   window_id: slug, side,
                   shares: buy.size, entry_price: buy.price,
                   exit_price: exitPrice,
-                  status: 'EXIT',
+                  status: isCashedOut ? 'CASHED' : 'EXIT',
                   profit_loss: Math.round(pnl * 100) / 100,
                   cost_basis: Math.round(cost * 100) / 100,
                   conditionId: buy.conditionId, outcomeIndex: buy.outcomeIndex, window_title: windowTitle
                 });
               } else if (hasExit) {
-                // Partially exited — split into EXIT portion + remaining WIN/LOSS
+                // Partially exited — split into CASHED/EXIT portion + remaining WIN/LOSS
                 const remainShares = buy.size - info.exitShares;
                 const exitCost = info.exitShares * buy.price;
                 const exitPnl = info.exitRevenue - exitCost;
                 const exitPrice = info.exitShares > 0 ? info.exitRevenue / info.exitShares : 0;
+                const isPartialCash = exitPnl > 0 && exitPrice >= 0.98;
                 trades.push({
                   timestamp: new Date(buy.timestamp * 1000).toISOString(),
                   window_id: slug, side,
                   shares: info.exitShares, entry_price: buy.price,
                   exit_price: exitPrice,
-                  status: 'EXIT',
+                  status: isPartialCash ? 'CASHED' : 'EXIT',
                   profit_loss: Math.round(exitPnl * 100) / 100,
                   cost_basis: Math.round(exitCost * 100) / 100,
                   conditionId: buy.conditionId, outcomeIndex: buy.outcomeIndex, window_title: windowTitle
@@ -1365,18 +1367,21 @@
         }
 
         const summary = Object.entries(dateGroups).map(([date, dayTrades]) => {
-          // Classify each window once: EXIT > LOSS > WIN > PENDING
+          // Classify each window once: EXIT > LOSS > CASHED/WIN > PENDING
+          // CASHED = profitable sell (profit lock filled), counts as a win
           const windowStatus = {};
           for (const t of dayTrades) {
             const wid = t.window_id;
             const cur = windowStatus[wid];
             if (t.status === 'EXIT' && cur !== 'EXIT') windowStatus[wid] = 'EXIT';
             else if (t.status === 'LOSS' && cur !== 'EXIT') windowStatus[wid] = 'LOSS';
+            else if (t.status === 'CASHED' && (!cur || cur === 'PENDING' || cur === 'WIN')) windowStatus[wid] = 'CASHED';
             else if (t.status === 'WIN' && (!cur || cur === 'PENDING')) windowStatus[wid] = 'WIN';
             else if (!cur) windowStatus[wid] = 'PENDING';
           }
           const statuses = Object.values(windowStatus);
           const wins = statuses.filter(s => s === 'WIN').length;
+          const cashed = statuses.filter(s => s === 'CASHED').length;
           const losses = statuses.filter(s => s === 'LOSS').length;
           const exits = statuses.filter(s => s === 'EXIT').length;
           const pending = statuses.filter(s => s === 'PENDING').length;
@@ -1384,12 +1389,12 @@
           const totalCost = dayTrades.reduce((s, t) => s + (t.cost_basis ?? t.shares * t.entry_price), 0);
           const numWindows = statuses.length;
           const avgTradeValue = numWindows > 0 ? totalCost / numWindows : 0;
-          const resolved = wins + losses + exits;
+          const resolved = wins + cashed + losses + exits;
           return {
             trade_date: date,
             total_trades: numWindows,
-            wins, losses, exits, pending,
-            win_rate_pct: resolved > 0 ? Math.round(wins / resolved * 1000) / 10 : 0,
+            wins, cashed, losses, exits, pending,
+            win_rate_pct: resolved > 0 ? Math.round((wins + cashed) / resolved * 1000) / 10 : 0,
             total_pnl: totalPnl,
             roi_pct: avgTradeValue > 0 ? Math.round(totalPnl / avgTradeValue * 1000) / 10 : 0
           };
@@ -1589,7 +1594,11 @@
 
         const pending = todayData.pending ?? 0;
         const exits = todayData.exits ?? 0;
-        let recordText = (todayData.wins ?? 0) + 'W / ' + (todayData.losses ?? 0) + 'L';
+        const cashed = todayData.cashed ?? 0;
+        const totalWins = (todayData.wins ?? 0) + cashed;
+        let recordText = totalWins + 'W';
+        if (cashed > 0) recordText += ' / ' + cashed + 'C';
+        recordText += ' / ' + (todayData.losses ?? 0) + 'L';
         if (exits > 0) recordText += ' / ' + exits + 'E';
         if (pending > 0) recordText += ' (' + pending + ' pending)';
         el.record.textContent = recordText;
@@ -1610,7 +1619,7 @@
       if (trades.length > 0) {
         const windowGroups = groupTradesByWindow(trades);
         let lastDate = null;
-        const statusPriority = { EXIT: 3, LOSS: 2, WIN: 1, PENDING: 0 };
+        const statusPriority = { EXIT: 3, LOSS: 2, CASHED: 1.5, WIN: 1, PENDING: 0 };
 
         const tradesHtml = windowGroups.map(group => {
           const first = group[0];
@@ -1634,6 +1643,7 @@
             const pnl = parsePnl(t.profit_loss);
             const isPending = status === 'PENDING';
             const isWin = status === 'WIN';
+            const isCashed = status === 'CASHED';
             const isExit = status === 'EXIT';
             const price = fmtPrice(t.entry_price ?? 0.99);
             const time = firstDate.toLocaleTimeString('en-US', {
@@ -1642,10 +1652,9 @@
             const side = escapeHtml(t.side ?? '?');
             const rawShares = t.shares || 0;
             const shares = rawShares % 1 < 0.01 ? Math.round(rawShares) : rawShares.toFixed(2);
-            const isProfitLock = isExit && pnl > 0 && (t.exit_price ?? 0) >= 0.98;
-            const statusClass = isPending ? 'pending' : isProfitLock ? 'profit-lock' : isExit ? 'exit' : (isWin ? 'win' : 'loss');
-            const statusIcon = isPending ? '◷' : isProfitLock ? '💰' : isExit ? '↩' : (isWin ? '✓' : '✗');
-            const pnlClass = isPending ? 'pending' : isProfitLock ? 'positive' : isExit ? 'exit' : (isWin ? 'positive' : 'negative');
+            const statusClass = isPending ? 'pending' : isCashed ? 'profit-lock' : isExit ? 'exit' : (isWin ? 'win' : 'loss');
+            const statusIcon = isPending ? '◷' : isCashed ? '💰' : isExit ? '↩' : (isWin ? '✓' : '✗');
+            const pnlClass = isPending ? 'pending' : isCashed ? 'positive' : isExit ? 'exit' : (isWin ? 'positive' : 'negative');
             const pnlText = isPending ? 'pending' : fmtPnl(pnl);
             const costBasis = t.cost_basis ?? (t.shares * t.entry_price);
             const roiPct = costBasis > 0 && !isPending ? Math.round(pnl / costBasis * 1000) / 10 : null;
@@ -1657,7 +1666,7 @@
               <div class="trade-item">
                 <div class="trade-status ${statusClass}">${statusIcon}</div>
                 <div class="trade-info">
-                  <div class="trade-pair">${side} ${shares}@${price}${isExit ? ' \u2192 ' + fmtPrice(t.exit_price ?? 0) : ''}${frText ? ' ' + frText : ''}</div>
+                  <div class="trade-pair">${side} ${shares}@${price}${(isExit || isCashed) ? ' \u2192 ' + fmtPrice(t.exit_price ?? 0) : ''}${frText ? ' ' + frText : ''}</div>
                   <div class="trade-detail">$${costBasis.toFixed(2)} \u00b7 ${roiText || '--'}</div>
                   <div class="trade-meta">${(() => {
                     const title = t.window_title || '';
@@ -1684,12 +1693,11 @@
 
           const isPending = winStatus === 'PENDING';
           const isWin = winStatus === 'WIN';
+          const isCashed = winStatus === 'CASHED';
           const isExit = winStatus === 'EXIT';
-          const hasExitPrice = group.some(t => (t.exit_price ?? 0) >= 0.98);
-          const isProfitLock = isExit && totalPnl > 0 && hasExitPrice;
-          const statusClass = isPending ? 'pending' : isProfitLock ? 'profit-lock' : isExit ? 'exit' : (isWin ? 'win' : 'loss');
-          const statusIcon = isPending ? '◷' : isProfitLock ? '💰' : isExit ? '↩' : (isWin ? '✓' : '✗');
-          const pnlClass = isPending ? 'pending' : isProfitLock ? 'positive' : isExit ? 'exit' : (totalPnl >= 0 ? 'positive' : 'negative');
+          const statusClass = isPending ? 'pending' : isCashed ? 'profit-lock' : isExit ? 'exit' : (isWin ? 'win' : 'loss');
+          const statusIcon = isPending ? '◷' : isCashed ? '💰' : isExit ? '↩' : (isWin ? '✓' : '✗');
+          const pnlClass = isPending ? 'pending' : isCashed ? 'positive' : isExit ? 'exit' : (totalPnl >= 0 ? 'positive' : 'negative');
           const pnlText = isPending ? 'pending' : fmtPnl(totalPnl);
 
           // Determine side label (handle mixed UP+DN)
@@ -1774,11 +1782,15 @@
           const date = new Date(d.trade_date + 'T12:00:00').toLocaleDateString('en-US', {
             month: 'short', day: 'numeric', timeZone: 'America/New_York'
           });
-          const wins = d.wins ?? 0;
+          const wins = (d.wins ?? 0) + (d.cashed ?? 0);
+          const cashed = d.cashed ?? 0;
           const losses = d.losses ?? 0;
           const exits = d.exits ?? 0;
           const roiPct = d.roi_pct ?? 0;
-          const record = exits > 0 ? `${wins}W/${losses}L/${exits}E` : `${wins}W/${losses}L`;
+          let record = `${wins}W`;
+          if (cashed > 0) record += `/${cashed}C`;
+          record += `/${losses}L`;
+          if (exits > 0) record += `/${exits}E`;
 
           return `
             <div class="history-item">
@@ -2253,7 +2265,7 @@
             // Early exit — compute P&L from entry vs exit price
             exitPrice = parseFloat(exitEvent['Price']) || 0;
             pnl = Math.round((shares * exitPrice - cost) * 100) / 100;
-            status = 'EXIT';
+            status = (pnl > 0 && exitPrice >= 0.98) ? 'CASHED' : 'EXIT';
           } else if (winSet.has(wid)) {
             // Explicit WIN event
             pnl = Math.round(shares * (1 - price) * 100) / 100;
@@ -2305,6 +2317,7 @@
       // Summary stats
       const resolved = trades.filter(t => t.status !== 'PENDING');
       const winTrades = trades.filter(t => t.status === 'WIN');
+      const cashedTrades = trades.filter(t => t.status === 'CASHED');
       const lossTrades = trades.filter(t => t.status === 'LOSS');
       const exitTrades = trades.filter(t => t.status === 'EXIT');
       const totalPnl = trades.reduce((s, t) => s + t.profit_loss, 0);
@@ -2314,12 +2327,15 @@
       pnlEl.className = 'stat-value ' + (totalPnl >= 0 ? 'positive' : totalPnl < 0 ? 'negative' : 'neutral');
 
       const wrEl = document.getElementById('paperWinRate');
-      const resolvedCount = winTrades.length + lossTrades.length + exitTrades.length;
-      const winPct = resolvedCount > 0 ? Math.round(winTrades.length / resolvedCount * 100) : 0;
+      const totalWins = winTrades.length + cashedTrades.length;
+      const resolvedCount = totalWins + lossTrades.length + exitTrades.length;
+      const winPct = resolvedCount > 0 ? Math.round(totalWins / resolvedCount * 100) : 0;
       wrEl.textContent = trades.length > 0 ? winPct + '%' : '--';
       wrEl.className = 'stat-value ' + (winPct >= 50 ? 'positive' : 'neutral');
 
-      let recordText = winTrades.length + 'W / ' + lossTrades.length + 'L';
+      let recordText = totalWins + 'W';
+      if (cashedTrades.length > 0) recordText += ' / ' + cashedTrades.length + 'C';
+      recordText += ' / ' + lossTrades.length + 'L';
       if (exitTrades.length > 0) recordText += ' / ' + exitTrades.length + 'E';
       const pendingCount = trades.filter(t => t.status === 'PENDING').length;
       if (pendingCount > 0) recordText += ' (' + pendingCount + ' pending)';
@@ -2338,6 +2354,7 @@
         const pnl = t.profit_loss;
         const isPending = status === 'PENDING';
         const isWin = status === 'WIN';
+        const isCashed = status === 'CASHED';
         const isExit = status === 'EXIT';
         const price = fmtPrice(t.entry_price);
         const tradeDate = new Date(t.timestamp);
@@ -2348,9 +2365,9 @@
         const side = escapeHtml(t.side);
         const shares = t.shares % 1 < 0.01 ? Math.round(t.shares) : t.shares.toFixed(2);
 
-        const statusClass = isPending ? 'pending' : isExit ? 'paper-exit' : (isWin ? 'win' : 'loss');
-        const statusIcon = isPending ? '\u25F7' : isExit ? '\u21A9' : (isWin ? '\u2713' : '\u2717');
-        const pnlClass = isPending ? 'pending' : isExit ? 'paper-exit' : (isWin ? 'positive' : 'negative');
+        const statusClass = isPending ? 'pending' : isCashed ? 'profit-lock' : isExit ? 'paper-exit' : (isWin ? 'win' : 'loss');
+        const statusIcon = isPending ? '\u25F7' : isCashed ? '\uD83D\uDCB0' : isExit ? '\u21A9' : (isWin ? '\u2713' : '\u2717');
+        const pnlClass = isPending ? 'pending' : isCashed ? 'positive' : isExit ? 'paper-exit' : (isWin ? 'positive' : 'negative');
         const pnlText = isPending ? 'pending' : fmtPnl(pnl);
 
         let separator = '';
@@ -2363,7 +2380,7 @@
         }
 
         const confText = t.confidence ? Math.round(t.confidence * 100) + '% conf' : '';
-        const exitText = isExit && t.exit_price ? ' \u2192 ' + fmtPrice(t.exit_price) : '';
+        const exitText = (isExit || isCashed) && t.exit_price ? ' \u2192 ' + fmtPrice(t.exit_price) : '';
 
         return separator + `
           <div class="trade-item">
