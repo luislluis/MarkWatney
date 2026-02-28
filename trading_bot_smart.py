@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.60",
-    "codename": "Night Watch",
+    "version": "v1.61",
+    "codename": "Iron Shield",
     "date": "2026-02-27",
-    "changes": "Fix end-of-window blackout: remove T-15s exit gates; background 99c resolution; safety exit at T-10s<80c; FINAL_SECONDS logging; 5x monitoring in last 15s"
+    "changes": "Non-blocking profit lock (kills 6s blackout); re-enable danger exit; raise hard stop 45c->65c; fast-path FOK at T-30s; zombie thread protection"
 }
 
 import os
@@ -324,13 +324,13 @@ PRICE_STOP_TRIGGER = 0.80          # (legacy) Exit when our side's price <= 80c
 PRICE_STOP_FLOOR = 0.50            # (legacy) Never sell below 50c
 
 # ===========================================
-# 60¢ HARD STOP - FOK Market Orders (v1.34)
+# 65¢ HARD STOP - FOK Market Orders (v1.34, raised v1.61)
 # ===========================================
 # Guaranteed emergency exit using Fill-or-Kill market orders.
 # Triggers on BEST BID (not ask) to ensure real liquidity exists.
 # Will sell at any price to avoid riding to $0.
-HARD_STOP_ENABLED = True           # Enable 45¢ hard stop
-HARD_STOP_TRIGGER = 0.45           # Exit when best bid <= 45¢
+HARD_STOP_ENABLED = True           # Enable 65¢ hard stop
+HARD_STOP_TRIGGER = 0.65           # Exit when best bid <= 65¢ (raised from 45¢ in v1.61 — fills at 55-65c vs 10-23c)
 HARD_STOP_FLOOR = 0.01             # Effectively no floor (1¢ minimum)
 HARD_STOP_USE_FOK = True           # Use Fill-or-Kill market orders
 HARD_STOP_CONSECUTIVE_REQUIRED = 2 # Require 2 consecutive ticks below trigger before firing
@@ -393,7 +393,7 @@ DANGER_WEIGHT_TIME = 0.3             # Weight for time decay in final 60s
 # Exit when danger score is high AND opponent ask confirms real uncertainty.
 # Opponent ask > 15c = market disagrees with our bet. Combined with high danger = GET OUT.
 # On wins, opponent ask is always ≤8c. 15c threshold provides 7c margin.
-DANGER_EXIT_ENABLED = False
+DANGER_EXIT_ENABLED = True          # Re-enabled v1.61: catches reversals at 80-90c (opponent_ask>15c + danger>0.40)
 DANGER_EXIT_THRESHOLD = 0.40          # Exit when danger score >= this
 DANGER_EXIT_OPPONENT_ASK_MIN = 0.15   # Only exit if opponent ask > 15c (real uncertainty)
 DANGER_EXIT_CONSECUTIVE_REQUIRED = 2  # Require 2 consecutive ticks (prevent single-tick noise)
@@ -405,7 +405,7 @@ DANGER_EXIT_CONSECUTIVE_REQUIRED = 2  # Require 2 consecutive ticks (prevent sin
 # If market turns (bid < 60c), cancel sell and let hard stop handle exit.
 PROFIT_LOCK_ENABLED = True
 PROFIT_LOCK_SELL_PRICE = 0.99         # Sell limit price (99c)
-PROFIT_LOCK_CANCEL_THRESHOLD = 0.60   # Cancel sell if best bid drops below 60c
+PROFIT_LOCK_CANCEL_THRESHOLD = 0.70   # Cancel sell if best bid drops below 70c (above hard stop at 65c)
 
 # Bot identity
 BOT_NAME = "ChatGPT-Smart"
@@ -4437,93 +4437,70 @@ def main():
                                         price=fill_price, pnl=actual_pnl,
                                         ordered_shares=ordered, fill_rate=_fill_rate)
 
-                        # === INSTANT PROFIT LOCK (v1.58, fixed v1.60) ===
-                        # After fill, update balance allowance then place sell at 99c.
-                        # Fast path: poll every 0.5s for 5s inline.
-                        # If that fails: background thread retries every 5s until success or position exited.
+                        # === INSTANT PROFIT LOCK (v1.58, fixed v1.61) ===
+                        # After fill, launch background thread to place sell at 99c.
+                        # NEVER blocks main loop — exit triggers must remain active.
                         if PROFIT_LOCK_ENABLED and not window_state.get('profit_lock_order_id'):
                             sell_token = window_state['up_token'] if side == "UP" else window_state['down_token']
                             buy_token = window_state.get('capture_99c_token', 'unknown')
                             sell_price = PROFIT_LOCK_SELL_PRICE
                             sell_shares = filled
+                            _ws_ref = window_state
+                            _window_id_at_fill = window_state.get('window_id', '')
 
-                            print(f"[{ts()}] 🔒 PROFIT_LOCK: buy_token={buy_token[:12]}... sell_token={sell_token[:12]}... shares={sell_shares:.0f}")
+                            print(f"[{ts()}] 🔒 PROFIT_LOCK: Launching background thread | shares={sell_shares:.0f} | window={_window_id_at_fill[-8:]}")
 
-                            def _try_profit_lock_sell(_token, _price, _shares, _side, attempt_num):
-                                """Update allowance, check balance, place sell. Returns (success, result)."""
+                            def _profit_lock_bg_thread(_token=sell_token, _price=sell_price,
+                                                       _shares=sell_shares, _side=side,
+                                                       _ws=_ws_ref, _wid=_window_id_at_fill):
+                                """Background thread: retry profit lock sell until success, exit, or window change."""
                                 from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
-                                try:
-                                    clob_client.update_balance_allowance(
-                                        BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=_token))
-                                except Exception as e:
-                                    print(f"[{ts()}] 🔒 PROFIT_LOCK: update_balance_allowance error: {e}")
-                                try:
-                                    bal = clob_client.get_balance_allowance(
-                                        BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=_token))
-                                    bal_amount = float(bal.get('balance', 0)) if bal else 0
-                                except Exception as e:
-                                    bal_amount = 0
-                                    print(f"[{ts()}] 🔒 PROFIT_LOCK: Balance check error: {e}")
-                                print(f"[{ts()}] PROFIT_LOCK_RETRY: Attempt {attempt_num} | Balance: {bal_amount:.1f} | Waiting for shares to settle")
-                                if bal_amount >= _shares:
-                                    print(f"[{ts()}] 🔒 PROFIT_LOCK: Placing sell {_shares:.0f} {_side} @ {_price*100:.0f}c")
-                                    return place_limit_order(_token, _price, _shares, side="SELL", bypass_price_failsafe=True)
-                                return False, f"balance {bal_amount:.1f} < {_shares:.0f}"
-
-                            # Fast path: poll every 0.5s for up to 5s (10 attempts)
-                            pl_success = False
-                            pl_result = None
-                            pl_attempt = 0
-                            for pl_attempt in range(10):
-                                pl_success, pl_result = _try_profit_lock_sell(
-                                    sell_token, sell_price, sell_shares, side, pl_attempt + 1)
-                                if pl_success:
-                                    break
-                                time.sleep(0.5)
-
-                            if pl_success:
-                                window_state['profit_lock_order_id'] = pl_result
-                                print(f"[{ts()}] PROFIT_LOCK_CONFIRMED: Sell order placed successfully | {sell_shares:.0f} shares @ {sell_price*100:.0f}c | Order ID: {pl_result[:8]}...")
-                                log_activity("PROFIT_LOCK_PLACED", {
-                                    "side": side, "shares": sell_shares,
-                                    "sell_price": sell_price, "order_id": pl_result,
-                                    "attempts": pl_attempt + 1
-                                })
-                            else:
-                                # Slow path: background thread retries every 5s until success or position exited
-                                print(f"[{ts()}] 🔒 PROFIT_LOCK: Fast path failed after 5s. Launching background retry thread.")
-                                _ws_ref = window_state  # capture reference — same dict object
-
-                                def _profit_lock_retry_loop(_token=sell_token, _price=sell_price,
-                                                            _shares=sell_shares, _side=side, _ws=_ws_ref):
-                                    attempt = 11  # continue numbering from fast path
-                                    while True:
-                                        # Stop if position was exited by another path
-                                        if _ws.get('capture_99c_exited'):
-                                            print(f"[{ts()}] 🔒 PROFIT_LOCK_RETRY: Stopping — position already exited")
-                                            return
-                                        # Stop if profit lock already placed (shouldn't happen but safety)
-                                        if _ws.get('profit_lock_order_id'):
-                                            print(f"[{ts()}] 🔒 PROFIT_LOCK_RETRY: Stopping — sell already placed")
-                                            return
-                                        time.sleep(5)
+                                MAX_RETRIES = 60  # 60 × 0.5s = 30 seconds max
+                                for attempt in range(1, MAX_RETRIES + 1):
+                                    # Stop if window changed (kills zombie threads)
+                                    if _ws.get('window_id', '') != _wid:
+                                        print(f"[{ts()}] 🔒 PROFIT_LOCK[BG]: Stopping — window changed")
+                                        return
+                                    # Stop if position was exited by another path
+                                    if _ws.get('capture_99c_exited'):
+                                        print(f"[{ts()}] 🔒 PROFIT_LOCK[BG]: Stopping — position already exited")
+                                        return
+                                    # Stop if profit lock already placed
+                                    if _ws.get('profit_lock_order_id'):
+                                        print(f"[{ts()}] 🔒 PROFIT_LOCK[BG]: Stopping — sell already placed")
+                                        return
+                                    try:
+                                        # Update allowance + check balance
                                         try:
-                                            success, result = _try_profit_lock_sell(_token, _price, _shares, _side, attempt)
+                                            clob_client.update_balance_allowance(
+                                                BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=_token))
+                                        except Exception:
+                                            pass
+                                        bal = clob_client.get_balance_allowance(
+                                            BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=_token))
+                                        bal_amount = float(bal.get('balance', 0)) if bal else 0
+                                        if attempt <= 5 or attempt % 10 == 0:
+                                            print(f"[{ts()}] PROFIT_LOCK[BG]: Attempt {attempt}/{MAX_RETRIES} | Balance: {bal_amount:.1f}")
+                                        if bal_amount >= _shares:
+                                            print(f"[{ts()}] 🔒 PROFIT_LOCK[BG]: Placing sell {_shares:.0f} {_side} @ {_price*100:.0f}c")
+                                            success, result = place_limit_order(_token, _price, _shares, side="SELL", bypass_price_failsafe=True)
                                             if success:
                                                 _ws['profit_lock_order_id'] = result
-                                                print(f"[{ts()}] PROFIT_LOCK_CONFIRMED: Sell order placed successfully | {_shares:.0f} shares @ {_price*100:.0f}c | Order ID: {result[:8]}...")
+                                                print(f"[{ts()}] PROFIT_LOCK_CONFIRMED: Sell order placed | {_shares:.0f} shares @ {_price*100:.0f}c | Order ID: {result[:8]}...")
                                                 log_activity("PROFIT_LOCK_PLACED", {
                                                     "side": _side, "shares": _shares,
                                                     "sell_price": _price, "order_id": result,
                                                     "attempts": attempt
                                                 })
                                                 return
-                                        except Exception as e:
-                                            print(f"[{ts()}] PROFIT_LOCK_RETRY: Attempt {attempt} | Error: {e}")
-                                        attempt += 1
+                                    except Exception as e:
+                                        if attempt <= 5 or attempt % 10 == 0:
+                                            print(f"[{ts()}] PROFIT_LOCK[BG]: Attempt {attempt} | Error: {e}")
+                                    time.sleep(0.5)
+                                print(f"[{ts()}] 🔒 PROFIT_LOCK[BG]: Gave up after {MAX_RETRIES} attempts (30s)")
 
-                                import threading
-                                threading.Thread(target=_profit_lock_retry_loop, daemon=True).start()
+                            import threading
+                            threading.Thread(target=_profit_lock_bg_thread, daemon=True).start()
 
                 # === 60¢ HARD STOP CHECK (v1.34) ===
                 # Exit immediately using FOK market orders if best bid <= 60¢
@@ -4543,10 +4520,14 @@ def main():
                         ticks_so_far = window_state['hard_stop_consecutive_ticks']
                         if ticks_so_far >= HARD_STOP_CONSECUTIVE_REQUIRED:
                             print(f"[{ts()}] 🛑 EXIT TRIGGER: {capture_side} best bid at {best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c for {ticks_so_far} consecutive ticks")
-                            ob_success, ob_pnl, ob_fills = execute_ob_exit(capture_side, books)
-                            if not ob_success:
-                                print(f"[{ts()}] OB EXIT failed, falling back to hard stop")
+                            if remaining_secs <= 30:
+                                print(f"[{ts()}] FAST_PATH: T-{remaining_secs:.0f}s — skipping OB walk, direct FOK")
                                 execute_hard_stop(capture_side, books)
+                            else:
+                                ob_success, ob_pnl, ob_fills = execute_ob_exit(capture_side, books)
+                                if not ob_success:
+                                    print(f"[{ts()}] OB EXIT failed, falling back to hard stop")
+                                    execute_hard_stop(capture_side, books)
                         else:
                             print(f"[{ts()}] ⚠️ HARD_STOP WARNING: tick {ticks_so_far}/{HARD_STOP_CONSECUTIVE_REQUIRED}: best_bid={best_bid*100:.0f}c <= {HARD_STOP_TRIGGER*100:.0f}c")
                     else:
@@ -4690,10 +4671,14 @@ def main():
                                     "confidence_drop": danger_result['confidence_drop'],
                                     "velocity": danger_result['velocity'],
                                 })
-                                ob_success, ob_pnl, ob_fills = execute_ob_exit(bet_side, books)
-                                if not ob_success:
-                                    print(f"[{ts()}] OB EXIT failed on danger exit, falling back to hard stop")
+                                if remaining_secs <= 30:
+                                    print(f"[{ts()}] FAST_PATH: T-{remaining_secs:.0f}s — skipping OB walk, direct FOK")
                                     execute_hard_stop(bet_side, books)
+                                else:
+                                    ob_success, ob_pnl, ob_fills = execute_ob_exit(bet_side, books)
+                                    if not ob_success:
+                                        print(f"[{ts()}] OB EXIT failed on danger exit, falling back to hard stop")
+                                        execute_hard_stop(bet_side, books)
                             else:
                                 print(f"[{ts()}] ⚠️ DANGER_WARNING: tick {d_ticks}/{DANGER_EXIT_CONSECUTIVE_REQUIRED}: score={d_score:.2f} opp_ask={opp_ask*100:.0f}c")
                         else:
@@ -4724,10 +4709,9 @@ def main():
                             "remaining_secs": remaining_secs,
                             "trigger": f"bid<{WINDOW_END_SAFETY_PRICE*100:.0f}c at T-{remaining_secs:.0f}s"
                         })
-                        ob_success, ob_pnl, ob_fills = execute_ob_exit(capture_side, books)
-                        if not ob_success:
-                            print(f"[{ts()}] SAFETY_EXIT: OB exit failed, falling back to hard stop")
-                            execute_hard_stop(capture_side, books)
+                        # Safety exit is always T-10s — always use fast-path FOK
+                        print(f"[{ts()}] FAST_PATH: T-{remaining_secs:.0f}s — direct FOK (no OB walk)")
+                        execute_hard_stop(capture_side, books)
 
                 # === FINAL_SECONDS LOGGING (v1.60) ===
                 # Log every tick in last 15 seconds when holding a position — proof of monitoring
