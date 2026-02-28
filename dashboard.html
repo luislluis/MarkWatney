@@ -774,6 +774,7 @@
     <!-- Tab Bar -->
     <div class="tab-bar animate-in">
       <button class="tab active" data-tab="trades">Trades</button>
+      <button class="tab" data-tab="90ctest">90c Test</button>
       <button class="tab" data-tab="paper">Paper</button>
       <button class="tab" data-tab="live">Live Status</button>
     </div>
@@ -866,6 +867,26 @@
       </div>
     </div>
     </div><!-- /trades-view -->
+
+    <!-- 90c Test View -->
+    <div id="90ctest-view" style="display:none">
+      <div class="summary-grid animate-in">
+        <div class="stat-card">
+          <div class="stat-label">P&L (90c)</div>
+          <div id="test90cPnl" class="stat-value neutral">--</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">WIN RATE</div>
+          <div id="test90cWinRate" class="stat-value neutral">--</div>
+          <div id="test90cRecord" class="stat-detail">--</div>
+          <div id="test90cRoi" class="stat-roi"></div>
+        </div>
+      </div>
+      <div id="test90cTrades" class="trades-list animate-in">
+        <p class="empty-state">Loading 90c test trades...</p>
+      </div>
+      <div id="test90cHistory" class="history-list animate-in"></div>
+    </div><!-- /90ctest-view -->
 
     <!-- Paper Trading View -->
     <div id="paper-view" style="display:none">
@@ -1936,11 +1957,13 @@
     let currentWindowId = null;
     let liveEvents = [];
     let liveDataLoaded = false;
+    let test90cDataLoaded = false;
 
     // Tab switching (no hash routing — just toggle display)
     function switchTab(tab) {
       activeTab = tab;
       document.getElementById('trades-view').style.display = tab === 'trades' ? '' : 'none';
+      document.getElementById('90ctest-view').style.display = tab === '90ctest' ? '' : 'none';
       document.getElementById('paper-view').style.display = tab === 'paper' ? '' : 'none';
       document.getElementById('live-view').style.display = tab === 'live' ? '' : 'none';
       document.querySelectorAll('.tab').forEach(t => {
@@ -1951,6 +1974,9 @@
       }
       if (tab === 'paper' && !paperDataLoaded) {
         loadPaperData();
+      }
+      if (tab === '90ctest' && !test90cDataLoaded) {
+        load90cTestData();
       }
     }
 
@@ -2396,6 +2422,181 @@
     }
 
     // ── End Paper Trading ───────────────────────────────────
+
+    // ── 90c Test Tab ──────────────────────────────────────
+
+    async function load90cTestData() {
+      try {
+        console.log('[90C] Loading 90c test trades...');
+        // Reuse the same activity API data but filter for 90c entries
+        const activityUrl = `https://data-api.polymarket.com/activity?user=${CONFIG.walletAddress}&limit=1000`;
+        const resp = await fetch(activityUrl);
+        if (!resp.ok) throw new Error('Activity API error');
+        const allActivity = await resp.json();
+
+        // Filter: buys with price between 0.88 and 0.93 (90c bids fill around 89-92c)
+        const buys = allActivity.filter(a =>
+          a.type === 'TRADE' && a.side === 'BUY' &&
+          parseFloat(a.price) >= 0.88 && parseFloat(a.price) < 0.93
+        );
+        const sells = allActivity.filter(a =>
+          a.type === 'TRADE' && a.side === 'SELL'
+        );
+        const redeems = allActivity.filter(a => a.type === 'REDEEM');
+
+        // Build sell map by conditionId+outcomeIndex
+        const sellMap = {};
+        for (const s of sells) {
+          const key = (s.conditionId || '') + '|' + (s.outcomeIndex ?? '');
+          if (!sellMap[key]) sellMap[key] = [];
+          sellMap[key].push(s);
+        }
+        const redeemSet = new Set(redeems.map(r => (r.conditionId || '') + '|' + (r.outcomeIndex ?? '')));
+
+        // Build trades
+        const trades = [];
+        for (const buy of buys) {
+          const key = (buy.conditionId || '') + '|' + (buy.outcomeIndex ?? '');
+          const price = parseFloat(buy.price);
+          const size = parseFloat(buy.size);
+          const cost = price * size;
+          const age = Date.now() / 1000 - buy.timestamp;
+          const won = redeemSet.has(key);
+
+          // Check for exits (sells of the same token)
+          let exitRevenue = 0, exitShares = 0;
+          if (sellMap[key]) {
+            for (const s of sellMap[key]) {
+              if (s.timestamp >= buy.timestamp && s.timestamp <= buy.timestamp + 1200) {
+                exitRevenue += parseFloat(s.price) * parseFloat(s.size);
+                exitShares += parseFloat(s.size);
+              }
+            }
+          }
+
+          const exitedAll = exitShares >= size - 0.02;
+          if (exitedAll && exitShares > 0) {
+            const pnl = exitRevenue - cost;
+            const exitPrice = exitRevenue / exitShares;
+            const isCashedOut = pnl > 0 && exitPrice >= 0.98;
+            trades.push({
+              timestamp: new Date(buy.timestamp * 1000).toISOString(),
+              window_id: buy.slug || '', side: buy.outcomeIndex === '0' ? 'UP' : 'DN',
+              shares: size, entry_price: price, exit_price: exitPrice,
+              status: isCashedOut ? 'CASHED' : 'EXIT',
+              profit_loss: Math.round(pnl * 100) / 100,
+              cost_basis: Math.round(cost * 100) / 100
+            });
+          } else {
+            const status = won ? 'WIN' : (age > 1800 ? 'LOSS' : 'PENDING');
+            const pnl = status === 'WIN' ? size * (1 - price) : (status === 'LOSS' ? -cost : 0);
+            trades.push({
+              timestamp: new Date(buy.timestamp * 1000).toISOString(),
+              window_id: buy.slug || '', side: buy.outcomeIndex === '0' ? 'UP' : 'DN',
+              shares: size, entry_price: price,
+              status,
+              profit_loss: Math.round(pnl * 100) / 100,
+              cost_basis: Math.round(cost * 100) / 100
+            });
+          }
+        }
+
+        trades.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        test90cDataLoaded = true;
+        render90cTestDashboard(trades);
+      } catch (e) {
+        console.error('[90C] Error:', e);
+        document.getElementById('test90cTrades').innerHTML =
+          '<p class="empty-state">Error loading 90c test trades</p>';
+      }
+    }
+
+    function render90cTestDashboard(trades) {
+      const resolved = trades.filter(t => t.status !== 'PENDING');
+      const winTrades = trades.filter(t => t.status === 'WIN');
+      const cashedTrades = trades.filter(t => t.status === 'CASHED');
+      const lossTrades = trades.filter(t => t.status === 'LOSS');
+      const exitTrades = trades.filter(t => t.status === 'EXIT');
+      const totalPnl = trades.reduce((s, t) => s + t.profit_loss, 0);
+
+      const pnlEl = document.getElementById('test90cPnl');
+      pnlEl.textContent = fmtPnl(totalPnl);
+      pnlEl.className = 'stat-value ' + (totalPnl >= 0 ? 'positive' : totalPnl < 0 ? 'negative' : 'neutral');
+
+      const wrEl = document.getElementById('test90cWinRate');
+      const totalWins = winTrades.length + cashedTrades.length;
+      const resolvedCount = totalWins + lossTrades.length + exitTrades.length;
+      const winPct = resolvedCount > 0 ? Math.round(totalWins / resolvedCount * 100) : 0;
+      wrEl.textContent = trades.length > 0 ? winPct + '%' : '--';
+      wrEl.className = 'stat-value ' + (winPct >= 50 ? 'positive' : 'neutral');
+
+      let recordText = winTrades.length + 'W';
+      if (cashedTrades.length > 0) recordText += ' / ' + cashedTrades.length + 'C';
+      recordText += ' / ' + lossTrades.length + 'L';
+      if (exitTrades.length > 0) recordText += ' / ' + exitTrades.length + 'E';
+      const pendingCount = trades.filter(t => t.status === 'PENDING').length;
+      if (pendingCount > 0) recordText += ' (' + pendingCount + ' pending)';
+      document.getElementById('test90cRecord').textContent = trades.length > 0 ? recordText : 'No trades yet';
+
+      const totalCost = trades.reduce((s, t) => s + (t.cost_basis ?? 0), 0);
+      const roiPct = totalCost > 0 ? Math.round(totalPnl / totalCost * 1000) / 10 : 0;
+      const roiEl = document.getElementById('test90cRoi');
+      roiEl.textContent = trades.length > 0 ? (roiPct > 0 ? '+' : '') + roiPct + '% ROI' : '';
+      roiEl.className = 'stat-roi ' + (roiPct >= 0 ? 'positive' : 'negative');
+
+      const container = document.getElementById('test90cTrades');
+      if (trades.length === 0) {
+        container.innerHTML = '<p class="empty-state">No 90c test trades yet — bot not launched</p>';
+        return;
+      }
+
+      let lastDate = null;
+      container.innerHTML = trades.map(t => {
+        const status = t.status;
+        const pnl = t.profit_loss;
+        const isPending = status === 'PENDING';
+        const isWin = status === 'WIN';
+        const isCashed = status === 'CASHED';
+        const isExit = status === 'EXIT';
+        const price = fmtPrice(t.entry_price);
+        const tradeDate = new Date(t.timestamp);
+        const time = tradeDate.toLocaleTimeString('en-US', {
+          hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York'
+        });
+        const dateStr = tradeDate.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+        const side = escapeHtml(t.side);
+        const shares = t.shares % 1 < 0.01 ? Math.round(t.shares) : t.shares.toFixed(2);
+
+        const statusClass = isPending ? 'pending' : isCashed ? 'profit-lock' : isExit ? 'exit' : (isWin ? 'win' : 'loss');
+        const statusIcon = isPending ? '\u25F7' : isCashed ? '\uD83D\uDCB0' : isExit ? '\u21A9' : (isWin ? '\u2713' : '\u2717');
+        const pnlClass = isPending ? 'pending' : isCashed ? 'positive' : isExit ? 'exit' : (isWin ? 'positive' : 'negative');
+        const pnlText = isPending ? 'pending' : fmtPnl(pnl);
+        const exitText = (isExit || isCashed) && t.exit_price ? ' \u2192 ' + fmtPrice(t.exit_price) : '';
+
+        let separator = '';
+        if (lastDate !== dateStr) {
+          const displayDate = tradeDate.toLocaleDateString('en-US', {
+            weekday: 'short', month: 'short', day: 'numeric', timeZone: 'America/New_York'
+          });
+          separator = '<div class="date-separator">' + displayDate + '</div>';
+          lastDate = dateStr;
+        }
+
+        return separator + `
+          <div class="trade-item">
+            <div class="trade-status ${statusClass}">${statusIcon}</div>
+            <div class="trade-info">
+              <div class="trade-pair">${side} ${shares}@${price}${exitText}</div>
+              <div class="trade-detail">$${t.cost_basis.toFixed(2)}</div>
+              <div class="trade-meta">${time}</div>
+            </div>
+            <div class="trade-pnl ${pnlClass}">${pnlText}</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // ── End 90c Test ──────────────────────────────────────
 
     // Toggle between today's trades and all historical trades
     document.getElementById('tradesToggle').addEventListener('click', () => {
