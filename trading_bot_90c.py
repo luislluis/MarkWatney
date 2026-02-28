@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.61-90c",
+    "version": "v1.62-90c",
     "codename": "Price Scout",
     "date": "2026-02-28",
-    "changes": "90c entry test bot — same strategy as Iron Shield but bids at 90c instead of 95c"
+    "changes": "FOK market buy entry — 6 shares at current ask when confidence >= 90%, retries each tick if FOK fails"
 }
 
 import os
@@ -347,7 +347,7 @@ MIN_TIME_FOR_ENTRY = 300           # Never enter with <5 minutes (300s) remainin
 CAPTURE_99C_ENABLED = True         # Enable/disable 99c capture strategy
 CAPTURE_99C_MAX_SPEND = 6.00       # Fallback max spend if portfolio balance unavailable
 TRADE_SIZE_PCT = 0.21              # 21% of portfolio per trade (half — shares wallet with 95c bot)
-FIXED_TRADE_SHARES = 12            # Fixed trade size (half of 95c bot — shares wallet)
+FIXED_TRADE_SHARES = 6             # Fixed trade size (FOK market buy)
 CAPTURE_99C_BID_PRICE = 0.90       # Place bid at 90c (90c test bot)
 CAPTURE_99C_MIN_TIME = 10          # Need at least 10 seconds to settle order
 CAPTURE_99C_MIN_CONFIDENCE = 0.90  # Only bet when 90%+ confident (lower for 90c entry)
@@ -1379,6 +1379,51 @@ def place_fok_market_sell(token_id: str, shares: float) -> tuple:
         print(f"[{ts()}] HARD_STOP_ERROR: FOK order failed: {e}" + (" [BALANCE ERROR]" if is_balance_error else ""))
         log_activity("FOK_ERROR", {"error": str(e), "balance_error": is_balance_error})
         return False, "", 0.0, is_balance_error
+
+
+def place_fok_market_buy(token_id: str, shares: float) -> tuple:
+    """
+    Place a Fill-or-Kill market buy order for instant entry.
+
+    Returns:
+        tuple: (success, order_id, filled_shares)
+    """
+    global clob_client
+
+    if trading_halted:
+        print(f"[{ts()}] [HALT] BLOCKED: FOK BUY x{shares} - trading halted")
+        return False, None, 0
+
+    try:
+        from py_clob_client.clob_types import MarketOrderArgs, OrderType
+        from py_clob_client.order_builder.constants import BUY
+
+        buy_args = MarketOrderArgs(
+            token_id=token_id,
+            amount=shares,
+            side=BUY
+        )
+
+        signed_order = clob_client.create_market_order(buy_args)
+        response = clob_client.post_order(signed_order, orderType=OrderType.FOK)
+
+        order_id = response.get("orderID", "unknown")
+        status = response.get("status", "UNKNOWN")
+        filled = float(response.get("filledAmount", 0))
+
+        if status == "MATCHED" or filled > 0:
+            print(f"[{ts()}] FOK_BUY: Filled {filled}/{shares} shares, order_id={order_id[:8]}...")
+            log_activity("FOK_BUY_FILLED", {"order_id": order_id, "filled": filled, "requested": shares})
+            return True, order_id, filled
+        else:
+            print(f"[{ts()}] FOK_BUY: Rejected, status={status}")
+            log_activity("FOK_BUY_REJECTED", {"order_id": order_id, "status": status})
+            return False, order_id, 0.0
+
+    except Exception as e:
+        print(f"[{ts()}] FOK_BUY_ERROR: {e}")
+        log_activity("FOK_BUY_ERROR", {"error": str(e)})
+        return False, "", 0.0
 
 
 def check_hard_stop_trigger(books: dict, side: str) -> tuple:
@@ -2724,53 +2769,127 @@ def check_99c_capture_opportunity(ask_up, ask_down, ttc):
 
 def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
     """
-    Place a $5 order at 99c for the likely winner.
-    This is a single-side bet, not an arb.
+    FOK market buy at current ask price for instant entry.
+    If FOK fails, returns False WITHOUT setting capture_99c_used,
+    allowing retry on next tick if confidence still passes.
     """
-    global window_state, session_counters
+    global window_state, session_counters, capital_deployed
 
-    # Trade sizing: FIXED_TRADE_SHARES takes priority if set
-    if FIXED_TRADE_SHARES > 0:
-        shares = FIXED_TRADE_SHARES
-    elif daily_trade_shares > 0:
-        shares = daily_trade_shares
-    elif cached_portfolio_total > 0:
-        trade_budget = cached_portfolio_total * TRADE_SIZE_PCT
-        shares = math.ceil(trade_budget / CAPTURE_99C_BID_PRICE)
-    else:
-        shares = int(CAPTURE_99C_MAX_SPEND / CAPTURE_99C_BID_PRICE)
+    shares = FIXED_TRADE_SHARES  # Always 6 shares
     token = window_state['up_token'] if side == 'UP' else window_state['down_token']
 
     print()
-    print(f"┌─────────────── 99c CAPTURE ───────────────┐")
-    print(f"│  {side} @ {current_ask*100:.0f}c | T-{ttc:.0f}s | Confidence: {confidence*100:.0f}%".ljust(44) + "│")
-    print(f"│  (base {current_ask*100:.0f}% - {penalty*100:.0f}% time penalty)".ljust(44) + "│")
-    print(f"│  Bidding {shares} shares @ {CAPTURE_99C_BID_PRICE*100:.0f}c = ${shares * CAPTURE_99C_BID_PRICE:.2f}".ljust(44) + "│")
-    print(f"└────────────────────────────────────────────┘")
+    print(f"┌─────────────── 90c FOK ENTRY ──────────────┐")
+    print(f"│  {side} @ {current_ask*100:.0f}c | T-{ttc:.0f}s | Confidence: {confidence*100:.0f}%".ljust(45) + "│")
+    print(f"│  (base {current_ask*100:.0f}% - {penalty*100:.0f}% time penalty)".ljust(45) + "│")
+    print(f"│  FOK BUY {shares} shares @ market (~{current_ask*100:.0f}c)".ljust(45) + "│")
+    print(f"└─────────────────────────────────────────────┘")
 
-    # Bypass price failsafe - 99c capture is intentionally above 85c limit
-    success, order_id, status = place_and_verify_order(
-        token, CAPTURE_99C_BID_PRICE, shares, "BUY", bypass_price_failsafe=True
-    )
+    success, order_id, filled = place_fok_market_buy(token, shares)
 
-    if success:
+    if success and filled > 0:
+        # FOK filled instantly — set all state now
         window_state['capture_99c_used'] = True
         window_state['capture_99c_order'] = order_id
         window_state['capture_99c_side'] = side
         window_state['capture_99c_shares'] = shares
         window_state['capture_99c_token'] = token
-        # NOTE: Do NOT set capture_99c_filled_up/down here.
-        # Fill tracking happens in the main loop fill detection (line ~3830).
-        # Setting it here causes get_arb_imbalance() to return a phantom
-        # negative value, triggering false PAIRING_MODE entry.
-        print(f"🔭 99c CAPTURE: Order placed, watching for fill... (${shares * 0.01:.2f} potential profit)")
+        window_state['capture_99c_fill_price'] = current_ask
+        window_state['capture_99c_fill_notified'] = True
+
+        if side == 'UP':
+            window_state['capture_99c_filled_up'] = filled
+        else:
+            window_state['capture_99c_filled_down'] = filled
+
+        actual_pnl = filled * (1.00 - current_ask)
+        capital_deployed += filled * current_ask
+
         print()
+        print(f"┌─────────────── 90c FOK FILLED ──────────────┐")
+        print(f"│  ✅ {side}: {filled:.0f} shares filled @ ~{current_ask*100:.0f}c".ljust(46) + "│")
+        print(f"│  💰 Expected profit: ${actual_pnl:.2f}".ljust(46) + "│")
+        print(f"└──────────────────────────────────────────────┘")
+        print()
+
+        # Record peak confidence at fill time
+        window_state['capture_99c_peak_confidence'] = confidence
+
+        # Send Telegram notification
+        notify_99c_fill(side, filled, confidence * 100, ttc)
+
+        # Log events
         log_event("CAPTURE_99C", window_state.get('window_id', ''),
-                        side=side, price=CAPTURE_99C_BID_PRICE, shares=shares,
+                        side=side, price=current_ask, shares=filled,
                         confidence=confidence, penalty=penalty, ttl=ttc)
+        ordered = shares
+        _fill_rate = round(filled / ordered, 4) if ordered > 0 else None
+        log_event("CAPTURE_FILL", window_state.get('window_id', ''),
+                        side=side, shares=filled, price=current_ask,
+                        pnl=actual_pnl, ordered_shares=ordered, fill_rate=_fill_rate)
+
+        # === INSTANT PROFIT LOCK ===
+        # Launch background thread to place sell at 99c (same as main bot)
+        if PROFIT_LOCK_ENABLED and not window_state.get('profit_lock_order_id'):
+            import threading
+            sell_token = token
+            sell_price = PROFIT_LOCK_SELL_PRICE
+            sell_shares = filled
+            _ws_ref = window_state
+            _window_id_at_fill = window_state.get('window_id', '')
+
+            print(f"[{ts()}] 🔒 PROFIT_LOCK: Launching background thread | shares={sell_shares:.0f} | window={_window_id_at_fill[-8:]}")
+
+            def _profit_lock_bg_thread(_token=sell_token, _price=sell_price,
+                                       _shares=sell_shares, _side=side,
+                                       _ws=_ws_ref, _wid=_window_id_at_fill):
+                from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+                MAX_RETRIES = 60
+                for attempt in range(1, MAX_RETRIES + 1):
+                    if _ws.get('window_id', '') != _wid:
+                        print(f"[{ts()}] 🔒 PROFIT_LOCK[BG]: Stopping — window changed")
+                        return
+                    if _ws.get('capture_99c_exited'):
+                        print(f"[{ts()}] 🔒 PROFIT_LOCK[BG]: Stopping — position already exited")
+                        return
+                    if _ws.get('profit_lock_order_id'):
+                        print(f"[{ts()}] 🔒 PROFIT_LOCK[BG]: Stopping — sell already placed")
+                        return
+                    try:
+                        try:
+                            clob_client.update_balance_allowance(
+                                BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=_token))
+                        except Exception:
+                            pass
+                        bal = clob_client.get_balance_allowance(
+                            BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=_token))
+                        bal_amount = float(bal.get('balance', 0)) / 1e6
+                        print(f"[{ts()}] PROFIT_LOCK[BG]: Attempt {attempt}/{MAX_RETRIES} | Balance: {bal_amount:.1f}")
+                        if bal_amount >= _shares * 0.9:
+                            print(f"[{ts()}] 🔒 PROFIT_LOCK[BG]: Placing sell {_shares:.0f} {_side} @ {_price*100:.0f}c")
+                            try:
+                                ok, result = place_limit_order(_token, _price, _shares, side="SELL", bypass_price_failsafe=True)
+                                if ok:
+                                    _ws['profit_lock_order_id'] = result
+                                    print(f"[{ts()}] PROFIT_LOCK_CONFIRMED: Sell order placed | {_shares:.0f} shares @ {_price*100:.0f}c | Order ID: {result[:8]}...")
+                                    log_activity("PROFIT_LOCK_PLACED", {
+                                        "side": _side, "shares": _shares, "price": _price,
+                                        "order_id": result, "attempt": attempt
+                                    })
+                                    return
+                            except Exception as e:
+                                print(f"[{ts()}] PROFIT_LOCK[BG]: Attempt {attempt} | Error: {e}")
+                    except Exception as e:
+                        print(f"[{ts()}] PROFIT_LOCK[BG]: Attempt {attempt} | Balance check error: {e}")
+                    time.sleep(0.5)
+                print(f"[{ts()}] 🔒 PROFIT_LOCK[BG]: Gave up after {MAX_RETRIES} attempts (30s)")
+
+            threading.Thread(target=_profit_lock_bg_thread, daemon=True).start()
+
         return True
     else:
-        print(f"🎰 99c CAPTURE: ❌ Failed - {status}")
+        # FOK failed — do NOT set capture_99c_used, allowing retry next tick
+        print(f"🎰 90c FOK ENTRY: ❌ Failed — will retry next tick if confidence holds")
         print()
         return False
 
