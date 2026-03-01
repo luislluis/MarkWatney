@@ -2558,7 +2558,8 @@
       document.getElementById('test90cRecord').textContent = trades.length > 0 ? recordText : 'No trades yet';
 
       const totalCost = trades.reduce((s, t) => s + (t.cost_basis ?? 0), 0);
-      const roiPct = totalCost > 0 ? Math.round(totalPnl / totalCost * 1000) / 10 : 0;
+      const avgTradeCost = trades.length > 0 ? totalCost / trades.length : 0;
+      const roiPct = avgTradeCost > 0 ? Math.round(totalPnl / avgTradeCost * 1000) / 10 : 0;
       const roiEl = document.getElementById('test90cRoi');
       roiEl.textContent = trades.length > 0 ? (roiPct > 0 ? '+' : '') + roiPct + '% ROI' : '';
       roiEl.className = 'stat-roi ' + (roiPct >= 0 ? 'positive' : 'negative');
