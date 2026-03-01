@@ -2543,11 +2543,11 @@
     }
 
     function windowTimeFromSlug(slug) {
-      // slug format: "btc-updown-15m-1772382600" → extract unix timestamp of window end
+      // slug format: "btc-updown-15m-1772382600" → timestamp is window START
       const m = (slug || '').match(/(\d{10,})$/);
       if (!m) return null;
-      const endTs = parseInt(m[1]) * 1000;
-      const startTs = endTs - 15 * 60 * 1000;
+      const startTs = parseInt(m[1]) * 1000;
+      const endTs = startTs + 15 * 60 * 1000;
       const fmt = (d) => d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York' });
       return fmt(new Date(startTs)) + '-' + fmt(new Date(endTs)) + ' ET';
     }
