@@ -4053,6 +4053,10 @@ def get_roi_from_activity_api() -> dict:
             slug = group["slug"]
             if not group["buys"]:
                 continue
+            # Only count 90c bot trades (buys 5-8 shares) — ignore 95c bot
+            all_90c = all(5 < b["size"] < 8 for b in group["buys"])
+            if not all_90c:
+                continue
             won = slug in redeemed
 
             group["buys"].sort(key=lambda x: x["timestamp"])
