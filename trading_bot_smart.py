@@ -21,10 +21,10 @@ SMART STRATEGY ADDITIONS:
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v1.61",
-    "codename": "Iron Shield",
-    "date": "2026-02-27",
-    "changes": "Non-blocking profit lock (kills 6s blackout); re-enable danger exit; raise hard stop 45c->65c; fast-path FOK at T-30s; zombie thread protection"
+    "version": "v1.62",
+    "codename": "Trend Guard",
+    "date": "2026-03-01",
+    "changes": "BTC trend filter: skip 99c entries that fight a strong multi-window BTC downtrend/uptrend ($250 threshold over 2 windows)"
 }
 
 import os
@@ -377,6 +377,12 @@ ENTRY_FILTER_STABLE_TICKS = 3           # Last N ticks must all be >= 97c for "s
 ENTRY_FILTER_STABLE_THRESHOLD = 0.97    # Price threshold for stability check
 ENTRY_FILTER_MAX_JUMP = 0.08            # Max allowed tick-to-tick jump in past 10 ticks
 ENTRY_FILTER_MAX_OPP_RECENT = 0.15      # Skip if opposing side was > this in past 30 ticks
+
+# BTC Trend Guard (v1.62 - prevents entries against strong multi-window trends)
+# Compares BTC price at current window open vs 2 windows ago.
+# If BTC dropped >$250 over 2 windows, block UP entries. If rose >$250, block DOWN entries.
+TREND_THRESHOLD = 250                   # BTC $ change over 2 windows that blocks entry
+TREND_LOOKBACK_WINDOWS = 2              # Number of prior windows to measure trend
 ENTRY_FILTER_HISTORY_SIZE = 30          # Number of ticks to keep for filtering
 
 # Danger Scoring Configuration (for smart hedge)
@@ -567,6 +573,10 @@ sniper_stats = {
 
 # Pending 99c resolutions to retry (when market hasn't settled yet)
 pending_99c_resolutions = []  # List of {slug, side, shares, entry_price, timestamp}
+
+# BTC Trend Guard (v1.62): rolling BTC prices at window open for trend detection
+# Each entry: {"window_id": str, "btc_open": float}
+recent_window_btc = []
 
 def get_imbalance():
     """Calculate current imbalance (includes all shares)"""
@@ -2675,6 +2685,28 @@ def check_99c_entry_filter(side: str) -> tuple[bool, str]:
     return False, "|".join(reasons)
 
 
+def trend_allows_entry(side: str) -> tuple[bool, str]:
+    """
+    v1.62 Trend Guard: Check if BTC multi-window trend allows this entry.
+    Prevents entering UP when BTC has been dropping hard (or DOWN when rising hard).
+
+    Returns (allowed, reason_string).
+    """
+    if len(recent_window_btc) < TREND_LOOKBACK_WINDOWS + 1:
+        return True, "insufficient_history"
+
+    current_open = recent_window_btc[-1]['btc_open']
+    lookback_open = recent_window_btc[-(TREND_LOOKBACK_WINDOWS + 1)]['btc_open']
+    btc_trend = current_open - lookback_open
+
+    if side == "UP" and btc_trend < -TREND_THRESHOLD:
+        return False, f"BTC trend {btc_trend:+.0f} over {TREND_LOOKBACK_WINDOWS} windows (threshold: -{TREND_THRESHOLD})"
+    if side == "DOWN" and btc_trend > TREND_THRESHOLD:
+        return False, f"BTC trend {btc_trend:+.0f} over {TREND_LOOKBACK_WINDOWS} windows (threshold: +{TREND_THRESHOLD})"
+
+    return True, f"BTC trend {btc_trend:+.0f} within threshold"
+
+
 def check_99c_capture_opportunity(ask_up, ask_down, ttc):
     """
     Check if we should try to capture a 99c winner using confidence score.
@@ -4240,6 +4272,18 @@ def main():
                     print(f"[{ts()}] NEW WINDOW: {slug}")
                     print(f"[{ts()}] Session: {session_stats['windows']} windows | {session_stats['paired']} paired | PnL: ${session_stats['pnl']:.2f}")
 
+                    # v1.62 Trend Guard: Record BTC price at window open
+                    _trend_btc = locals().get('btc_price')
+                    if _trend_btc:
+                        recent_window_btc.append({"window_id": slug, "btc_open": _trend_btc})
+                        if len(recent_window_btc) > 5:
+                            recent_window_btc.pop(0)
+                        if len(recent_window_btc) >= TREND_LOOKBACK_WINDOWS + 1:
+                            trend_val = recent_window_btc[-1]['btc_open'] - recent_window_btc[-(TREND_LOOKBACK_WINDOWS + 1)]['btc_open']
+                            print(f"[{ts()}] TREND_GUARD: BTC opens = {[f'${r['btc_open']:,.0f}' for r in recent_window_btc[-3:]]} | trend: {trend_val:+.0f}")
+                        else:
+                            print(f"[{ts()}] TREND_GUARD: Collecting history ({len(recent_window_btc)}/{TREND_LOOKBACK_WINDOWS + 1} windows)")
+
                     # Resolve any pending 99c outcomes from previous windows
                     if pending_99c_resolutions:
                         resolved = []
@@ -4388,13 +4432,28 @@ def main():
                     ask_down = float(books['down_asks'][0]['price']) if books.get('down_asks') else 0.50
                     capture = check_99c_capture_opportunity(ask_up, ask_down, remaining_secs)
                     if capture:
-                        execute_99c_capture(
-                            capture['side'],
-                            capture['ask'],
-                            capture['confidence'],
-                            capture['penalty'],
-                            remaining_secs
-                        )
+                        # v1.62 Trend Guard: check multi-window BTC trend before entering
+                        trend_ok, trend_reason = trend_allows_entry(capture['side'])
+                        if not trend_ok:
+                            btc_now = recent_window_btc[-1]['btc_open'] if recent_window_btc else 0
+                            btc_prev = recent_window_btc[-(TREND_LOOKBACK_WINDOWS + 1)]['btc_open'] if len(recent_window_btc) >= TREND_LOOKBACK_WINDOWS + 1 else 0
+                            trend_val = btc_now - btc_prev
+                            print(f"[{ts()}] TREND_GUARD: Blocking {capture['side']} entry | {trend_reason}")
+                            print(f"[{ts()}] TREND_GUARD: Current window BTC: ${btc_now:,.0f} | {TREND_LOOKBACK_WINDOWS} windows ago: ${btc_prev:,.0f}")
+                            log_event("TREND_GUARD_BLOCK", window_state.get('window_id', ''),
+                                side=capture['side'], confidence=capture['confidence'],
+                                trend_usd=trend_val, threshold=TREND_THRESHOLD,
+                                btc_current=btc_now, btc_lookback=btc_prev)
+                            window_state['capture_99c_used'] = True  # Skip this window
+                        else:
+                            print(f"[{ts()}] TREND_GUARD: Allowing {capture['side']} entry | {trend_reason}")
+                            execute_99c_capture(
+                                capture['side'],
+                                capture['ask'],
+                                capture['confidence'],
+                                capture['penalty'],
+                                remaining_secs
+                            )
 
                 # Check if 99c capture order filled
                 if window_state.get('capture_99c_order') and not window_state.get('capture_99c_fill_notified'):
