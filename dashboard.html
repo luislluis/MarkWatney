@@ -2670,8 +2670,9 @@
         const losses = dayTrades.filter(t => t.status === 'LOSS').length;
         const exits = dayTrades.filter(t => t.status === 'EXIT').length;
         const pending = dayTrades.filter(t => t.status === 'PENDING').length;
-        const pnl = dayTrades.reduce((s, t) => s + t.profit_loss, 0);
-        const cost = dayTrades.reduce((s, t) => s + (t.cost_basis ?? 0), 0);
+        const resolved = dayTrades.filter(t => t.status !== 'PENDING');
+        const pnl = resolved.reduce((s, t) => s + t.profit_loss, 0);
+        const cost = resolved.reduce((s, t) => s + (t.cost_basis ?? 0), 0);
         const roi = cost > 0 ? Math.round(pnl / cost * 1000) / 10 : 0;
         const total = wins + losses + exits;
         const wr = total > 0 ? Math.round(wins / total * 100) : 0;
