@@ -1222,7 +1222,9 @@
           fetch(activityUrl).then(r => r.ok ? r.json() : Promise.reject(new Error('Activity API: ' + r.status))),
           buildFillRateMap()
         ]);
-        const polyTrades = allActivity.filter(a => a.type === 'TRADE');
+        // Exclude 90c bot trades (size 5-8 shares) from main dashboard
+        const is90cBotTrade = (a) => { const sz = parseFloat(a.size); return sz > 5 && sz < 8; };
+        const polyTrades = allActivity.filter(a => a.type === 'TRADE' && !is90cBotTrade(a));
         const redeemEvents = allActivity.filter(a => a.type === 'REDEEM');
 
         // Build redemption lookup: slug -> true (redeemed = won)
