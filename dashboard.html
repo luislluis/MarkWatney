@@ -1275,8 +1275,8 @@
           for (const [key, group] of Object.entries(grouped)) {
             const [slug, side] = key.split('|');
             if (group.buys.length === 0) continue;
-            // Skip 90c bot groups (all buys are 5-8 shares)
-            const all90c = group.buys.every(b => b.size > 5 && b.size < 8);
+            // Skip 90c bot groups (all buys are 5-8 shares at <=92c)
+            const all90c = group.buys.every(b => b.size > 5 && b.size < 8 && b.price <= 0.92);
             if (all90c) continue;
             const won = redeemed.has(slug);
             const windowTitle = group.title;
@@ -2453,8 +2453,8 @@
         const todayCutoff = new Date(nowEST + 'T00:00:00-05:00').getTime() / 1000;
         const todayActivity = allActivity.filter(a => a.timestamp >= todayCutoff);
 
-        // 90c bot buys are 5-8 shares each
-        const is90cBuy = (a) => a.type === 'TRADE' && a.side === 'BUY' && parseFloat(a.size) > 5 && parseFloat(a.size) < 8;
+        // 90c bot buys are ~6 shares at ~90c (filter by size AND price to avoid 95c bot bleed)
+        const is90cBuy = (a) => a.type === 'TRADE' && a.side === 'BUY' && parseFloat(a.size) > 5 && parseFloat(a.size) < 8 && parseFloat(a.price) <= 0.92;
         const buys = todayActivity.filter(is90cBuy);
         const sells = todayActivity.filter(a => a.type === 'TRADE' && a.side === 'SELL');
         const redeems = todayActivity.filter(a => a.type === 'REDEEM');
@@ -2543,11 +2543,11 @@
     }
 
     function windowTimeFromSlug(slug) {
-      // slug format: "btc-updown-15m-1772382600" → extract unix timestamp of window end
+      // slug format: "btc-updown-15m-1772382600" → timestamp is window START
       const m = (slug || '').match(/(\d{10,})$/);
       if (!m) return null;
-      const endTs = parseInt(m[1]) * 1000;
-      const startTs = endTs - 15 * 60 * 1000;
+      const startTs = parseInt(m[1]) * 1000;
+      const endTs = startTs + 15 * 60 * 1000;
       const fmt = (d) => d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York' });
       return fmt(new Date(startTs)) + '-' + fmt(new Date(endTs)) + ' ET';
     }
@@ -2670,8 +2670,9 @@
         const losses = dayTrades.filter(t => t.status === 'LOSS').length;
         const exits = dayTrades.filter(t => t.status === 'EXIT').length;
         const pending = dayTrades.filter(t => t.status === 'PENDING').length;
-        const pnl = dayTrades.reduce((s, t) => s + t.profit_loss, 0);
-        const cost = dayTrades.reduce((s, t) => s + (t.cost_basis ?? 0), 0);
+        const resolved = dayTrades.filter(t => t.status !== 'PENDING');
+        const pnl = resolved.reduce((s, t) => s + t.profit_loss, 0);
+        const cost = resolved.reduce((s, t) => s + (t.cost_basis ?? 0), 0);
         const roi = cost > 0 ? Math.round(pnl / cost * 1000) / 10 : 0;
         const total = wins + losses + exits;
         const wr = total > 0 ? Math.round(wins / total * 100) : 0;
