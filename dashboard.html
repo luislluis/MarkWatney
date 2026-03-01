@@ -2433,11 +2433,15 @@
         if (!resp.ok) throw new Error('Activity API error');
         const allActivity = await resp.json();
 
+        // Only show trades from today (90c bot launch day) onward
+        const todayCutoff = new Date('2026-02-28T00:00:00-05:00').getTime() / 1000; // Midnight EST
+        const recentActivity = allActivity.filter(a => a.timestamp >= todayCutoff);
+
         // 90c bot buys are 5-8 shares each
         const is90cBuy = (a) => a.type === 'TRADE' && a.side === 'BUY' && parseFloat(a.size) > 5 && parseFloat(a.size) < 8;
-        const buys = allActivity.filter(is90cBuy);
-        const sells = allActivity.filter(a => a.type === 'TRADE' && a.side === 'SELL');
-        const redeems = allActivity.filter(a => a.type === 'REDEEM');
+        const buys = recentActivity.filter(is90cBuy);
+        const sells = recentActivity.filter(a => a.type === 'TRADE' && a.side === 'SELL');
+        const redeems = recentActivity.filter(a => a.type === 'REDEEM');
         const redeemSet = new Set(redeems.map(r => (r.conditionId || '') + '|' + (r.outcomeIndex ?? '')));
 
         // Group buys by window slug+outcome (combine multiple fills into one trade)
