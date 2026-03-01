@@ -2462,11 +2462,12 @@
           sellMap[key].push(s);
         }
 
-        // Build one trade per window
+        // Build one trade per window (skip runaway groups with >20 total shares)
         const trades = [];
         for (const [key, group] of Object.entries(grouped)) {
           const allBuys = group.buys;
           const totalShares = allBuys.reduce((s, b) => s + parseFloat(b.size), 0);
+          if (totalShares > 20) continue; // Skip runaway fills
           const totalCost = allBuys.reduce((s, b) => s + parseFloat(b.price) * parseFloat(b.size), 0);
           const avgPrice = totalCost / totalShares;
           const firstTs = Math.min(...allBuys.map(b => b.timestamp));
