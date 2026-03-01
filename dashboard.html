@@ -2433,8 +2433,8 @@
         if (!resp.ok) throw new Error('Activity API error');
         const allActivity = await resp.json();
 
-        // Only show trades after the 90c bot fix (exclude runaway fills)
-        const todayCutoff = new Date('2026-03-01T00:00:00Z').getTime() / 1000;
+        // Exclude runaway fills (last at 23:58 UTC Feb 28). Good trades start at 00:28 UTC Mar 1.
+        const todayCutoff = new Date('2026-03-01T00:10:00Z').getTime() / 1000;
         const recentActivity = allActivity.filter(a => a.timestamp >= todayCutoff);
 
         // 90c bot buys are 5-8 shares each
