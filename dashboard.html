@@ -1275,8 +1275,8 @@
           for (const [key, group] of Object.entries(grouped)) {
             const [slug, side] = key.split('|');
             if (group.buys.length === 0) continue;
-            // Skip 90c bot groups (all buys are 5-8 shares)
-            const all90c = group.buys.every(b => b.size > 5 && b.size < 8);
+            // Skip 90c bot groups (all buys are 5-8 shares at <=92c)
+            const all90c = group.buys.every(b => b.size > 5 && b.size < 8 && b.price <= 0.92);
             if (all90c) continue;
             const won = redeemed.has(slug);
             const windowTitle = group.title;
@@ -2453,8 +2453,8 @@
         const todayCutoff = new Date(nowEST + 'T00:00:00-05:00').getTime() / 1000;
         const todayActivity = allActivity.filter(a => a.timestamp >= todayCutoff);
 
-        // 90c bot buys are 5-8 shares each
-        const is90cBuy = (a) => a.type === 'TRADE' && a.side === 'BUY' && parseFloat(a.size) > 5 && parseFloat(a.size) < 8;
+        // 90c bot buys are ~6 shares at ~90c (filter by size AND price to avoid 95c bot bleed)
+        const is90cBuy = (a) => a.type === 'TRADE' && a.side === 'BUY' && parseFloat(a.size) > 5 && parseFloat(a.size) < 8 && parseFloat(a.price) <= 0.92;
         const buys = todayActivity.filter(is90cBuy);
         const sells = todayActivity.filter(a => a.type === 'TRADE' && a.side === 'SELL');
         const redeems = todayActivity.filter(a => a.type === 'REDEEM');
