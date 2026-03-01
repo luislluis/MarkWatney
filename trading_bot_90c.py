@@ -348,6 +348,7 @@ CAPTURE_99C_ENABLED = True         # Enable/disable 99c capture strategy
 CAPTURE_99C_MAX_SPEND = 6.00       # Fallback max spend if portfolio balance unavailable
 TRADE_SIZE_PCT = 0.21              # 21% of portfolio per trade (half — shares wallet with 95c bot)
 FIXED_TRADE_SHARES = 6             # Fixed trade size (FOK market buy)
+SKIP_API_POSITION_SYNC = True      # 90c bot: don't sync from wallet API (shared wallet shows 95c bot's positions)
 CAPTURE_99C_BID_PRICE = 0.90       # Place bid at 90c (90c test bot)
 CAPTURE_99C_MIN_TIME = 10          # Need at least 10 seconds to settle order
 CAPTURE_99C_MIN_CONFIDENCE = 0.90  # Only bet when 90%+ confident (lower for 90c entry)
@@ -533,6 +534,7 @@ def reset_window_state(slug):
         "arb_placed_this_window": False,
         "smart_signal_confidence": 0,  # NEW: Track confidence of winning signal
         "capture_99c_used": False,     # 99c capture: only once per window
+        "fok_buy_attempts": 0,         # FOK buy attempt counter (max 3 per window)
         "capture_99c_order": None,     # 99c capture: order ID
         "capture_99c_side": None,      # 99c capture: UP or DOWN
         "capture_99c_shares": 0,       # 99c capture: shares ordered
@@ -1395,8 +1397,15 @@ def place_fok_market_buy(token_id: str, shares: float) -> tuple:
         return False, None, 0
 
     try:
-        from py_clob_client.clob_types import MarketOrderArgs, OrderType
+        from py_clob_client.clob_types import MarketOrderArgs, OrderType, BalanceAllowanceParams, AssetType
         from py_clob_client.order_builder.constants import BUY
+
+        # Update allowance before buying (required by CLOB API)
+        try:
+            clob_client.update_balance_allowance(
+                BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id))
+        except Exception:
+            pass
 
         buy_args = MarketOrderArgs(
             token_id=token_id,
@@ -1408,15 +1417,21 @@ def place_fok_market_buy(token_id: str, shares: float) -> tuple:
         response = clob_client.post_order(signed_order, orderType=OrderType.FOK)
 
         order_id = response.get("orderID", "unknown")
-        status = response.get("status", "UNKNOWN")
+        status = response.get("status", "UNKNOWN").upper()
         filled = float(response.get("filledAmount", 0))
 
+        # Log full response for debugging
+        print(f"[{ts()}] FOK_BUY response: status={status} filled={filled} order_id={order_id[:8] if order_id else '?'}...")
+
         if status == "MATCHED" or filled > 0:
-            print(f"[{ts()}] FOK_BUY: Filled {filled}/{shares} shares, order_id={order_id[:8]}...")
+            # If filledAmount is 0 but status is MATCHED, assume full fill
+            if filled == 0:
+                filled = shares
+            print(f"[{ts()}] FOK_BUY: ✅ Filled {filled}/{shares} shares")
             log_activity("FOK_BUY_FILLED", {"order_id": order_id, "filled": filled, "requested": shares})
             return True, order_id, filled
         else:
-            print(f"[{ts()}] FOK_BUY: Rejected, status={status}")
+            print(f"[{ts()}] FOK_BUY: ❌ Rejected, status={status}")
             log_activity("FOK_BUY_REJECTED", {"order_id": order_id, "status": status})
             return False, order_id, 0.0
 
@@ -2264,16 +2279,17 @@ def wait_and_sync_position():
     print(f"[{ts()}] Waiting {ORDER_SETTLE_DELAY}s for settlement...")
     time.sleep(ORDER_SETTLE_DELAY)
 
-    pos = get_verified_position()
-    if pos:
-        old_up = window_state['filled_up_shares']
-        old_down = window_state['filled_down_shares']
-        window_state['filled_up_shares'] = pos[0]
-        window_state['filled_down_shares'] = pos[1]
-        if pos[0] != old_up or pos[1] != old_down:
-            print(f"[{ts()}] POSITION_SYNCED: UP={old_up}->{pos[0]} DN={old_down}->{pos[1]}")
-        else:
-            print(f"[{ts()}] Position unchanged: UP={pos[0]} DN={pos[1]}")
+    if not SKIP_API_POSITION_SYNC:
+        pos = get_verified_position()
+        if pos:
+            old_up = window_state['filled_up_shares']
+            old_down = window_state['filled_down_shares']
+            window_state['filled_up_shares'] = pos[0]
+            window_state['filled_down_shares'] = pos[1]
+            if pos[0] != old_up or pos[1] != old_down:
+                print(f"[{ts()}] POSITION_SYNCED: UP={old_up}->{pos[0]} DN={old_down}->{pos[1]}")
+            else:
+                print(f"[{ts()}] Position unchanged: UP={pos[0]} DN={pos[1]}")
 
     window_state['last_order_time'] = time.time()
     save_trades()
@@ -2767,13 +2783,33 @@ def check_99c_capture_opportunity(ask_up, ask_down, ttc):
     return None
 
 
+def _confirm_fill_via_order_status(order_id):
+    """Check if an order actually filled by querying the API."""
+    if not order_id or order_id in ("", "unknown"):
+        return 0
+    try:
+        status = get_order_status(order_id)
+        return status.get('filled', 0)
+    except Exception as e:
+        print(f"[{ts()}] FILL_CHECK_ERROR: {e}")
+        return -1  # Unknown — treat as potentially filled
+
+
 def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
     """
     FOK market buy at current ask price for instant entry.
-    If FOK fails, returns False WITHOUT setting capture_99c_used,
-    allowing retry on next tick if confidence still passes.
+    After each attempt, verifies fill via API before deciding to retry.
+    Max 3 attempts per window as safety backstop.
     """
     global window_state, session_counters, capital_deployed
+
+    # Safety: max 3 FOK attempts per window
+    attempts = window_state.get('fok_buy_attempts', 0)
+    if attempts >= 3:
+        print(f"[{ts()}] 90c FOK: Max attempts reached ({attempts}), done for this window")
+        window_state['capture_99c_used'] = True
+        return False
+    window_state['fok_buy_attempts'] = attempts + 1
 
     shares = FIXED_TRADE_SHARES  # Always 6 shares
     token = window_state['up_token'] if side == 'UP' else window_state['down_token']
@@ -2781,14 +2817,32 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
     print()
     print(f"┌─────────────── 90c FOK ENTRY ──────────────┐")
     print(f"│  {side} @ {current_ask*100:.0f}c | T-{ttc:.0f}s | Confidence: {confidence*100:.0f}%".ljust(45) + "│")
-    print(f"│  (base {current_ask*100:.0f}% - {penalty*100:.0f}% time penalty)".ljust(45) + "│")
-    print(f"│  FOK BUY {shares} shares @ market (~{current_ask*100:.0f}c)".ljust(45) + "│")
+    print(f"│  FOK BUY {shares} shares @ market (~{current_ask*100:.0f}c) [attempt {attempts+1}/3]".ljust(45) + "│")
     print(f"└─────────────────────────────────────────────┘")
 
     success, order_id, filled = place_fok_market_buy(token, shares)
 
+    # === POST-ATTEMPT VERIFICATION ===
+    # Always check order status via API to confirm what actually happened.
+    # The FOK response may lie (e.g., status=matched but filledAmount=0).
+    if order_id and order_id not in ("", "unknown"):
+        time.sleep(0.3)  # Brief settle
+        api_filled = _confirm_fill_via_order_status(order_id)
+        if api_filled > 0:
+            print(f"[{ts()}] FILL_VERIFIED: Order {order_id[:8]}... confirmed {api_filled} shares via API")
+            filled = api_filled
+            success = True
+        elif api_filled == -1:
+            # API check failed — assume filled for safety (don't retry)
+            print(f"[{ts()}] FILL_CHECK_FAILED: Can't verify order — assuming filled for safety")
+            filled = shares
+            success = True
+        elif not success:
+            # API says 0 filled AND FOK reported failure — genuinely not filled, safe to retry
+            print(f"[{ts()}] FILL_VERIFIED: Order {order_id[:8]}... confirmed NOT filled — retry OK")
+
     if success and filled > 0:
-        # FOK filled instantly — set all state now
+        # Confirmed fill — set all state
         window_state['capture_99c_used'] = True
         window_state['capture_99c_order'] = order_id
         window_state['capture_99c_side'] = side
@@ -2812,24 +2866,18 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
         print(f"└──────────────────────────────────────────────┘")
         print()
 
-        # Record peak confidence at fill time
         window_state['capture_99c_peak_confidence'] = confidence
-
-        # Send Telegram notification
         notify_99c_fill(side, filled, confidence * 100, ttc)
 
-        # Log events
         log_event("CAPTURE_99C", window_state.get('window_id', ''),
                         side=side, price=current_ask, shares=filled,
                         confidence=confidence, penalty=penalty, ttl=ttc)
-        ordered = shares
-        _fill_rate = round(filled / ordered, 4) if ordered > 0 else None
+        _fill_rate = round(filled / shares, 4) if shares > 0 else None
         log_event("CAPTURE_FILL", window_state.get('window_id', ''),
                         side=side, shares=filled, price=current_ask,
-                        pnl=actual_pnl, ordered_shares=ordered, fill_rate=_fill_rate)
+                        pnl=actual_pnl, ordered_shares=shares, fill_rate=_fill_rate)
 
         # === INSTANT PROFIT LOCK ===
-        # Launch background thread to place sell at 99c (same as main bot)
         if PROFIT_LOCK_ENABLED and not window_state.get('profit_lock_order_id'):
             import threading
             sell_token = token
@@ -2888,8 +2936,8 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
 
         return True
     else:
-        # FOK failed — do NOT set capture_99c_used, allowing retry next tick
-        print(f"🎰 90c FOK ENTRY: ❌ Failed — will retry next tick if confidence holds")
+        remaining = 3 - window_state.get('fok_buy_attempts', 0)
+        print(f"🎰 90c FOK ENTRY: ❌ Not filled (API verified) — {remaining} retries left")
         print()
         return False
 
@@ -3097,8 +3145,10 @@ def check_and_place_arb(books, ttc):
         return False
 
     # Position verification using improved function
-    api_position = get_verified_position()
-    if api_position:
+    # 90c bot: skip API sync — shared wallet shows 95c bot's positions
+    if not SKIP_API_POSITION_SYNC:
+      api_position = get_verified_position()
+      if api_position:
         api_up, api_down = api_position
         local_up = window_state['filled_up_shares']
         local_down = window_state['filled_down_shares']
@@ -4452,34 +4502,36 @@ def main():
                 window_state['down_token'] = books['down_token']
 
                 # Startup position sync
+                # 90c bot: skip — shared wallet shows 95c bot's positions
                 if window_state.get('startup_sync_done') is not True:
                     window_state['startup_sync_done'] = True
 
-                    # Retry startup sync to avoid stale API cache
-                    api_up, api_down = 0, 0
-                    for attempt in range(3):
-                        api_position = verify_position_from_api()
-                        if api_position:
-                            api_up, api_down = api_position
-                            if api_up > 0 or api_down > 0:
-                                # Position found - verify it's consistent
-                                time.sleep(1)
-                                api_position2 = verify_position_from_api()
-                                if api_position2 and api_position == api_position2:
-                                    break  # Consistent, trust it
-                                print(f"[{ts()}] STARTUP_SYNC: Position changed, retrying... ({attempt+1}/3)")
-                            else:
-                                break  # No position, trust it
-                        time.sleep(0.5)
+                    if not SKIP_API_POSITION_SYNC:
+                        # Retry startup sync to avoid stale API cache
+                        api_up, api_down = 0, 0
+                        for attempt in range(3):
+                            api_position = verify_position_from_api()
+                            if api_position:
+                                api_up, api_down = api_position
+                                if api_up > 0 or api_down > 0:
+                                    # Position found - verify it's consistent
+                                    time.sleep(1)
+                                    api_position2 = verify_position_from_api()
+                                    if api_position2 and api_position == api_position2:
+                                        break  # Consistent, trust it
+                                    print(f"[{ts()}] STARTUP_SYNC: Position changed, retrying... ({attempt+1}/3)")
+                                else:
+                                    break  # No position, trust it
+                            time.sleep(0.5)
 
-                    if api_up > 0 or api_down > 0:
-                        print(f"[{ts()}] STARTUP_SYNC: Found position UP={api_up} DOWN={api_down}")
-                        window_state['filled_up_shares'] = api_up
-                        window_state['filled_down_shares'] = api_down
-                        if api_up != api_down:
-                            window_state['state'] = STATE_PAIRING
-                            window_state['pairing_start_time'] = time.time()
-                            window_state['best_distance_seen'] = float('inf')
+                        if api_up > 0 or api_down > 0:
+                            print(f"[{ts()}] STARTUP_SYNC: Found position UP={api_up} DOWN={api_down}")
+                            window_state['filled_up_shares'] = api_up
+                            window_state['filled_down_shares'] = api_down
+                            if api_up != api_down:
+                                window_state['state'] = STATE_PAIRING
+                                window_state['pairing_start_time'] = time.time()
+                                window_state['best_distance_seen'] = float('inf')
 
                 log_state(remaining_secs, books)
 
