@@ -2434,10 +2434,10 @@
         if (!resp.ok) throw new Error('Activity API error');
         const allActivity = await resp.json();
 
-        // Filter: buys with price between 0.88 and 0.93 (90c bids fill around 89-92c)
+        // Filter: 90c bot buys exactly 6 shares (95c bot buys 25)
         const buys = allActivity.filter(a =>
           a.type === 'TRADE' && a.side === 'BUY' &&
-          parseFloat(a.price) >= 0.88 && parseFloat(a.price) < 0.93
+          parseFloat(a.size) > 5 && parseFloat(a.size) < 8
         );
         const sells = allActivity.filter(a =>
           a.type === 'TRADE' && a.side === 'SELL'
