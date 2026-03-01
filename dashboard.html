@@ -1222,9 +1222,7 @@
           fetch(activityUrl).then(r => r.ok ? r.json() : Promise.reject(new Error('Activity API: ' + r.status))),
           buildFillRateMap()
         ]);
-        // Exclude 90c bot trades (size 5-8 shares) from main dashboard
-        const is90cBotTrade = (a) => { const sz = parseFloat(a.size); return sz > 5 && sz < 8; };
-        const polyTrades = allActivity.filter(a => a.type === 'TRADE' && !is90cBotTrade(a));
+        const polyTrades = allActivity.filter(a => a.type === 'TRADE');
         const redeemEvents = allActivity.filter(a => a.type === 'REDEEM');
 
         // Build redemption lookup: slug -> true (redeemed = won)
@@ -2430,21 +2428,25 @@
     async function load90cTestData() {
       try {
         console.log('[90C] Loading 90c test trades...');
-        // Reuse the same activity API data but filter for 90c entries
         const activityUrl = `https://data-api.polymarket.com/activity?user=${CONFIG.walletAddress}&limit=1000`;
         const resp = await fetch(activityUrl);
         if (!resp.ok) throw new Error('Activity API error');
         const allActivity = await resp.json();
 
-        // Filter: 90c bot buys exactly 6 shares (95c bot buys 25)
-        const buys = allActivity.filter(a =>
-          a.type === 'TRADE' && a.side === 'BUY' &&
-          parseFloat(a.size) > 5 && parseFloat(a.size) < 8
-        );
-        const sells = allActivity.filter(a =>
-          a.type === 'TRADE' && a.side === 'SELL'
-        );
+        // 90c bot buys are 5-8 shares each
+        const is90cBuy = (a) => a.type === 'TRADE' && a.side === 'BUY' && parseFloat(a.size) > 5 && parseFloat(a.size) < 8;
+        const buys = allActivity.filter(is90cBuy);
+        const sells = allActivity.filter(a => a.type === 'TRADE' && a.side === 'SELL');
         const redeems = allActivity.filter(a => a.type === 'REDEEM');
+        const redeemSet = new Set(redeems.map(r => (r.conditionId || '') + '|' + (r.outcomeIndex ?? '')));
+
+        // Group buys by window slug+outcome (combine multiple fills into one trade)
+        const grouped = {};
+        for (const buy of buys) {
+          const key = (buy.slug || '') + '|' + (buy.outcomeIndex ?? '');
+          if (!grouped[key]) grouped[key] = { buys: [], slug: buy.slug || '', outcomeIndex: buy.outcomeIndex, conditionId: buy.conditionId };
+          grouped[key].buys.push(buy);
+        }
 
         // Build sell map by conditionId+outcomeIndex
         const sellMap = {};
@@ -2453,52 +2455,54 @@
           if (!sellMap[key]) sellMap[key] = [];
           sellMap[key].push(s);
         }
-        const redeemSet = new Set(redeems.map(r => (r.conditionId || '') + '|' + (r.outcomeIndex ?? '')));
 
-        // Build trades
+        // Build one trade per window
         const trades = [];
-        for (const buy of buys) {
-          const key = (buy.conditionId || '') + '|' + (buy.outcomeIndex ?? '');
-          const price = parseFloat(buy.price);
-          const size = parseFloat(buy.size);
-          const cost = price * size;
-          const age = Date.now() / 1000 - buy.timestamp;
-          const won = redeemSet.has(key);
+        for (const [key, group] of Object.entries(grouped)) {
+          const allBuys = group.buys;
+          const totalShares = allBuys.reduce((s, b) => s + parseFloat(b.size), 0);
+          const totalCost = allBuys.reduce((s, b) => s + parseFloat(b.price) * parseFloat(b.size), 0);
+          const avgPrice = totalCost / totalShares;
+          const firstTs = Math.min(...allBuys.map(b => b.timestamp));
+          const age = Date.now() / 1000 - firstTs;
+          const condKey = (group.conditionId || '') + '|' + (group.outcomeIndex ?? '');
+          const won = redeemSet.has(condKey);
+          const side = group.outcomeIndex === '0' ? 'UP' : 'DN';
 
-          // Check for exits (sells of the same token)
+          // Check for sells (profit lock / exits)
           let exitRevenue = 0, exitShares = 0;
-          if (sellMap[key]) {
-            for (const s of sellMap[key]) {
-              if (s.timestamp >= buy.timestamp && s.timestamp <= buy.timestamp + 1200) {
+          if (sellMap[condKey]) {
+            for (const s of sellMap[condKey]) {
+              if (s.timestamp >= firstTs && s.timestamp <= firstTs + 1200) {
                 exitRevenue += parseFloat(s.price) * parseFloat(s.size);
                 exitShares += parseFloat(s.size);
               }
             }
           }
 
-          const exitedAll = exitShares >= size - 0.02;
+          const exitedAll = exitShares >= totalShares * 0.9;
           if (exitedAll && exitShares > 0) {
-            const pnl = exitRevenue - cost;
+            const pnl = exitRevenue - totalCost;
             const exitPrice = exitRevenue / exitShares;
             const isCashedOut = pnl > 0 && exitPrice >= 0.98;
             trades.push({
-              timestamp: new Date(buy.timestamp * 1000).toISOString(),
-              window_id: buy.slug || '', side: buy.outcomeIndex === '0' ? 'UP' : 'DN',
-              shares: size, entry_price: price, exit_price: exitPrice,
+              timestamp: new Date(firstTs * 1000).toISOString(),
+              window_id: group.slug, side, fills: allBuys.length,
+              shares: Math.round(totalShares * 100) / 100, entry_price: Math.round(avgPrice * 100) / 100, exit_price: exitPrice,
               status: isCashedOut ? 'CASHED' : 'EXIT',
               profit_loss: Math.round(pnl * 100) / 100,
-              cost_basis: Math.round(cost * 100) / 100
+              cost_basis: Math.round(totalCost * 100) / 100
             });
           } else {
             const status = won ? 'WIN' : (age > 1800 ? 'LOSS' : 'PENDING');
-            const pnl = status === 'WIN' ? size * (1 - price) : (status === 'LOSS' ? -cost : 0);
+            const pnl = status === 'WIN' ? totalShares * (1 - avgPrice) : (status === 'LOSS' ? -totalCost : 0);
             trades.push({
-              timestamp: new Date(buy.timestamp * 1000).toISOString(),
-              window_id: buy.slug || '', side: buy.outcomeIndex === '0' ? 'UP' : 'DN',
-              shares: size, entry_price: price,
+              timestamp: new Date(firstTs * 1000).toISOString(),
+              window_id: group.slug, side, fills: allBuys.length,
+              shares: Math.round(totalShares * 100) / 100, entry_price: Math.round(avgPrice * 100) / 100,
               status,
               profit_loss: Math.round(pnl * 100) / 100,
-              cost_basis: Math.round(cost * 100) / 100
+              cost_basis: Math.round(totalCost * 100) / 100
             });
           }
         }
