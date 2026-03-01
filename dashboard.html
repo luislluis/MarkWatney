@@ -2457,9 +2457,11 @@
           grouped[key].buys.push(buy);
         }
 
-        // Build sell map by conditionId+outcomeIndex
+        // Build sell map by conditionId+outcomeIndex (only 90c-sized sells: 5-8 shares)
         const sellMap = {};
         for (const s of sells) {
+          const sz = parseFloat(s.size);
+          if (sz <= 5 || sz >= 8) continue; // Skip 95c bot sells
           const key = (s.conditionId || '') + '|' + (s.outcomeIndex ?? '');
           if (!sellMap[key]) sellMap[key] = [];
           sellMap[key].push(s);
