@@ -1263,6 +1263,9 @@
           for (const [key, group] of Object.entries(grouped)) {
             const [slug, side] = key.split('|');
             if (group.buys.length === 0) continue;
+            // Skip 90c bot groups (all buys are 5-8 shares)
+            const all90c = group.buys.every(b => b.size > 5 && b.size < 8);
+            if (all90c) continue;
             const won = redeemed.has(slug);
             const windowTitle = group.title;
 
