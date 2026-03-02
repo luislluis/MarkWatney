@@ -693,9 +693,10 @@
       const byDate = {};
       for (const w of windows) {
         const dk = dateKey(w.timestamp);
-        if (!byDate[dk]) byDate[dk] = { arbs: 0, arbWins: 0, soloWins: 0, soloLosses: 0, pnl: 0, cost: 0, date: w.timestamp };
+        if (!byDate[dk]) byDate[dk] = { arbs: 0, arbWins: 0, soloWins: 0, soloLosses: 0, pnl: 0, cost: 0, trades: 0, date: w.timestamp };
         byDate[dk].pnl += w.profit || 0;
         byDate[dk].cost += w.cost || 0;
+        byDate[dk].trades++;
         if (w.type === 'arb') {
           byDate[dk].arbs++;
           if (w.locked && w.profit > 0) byDate[dk].arbWins++;
@@ -719,7 +720,8 @@
           timeZone: 'America/New_York'
         });
         const pnlClass = d.pnl >= 0 ? 'positive' : 'negative';
-        const roiPct = d.cost > 0 ? (d.pnl / d.cost * 100).toFixed(1) : '0.0';
+        const avgTradeValue = d.trades > 0 ? d.cost / d.trades : 0;
+        const roiPct = avgTradeValue > 0 ? (d.pnl / avgTradeValue * 100).toFixed(1) : '0.0';
         const roiClass = d.pnl >= 0 ? 'positive' : 'negative';
 
         return `
