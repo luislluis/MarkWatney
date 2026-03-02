@@ -2449,11 +2449,13 @@
         if (!resp.ok) throw new Error('Activity API error');
         const allActivity = await resp.json();
 
-        // Process ALL activity (not just today) for daily history
+        // Show activity from March 1st EST onward
+        const mar1Cutoff = new Date('2026-03-01T00:00:00-05:00').getTime() / 1000;
+        const recentActivity = allActivity.filter(a => a.timestamp >= mar1Cutoff);
         const is90cBuy = (a) => a.type === 'TRADE' && a.side === 'BUY' && parseFloat(a.price) < 0.95;
-        const buys = allActivity.filter(is90cBuy);
-        const sells = allActivity.filter(a => a.type === 'TRADE' && a.side === 'SELL');
-        const redeems = allActivity.filter(a => a.type === 'REDEEM');
+        const buys = recentActivity.filter(is90cBuy);
+        const sells = recentActivity.filter(a => a.type === 'TRADE' && a.side === 'SELL');
+        const redeems = recentActivity.filter(a => a.type === 'REDEEM');
         // Match redeems by conditionId only (redeems use outcomeIndex=999, not 0/1)
         const redeemSet = new Set(redeems.map(r => r.conditionId || ''));
 
