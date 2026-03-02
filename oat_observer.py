@@ -476,9 +476,10 @@ def summarize_window(window_state, outcome=None):
         resolved_at=int(time.time()) if outcome else None,
     )
 
+    cc_str = f"{combined_cost:.2f}" if combined_cost is not None else "N/A"
     log(f"[{ts()}] WINDOW_END | {slug} | OAT: {total_buys}B/{total_sells}S "
         f"| sides:{target_sides} | UP:{up_shares:.0f}@{up_avg:.2f} DN:{down_shares:.0f}@{down_avg:.2f} "
-        f"| combined:{combined_cost:.2f if combined_cost else 'N/A'} | gap:{leg_gap or 'N/A'}s "
+        f"| combined:{cc_str} | gap:{leg_gap or 'N/A'}s "
         f"| maker:{window_state['target_maker_count']} taker:{window_state['target_taker_count']} "
         f"| outcome:{outcome or 'PENDING'}")
 
