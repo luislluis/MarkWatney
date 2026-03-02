@@ -283,7 +283,7 @@ Build the data collection layer. Get it running and accumulating data ASAP — e
 
 Build the analysis engine that computes the 6 strategy dimensions.
 
-- [ ] Create `oat_analyzer.py` — strategy dimension analysis
+- [x] Create `oat_analyzer.py` — strategy dimension analysis
   - `analyze_entry_timing(observations)` → dict with median, mean, std_dev, quartiles, outcome_correlation, confidence
   - `analyze_side_selection(observations)` → dict with first_side_distribution, conditional_probabilities by OB bucket, confidence
   - `analyze_pricing(fills)` → dict with avg_prices, spread_vs_ask, maker_taker_ratio, confidence

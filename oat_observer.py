@@ -33,6 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 from logging.handlers import RotatingFileHandler
 
 import oat_db as db
+import oat_analyzer as analyzer
 
 # ===========================================
 # CONFIGURATION
@@ -687,6 +688,14 @@ def main():
             if slug != last_slug:
                 if window_state:
                     summarize_window(window_state)
+                    # Run strategy analysis after each window
+                    try:
+                        result = analyzer.run_analysis()
+                        if result:
+                            log(f"[{ts()}] ANALYSIS | readiness:{result['overall_readiness']:.0%} "
+                                f"| n={result['sample_size']}")
+                    except Exception as e:
+                        log(f"[{ts()}] ANALYSIS_ERROR: {e}")
                     stats = db.compute_basic_stats()
                     windows_since_cleanup += 1
 
