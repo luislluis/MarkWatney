@@ -373,20 +373,29 @@
       const trades = allActivity.filter(a => a.type === 'TRADE' && a.timestamp >= cutoff);
       const redeemEvents = allActivity.filter(a => a.type === 'REDEEM');
 
-      // Track which outcomes were redeemed per slug
-      // redeemed outcome tells us which side won
-      const redeemedOutcomes = {}; // slug -> Set of redeemed outcomes ('UP', 'DOWN', etc.)
+      // Sum redeem sizes per slug (outcome field is empty in API, so we use size to determine winner)
       const redeemed = new Set();
+      const redeemSizeBySlug = {};
       for (const r of redeemEvents) {
         if (r.slug) {
           redeemed.add(r.slug);
-          if (!redeemedOutcomes[r.slug]) redeemedOutcomes[r.slug] = new Set();
-          const outcome = (r.outcome || '').toUpperCase();
-          if (outcome) redeemedOutcomes[r.slug].add(outcome);
+          redeemSizeBySlug[r.slug] = (redeemSizeBySlug[r.slug] || 0) + (parseFloat(r.size) || 0);
         }
       }
 
-      // Group trades by slug
+      // Also collect ALL buys per slug (including 95c bot) for winner detection
+      const allBuysBySlug = {};
+      for (const t of allActivity) {
+        if (t.type !== 'TRADE' || (t.side || '').toUpperCase() === 'SELL') continue;
+        const slug = t.slug || '';
+        if (!allBuysBySlug[slug]) allBuysBySlug[slug] = { up: 0, dn: 0 };
+        const outcome = (t.outcome || '').toUpperCase();
+        const size = parseFloat(t.size) || 0;
+        if (outcome === 'UP' || outcome === 'YES') allBuysBySlug[slug].up += size;
+        else if (outcome === 'DOWN' || outcome === 'NO') allBuysBySlug[slug].dn += size;
+      }
+
+      // Group arb trades by slug
       const grouped = {};
       for (const t of trades) {
         const slug = t.slug || '';
@@ -444,11 +453,15 @@
         allBuys.sort((a, b) => a.timestamp - b.timestamp);
         const firstTs = allBuys.length > 0 ? allBuys[0].timestamp * 1000 : 0;
 
-        // Determine outcomes
+        // Determine which side won by comparing redeem size to total shares
+        // Winning side's shares get redeemed at $1 each, so redeem size ≈ winning side total
         const slugRedeemed = redeemed.has(slug);
-        const redOutcomes = redeemedOutcomes[slug] || new Set();
-        const upWon = redOutcomes.has('UP') || redOutcomes.has('YES');
-        const dnWon = redOutcomes.has('DOWN') || redOutcomes.has('NO');
+        const redeemSize = redeemSizeBySlug[slug] || 0;
+        const allBuysForSlug = allBuysBySlug[slug] || { up: 0, dn: 0 };
+        const upDiff = Math.abs(redeemSize - allBuysForSlug.up);
+        const dnDiff = Math.abs(redeemSize - allBuysForSlug.dn);
+        const upWon = slugRedeemed && redeemSize > 0 && upDiff <= dnDiff;
+        const dnWon = slugRedeemed && redeemSize > 0 && dnDiff < upDiff;
 
         // Age check: if > 30 min old and not redeemed, assume LOSS
         const age = nowSec - (allBuys.length > 0 ? allBuys[0].timestamp : nowSec);
