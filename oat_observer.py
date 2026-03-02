@@ -13,10 +13,10 @@ NO trading logic. NO copy-trading. Just observation.
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v0.1",
-    "codename": "Quiet Eye",
+    "version": "v0.2",
+    "codename": "Glass Wall",
     "date": "2026-03-02",
-    "changes": "Initial release: pure observer for strategy extraction"
+    "changes": "Add Supabase push layer for live web dashboard"
 }
 
 import os
@@ -34,6 +34,7 @@ from logging.handlers import RotatingFileHandler
 
 import oat_db as db
 import oat_analyzer as analyzer
+import oat_supabase as supa
 
 # ===========================================
 # CONFIGURATION
@@ -391,6 +392,14 @@ def process_fill(fill, window_state, ob_snapshot):
     direction = "UP" if is_up else "DN"
     log(f"[{ts()}] TARGET_{side} | {direction}@{price:.2f}c x{size:.1f} | {fill_type} | tx:{tx_hash[:10]}...")
 
+    # Buffer fill for Supabase push
+    supa.buffer_fill({
+        "slug": slug, "tx_hash": tx_hash, "timestamp": timestamp,
+        "side": side, "outcome": outcome, "price": price,
+        "size": size, "usdc_size": usdc_size, "fill_type": fill_type,
+        "sequence_in_window": seq,
+    })
+
 # ===========================================
 # WINDOW SUMMARY
 # ===========================================
@@ -644,6 +653,7 @@ def main():
     signal.signal(signal.SIGINT, handle_signal)
 
     db.init_db()
+    supa.init()
     init_telegram()
 
     log(f"[{ts()}] =============================================")
@@ -688,12 +698,18 @@ def main():
             if slug != last_slug:
                 if window_state:
                     summarize_window(window_state)
+                    # Push observation to Supabase
+                    obs = db.get_observation(window_state["slug"])
+                    if obs:
+                        supa.push_observation(obs)
+                    supa.flush_fills()
                     # Run strategy analysis after each window
                     try:
                         result = analyzer.run_analysis()
                         if result:
                             log(f"[{ts()}] ANALYSIS | readiness:{result['overall_readiness']:.0%} "
                                 f"| n={result['sample_size']}")
+                            supa.push_analysis(result)
                     except Exception as e:
                         log(f"[{ts()}] ANALYSIS_ERROR: {e}")
                     stats = db.compute_basic_stats()
@@ -749,6 +765,9 @@ def main():
                         ob["down_bid_depth"], ob["down_ask_depth"],
                     )
                     window_state["latest_ob_id"] = ob_id
+
+            # --- FLUSH SUPABASE FILLS (every 30s) ---
+            supa.maybe_flush_fills()
 
             # --- STATUS LINE (every 1s to console, every 15s to log) ---
             if now - window_state["last_status_display"] >= STATUS_DISPLAY_INTERVAL:

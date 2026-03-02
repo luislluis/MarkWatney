@@ -306,19 +306,19 @@ Build the analysis engine that computes the 6 strategy dimensions.
 
 #### Phase 3: Dashboard (Visualization)
 
-- [ ] Create Supabase tables: `oat_observations`, `oat_analysis`, `oat_fills`
+- [x] Create Supabase tables: `oat_observations`, `oat_analysis`, `oat_fills`
   - Add RLS policies (anon read-only)
   - Create `oat_supabase.sql` with table definitions
 
-- [ ] Create `oat_supabase.py` — Supabase push layer
+- [x] Create `oat_supabase.py` — Supabase push layer
   - Follow `supabase_logger.py` pattern (buffered writes, background thread)
   - Push observations at window end
   - Push analysis results after analyzer runs
   - Push fills in batches (every 30s)
 
-- [ ] Wire Supabase push into observer
+- [x] Wire Supabase push into observer
 
-- [ ] Create `oat_dashboard.html` — static HTML dashboard
+- [x] Create `oat_dashboard.html` — static HTML dashboard
   - Supabase JS client for data fetch
   - Chart.js for visualizations
   - 6 dimension cards with confidence bars + mini charts
@@ -328,7 +328,7 @@ Build the analysis engine that computes the 6 strategy dimensions.
   - Auto-refresh every 60s
   - Dark theme, mobile-friendly (match existing dashboard.html style)
 
-- [ ] Deploy dashboard to server, verify it loads and shows data
+- [x] Deploy dashboard to server, verify it loads and shows data
 
 **Success criteria**: Dashboard shows live strategy insights with updating confidence scores and charts.
 

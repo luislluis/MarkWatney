@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OAT Strategy Extractor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg-primary: #0a0a0b;
+      --bg-secondary: #111113;
+      --bg-card: rgba(17, 17, 19, 0.8);
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-glow: rgba(139, 92, 246, 0.3);
+      --text-primary: #f4f4f5;
+      --text-secondary: #71717a;
+      --text-muted: #52525b;
+      --purple-primary: #8b5cf6;
+      --purple-glow: rgba(139, 92, 246, 0.15);
+      --purple-dark: #6d28d9;
+      --green-primary: #34d399;
+      --green-glow: rgba(52, 211, 153, 0.15);
+      --red-primary: #f87171;
+      --red-glow: rgba(248, 113, 113, 0.15);
+      --yellow-primary: #fbbf24;
+      --blue-primary: #60a5fa;
+      --cyan-primary: #22d3ee;
+      --orange-primary: #fb923c;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Outfit', -apple-system, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    .bg-mesh {
+      position: fixed; inset: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 20% -20%, rgba(139, 92, 246, 0.08), transparent),
+        radial-gradient(ellipse 60% 40% at 80% 100%, rgba(139, 92, 246, 0.05), transparent),
+        var(--bg-primary);
+      z-index: -1;
+    }
+
+    .noise {
+      position: fixed; inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+      opacity: 0.02; pointer-events: none; z-index: -1;
+    }
+
+    .container {
+      max-width: 520px;
+      margin: 0 auto;
+      padding: 20px 16px 32px;
+    }
+
+    /* Header */
+    .header { margin-bottom: 24px; }
+    .logo { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+    .logo-icon {
+      width: 32px; height: 32px;
+      background: linear-gradient(135deg, var(--purple-primary), var(--purple-dark));
+      border-radius: 8px; display: flex; align-items: center; justify-content: center;
+      font-size: 16px; box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+    }
+    .logo-text {
+      font-family: 'JetBrains Mono', monospace; font-size: 18px; font-weight: 700;
+      letter-spacing: -0.5px;
+      background: linear-gradient(135deg, var(--text-primary) 0%, var(--text-secondary) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .date { font-size: 13px; color: var(--text-muted); padding-left: 42px; }
+    .status-dot {
+      display: inline-block; width: 6px; height: 6px;
+      background: var(--purple-primary); border-radius: 50%; margin-right: 6px;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.4); }
+      50% { opacity: 0.8; box-shadow: 0 0 0 4px rgba(139, 92, 246, 0); }
+    }
+
+    /* Cards */
+    .card {
+      background: var(--bg-card); border: 1px solid var(--border-subtle);
+      border-radius: 16px; backdrop-filter: blur(20px); overflow: hidden; position: relative;
+    }
+    .card::before {
+      content: ''; position: absolute; inset: 0; border-radius: 16px; padding: 1px;
+      background: linear-gradient(135deg, rgba(255,255,255,0.1), rgba(255,255,255,0));
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none;
+    }
+
+    /* Readiness hero */
+    .readiness-hero {
+      padding: 24px 20px; text-align: center; margin-bottom: 16px;
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.08), rgba(139, 92, 246, 0.02));
+      border-color: var(--border-glow);
+    }
+    .readiness-label {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 1.5px; color: var(--text-muted); margin-bottom: 8px;
+    }
+    .readiness-value {
+      font-family: 'JetBrains Mono', monospace; font-size: 56px; font-weight: 700;
+      line-height: 1; margin-bottom: 8px;
+    }
+    .readiness-sub {
+      font-size: 12px; color: var(--text-secondary);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* Stats grid */
+    .stats-grid {
+      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 16px;
+    }
+    .mini-stat {
+      background: var(--bg-card); border: 1px solid var(--border-subtle);
+      border-radius: 12px; padding: 14px 10px; text-align: center;
+    }
+    .mini-stat-value {
+      font-family: 'JetBrains Mono', monospace; font-size: 20px;
+      font-weight: 700; line-height: 1; margin-bottom: 4px;
+    }
+    .mini-stat-label {
+      font-size: 10px; font-weight: 500; text-transform: uppercase;
+      letter-spacing: 0.8px; color: var(--text-muted);
+    }
+
+    /* Section headers */
+    .section-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 12px; padding: 0 4px;
+    }
+    .section-title {
+      font-size: 12px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 1.5px; color: var(--text-secondary);
+    }
+
+    /* Dimension cards */
+    .dim-card {
+      padding: 16px; margin-bottom: 12px;
+    }
+    .dim-header {
+      display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;
+    }
+    .dim-name {
+      font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px;
+    }
+    .dim-icon { font-size: 16px; }
+    .dim-confidence {
+      font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700;
+    }
+    .dim-bar-bg {
+      height: 6px; background: rgba(255,255,255,0.06); border-radius: 3px;
+      overflow: hidden; margin-bottom: 10px;
+    }
+    .dim-bar-fill {
+      height: 100%; border-radius: 3px;
+      transition: width 0.8s ease;
+    }
+    .dim-metrics {
+      font-family: 'JetBrains Mono', monospace; font-size: 11px;
+      color: var(--text-secondary); line-height: 1.6;
+    }
+    .dim-rule {
+      margin-top: 8px; padding: 8px 10px;
+      background: rgba(139, 92, 246, 0.08); border-radius: 8px;
+      font-family: 'JetBrains Mono', monospace; font-size: 11px;
+      color: var(--purple-primary); border: 1px solid rgba(139, 92, 246, 0.15);
+    }
+    .dim-chart-wrap {
+      height: 100px; margin-top: 10px;
+    }
+    .dim-no-data {
+      font-size: 12px; color: var(--text-muted); font-style: italic;
+      text-align: center; padding: 20px 0;
+    }
+
+    /* Activity feed */
+    .feed-card { padding: 4px; margin-bottom: 16px; }
+    .feed-item {
+      display: flex; align-items: center; padding: 10px 12px; border-radius: 8px;
+    }
+    .feed-item:hover { background: rgba(255,255,255,0.02); }
+    .feed-side {
+      width: 24px; height: 24px; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px; font-weight: 700; margin-right: 10px; flex-shrink: 0;
+    }
+    .feed-side.buy { background: var(--green-glow); color: var(--green-primary); }
+    .feed-side.sell { background: var(--red-glow); color: var(--red-primary); }
+    .feed-info { flex: 1; min-width: 0; }
+    .feed-main {
+      font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600;
+    }
+    .feed-detail { font-size: 10px; color: var(--text-muted); }
+    .feed-time {
+      font-family: 'JetBrains Mono', monospace; font-size: 10px;
+      color: var(--text-muted); margin-left: 8px; flex-shrink: 0;
+    }
+
+    /* Readiness history chart */
+    .chart-card { padding: 16px; margin-bottom: 16px; }
+    .chart-wrap { height: 180px; }
+
+    /* Footer */
+    .footer {
+      text-align: center; padding: 16px 0; font-size: 11px;
+      color: var(--text-muted);
+    }
+    .footer a { color: var(--purple-primary); text-decoration: none; }
+
+    /* Color helpers */
+    .c-low { color: var(--red-primary); }
+    .c-mid { color: var(--yellow-primary); }
+    .c-high { color: var(--green-primary); }
+    .c-purple { color: var(--purple-primary); }
+  </style>
+</head>
+<body>
+  <div class="bg-mesh"></div>
+  <div class="noise"></div>
+  <div class="container">
+
+    <!-- Header -->
+    <div class="header">
+      <div class="logo">
+        <div class="logo-icon">🔬</div>
+        <span class="logo-text">OAT EXTRACTOR</span>
+      </div>
+      <div class="date"><span class="status-dot"></span><span id="headerStatus">Loading...</span></div>
+    </div>
+
+    <!-- Readiness hero -->
+    <div class="card readiness-hero">
+      <div class="readiness-label">Overall Strategy Readiness</div>
+      <div class="readiness-value c-low" id="readinessValue">—</div>
+      <div class="readiness-sub" id="readinessSub">Collecting data...</div>
+    </div>
+
+    <!-- Quick stats -->
+    <div class="stats-grid">
+      <div class="mini-stat">
+        <div class="mini-stat-value c-purple" id="statObs">0</div>
+        <div class="mini-stat-label">Windows</div>
+      </div>
+      <div class="mini-stat">
+        <div class="mini-stat-value c-purple" id="statFills">0</div>
+        <div class="mini-stat-label">Fills</div>
+      </div>
+      <div class="mini-stat">
+        <div class="mini-stat-value c-purple" id="statTraded">0</div>
+        <div class="mini-stat-label">Traded</div>
+      </div>
+    </div>
+
+    <!-- 6 Dimension Cards -->
+    <div class="section-header">
+      <span class="section-title">Strategy Dimensions</span>
+    </div>
+
+    <div id="dimCards"></div>
+
+    <!-- Readiness History Chart -->
+    <div class="section-header">
+      <span class="section-title">Readiness History</span>
+    </div>
+    <div class="card chart-card">
+      <div class="chart-wrap"><canvas id="readinessChart"></canvas></div>
+    </div>
+
+    <!-- Activity Feed -->
+    <div class="section-header">
+      <span class="section-title">Recent Oat Activity</span>
+    </div>
+    <div class="card feed-card" id="activityFeed">
+      <div class="dim-no-data">No fills yet</div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      Strategy Extractor Bot &middot; Observing <a href="https://polymarket.com/profile/0xd0d6053c3c37e727402d84c14069780d360993aa" target="_blank">Uncommon-Oat</a>
+    </div>
+  </div>
+
+<script>
+// ============================================
+// SUPABASE CLIENT
+// ============================================
+const SUPABASE_URL = 'https://qszosdrmnoglrkttdevz.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFzem9zZHJtbm9nbHJrdHRkZXZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzgyMDI5NzAsImV4cCI6MjA1Mzc3ODk3MH0.vG_ji_jFSP-JkGiGdNE4VCR7YHJmfEHmhDgkIbh5MuQ';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const DIMS = [
+  { key: 'entry_timing', name: 'Entry Timing', icon: '⏱️', color: '#60a5fa',
+    desc: fill => {
+      if (!fill) return 'When does Oat buy in each window?';
+      const d = fill; const med = d.median_offset;
+      if (med == null) return 'Collecting data...';
+      return `Median: T+${med}s | Mean: ${d.mean_offset?.toFixed(0)}s | StdDev: ${d.std_dev?.toFixed(0)}s`;
+    },
+    rule: d => d?.rule },
+  { key: 'side_selection', name: 'Side Selection', icon: '🎯', color: '#8b5cf6',
+    desc: fill => {
+      if (!fill) return 'Which side does Oat buy first?';
+      const d = fill;
+      if (!d.first_side_pcts) return 'Collecting data...';
+      const pcts = d.first_side_pcts;
+      return `DOWN first: ${(pcts.DOWN||0).toFixed(0)}% | UP first: ${(pcts.UP||0).toFixed(0)}%`;
+    },
+    rule: d => d?.rule },
+  { key: 'pricing', name: 'Pricing', icon: '💰', color: '#34d399',
+    desc: fill => {
+      if (!fill) return 'At what prices does Oat enter?';
+      const d = fill;
+      if (!d.up_avg_price && !d.down_avg_price) return 'Collecting data...';
+      return `UP avg: ${(d.up_avg_price||0).toFixed(2)}c | DN avg: ${(d.down_avg_price||0).toFixed(2)}c | Maker: ${(d.maker_ratio||0).toFixed(0)}%`;
+    },
+    rule: d => d?.rule },
+  { key: 'sizing', name: 'Sizing', icon: '📊', color: '#fbbf24',
+    desc: fill => {
+      if (!fill) return 'How much per window?';
+      const d = fill;
+      if (!d.avg_usdc) return 'Collecting data...';
+      return `Avg: $${d.avg_usdc?.toFixed(0)}/window | CV: ${(d.coefficient_of_variation||0).toFixed(2)} | Type: ${d.sizing_type||'?'}`;
+    },
+    rule: d => d?.rule },
+  { key: 'arb_structure', name: 'Arb Structure', icon: '🔗', color: '#22d3ee',
+    desc: fill => {
+      if (!fill) return 'Does Oat buy both sides?';
+      const d = fill;
+      if (d.both_sides_rate == null) return 'Collecting data...';
+      return `Both sides: ${(d.both_sides_rate*100).toFixed(0)}% | Leg gap: ${d.median_leg_gap?.toFixed(0)||'?'}s | Cost: ${d.median_combined_cost?.toFixed(2)||'?'}c`;
+    },
+    rule: d => d?.rule },
+  { key: 'exit_behavior', name: 'Exit Behavior', icon: '🚪', color: '#fb923c',
+    desc: fill => {
+      if (!fill) return 'Does Oat sell before settlement?';
+      const d = fill;
+      if (d.sell_rate == null) return 'Collecting data...';
+      return `Sell rate: ${(d.sell_rate*100).toFixed(0)}% | Strategy: ${d.exit_strategy||'?'}`;
+    },
+    rule: d => d?.rule },
+];
+
+function confColor(c) {
+  if (c >= 0.6) return 'var(--green-primary)';
+  if (c >= 0.3) return 'var(--yellow-primary)';
+  return 'var(--red-primary)';
+}
+
+function confClass(c) {
+  if (c >= 0.6) return 'c-high';
+  if (c >= 0.3) return 'c-mid';
+  return 'c-low';
+}
+
+function timeAgo(ts) {
+  const diff = Math.floor(Date.now()/1000) - ts;
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+  return `${Math.floor(diff/86400)}d ago`;
+}
+
+// ============================================
+// RENDER
+// ============================================
+
+function renderDimCards(analysis) {
+  const container = document.getElementById('dimCards');
+  let html = '';
+
+  for (const dim of DIMS) {
+    const confKey = `${dim.key}_confidence`;
+    const dataKey = `${dim.key}_data`;
+    const conf = analysis ? (analysis[confKey] || 0) : 0;
+    let data = null;
+    if (analysis && analysis[dataKey]) {
+      data = typeof analysis[dataKey] === 'string' ? JSON.parse(analysis[dataKey]) : analysis[dataKey];
+    }
+    const pct = (conf * 100).toFixed(0);
+    const rule = dim.rule(data);
+
+    html += `
+      <div class="card dim-card">
+        <div class="dim-header">
+          <div class="dim-name"><span class="dim-icon">${dim.icon}</span> ${dim.name}</div>
+          <div class="dim-confidence ${confClass(conf)}">${pct}%</div>
+        </div>
+        <div class="dim-bar-bg">
+          <div class="dim-bar-fill" style="width:${pct}%;background:${dim.color};"></div>
+        </div>
+        <div class="dim-metrics">${dim.desc(data)}</div>
+        ${rule ? `<div class="dim-rule">${rule}</div>` : ''}
+      </div>`;
+  }
+
+  container.innerHTML = html;
+}
+
+function renderActivityFeed(fills) {
+  const container = document.getElementById('activityFeed');
+  if (!fills || fills.length === 0) {
+    container.innerHTML = '<div class="dim-no-data">No fills yet</div>';
+    return;
+  }
+
+  let html = '';
+  for (const f of fills.slice(0, 30)) {
+    const isBuy = f.side === 'BUY';
+    const sideClass = isBuy ? 'buy' : 'sell';
+    const sideLabel = isBuy ? 'B' : 'S';
+    html += `
+      <div class="feed-item">
+        <div class="feed-side ${sideClass}">${sideLabel}</div>
+        <div class="feed-info">
+          <div class="feed-main">${f.outcome} ${f.size?.toFixed(0)} @ ${f.price?.toFixed(2)}c</div>
+          <div class="feed-detail">${f.fill_type || '?'} · $${f.usdc_size?.toFixed(2)}</div>
+        </div>
+        <div class="feed-time">${timeAgo(f.timestamp)}</div>
+      </div>`;
+  }
+  container.innerHTML = html;
+}
+
+let readinessChart = null;
+
+function renderReadinessHistory(analysisHistory) {
+  const ctx = document.getElementById('readinessChart');
+  if (!analysisHistory || analysisHistory.length === 0) return;
+
+  const sorted = [...analysisHistory].sort((a, b) => a.run_timestamp - b.run_timestamp);
+  const labels = sorted.map(a => {
+    const d = new Date(a.run_timestamp * 1000);
+    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  });
+  const data = sorted.map(a => (a.overall_readiness * 100).toFixed(1));
+
+  if (readinessChart) {
+    readinessChart.data.labels = labels;
+    readinessChart.data.datasets[0].data = data;
+    readinessChart.update('none');
+    return;
+  }
+
+  readinessChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Readiness %',
+        data,
+        borderColor: '#8b5cf6',
+        backgroundColor: 'rgba(139,92,246,0.1)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: 2,
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1a1a2e',
+          titleColor: '#f4f4f5',
+          bodyColor: '#a1a1aa',
+          borderColor: 'rgba(139,92,246,0.3)',
+          borderWidth: 1,
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: '#52525b', font: { size: 9, family: 'JetBrains Mono' }, maxTicksLimit: 8 },
+          grid: { color: 'rgba(255,255,255,0.03)' },
+        },
+        y: {
+          min: 0, max: 100,
+          ticks: { color: '#52525b', font: { size: 9, family: 'JetBrains Mono' }, callback: v => v + '%' },
+          grid: { color: 'rgba(255,255,255,0.03)' },
+        }
+      }
+    }
+  });
+}
+
+function updateHeader(obs, analysis) {
+  const el = document.getElementById('headerStatus');
+  const total = obs?.length || 0;
+  const last = analysis?.run_timestamp;
+  if (last) {
+    el.innerHTML = `${total} windows observed · updated ${timeAgo(last)}`;
+  } else {
+    el.textContent = `${total} windows observed`;
+  }
+}
+
+function updateReadinessHero(analysis) {
+  const valEl = document.getElementById('readinessValue');
+  const subEl = document.getElementById('readinessSub');
+
+  if (!analysis) {
+    valEl.textContent = '—';
+    valEl.className = 'readiness-value c-low';
+    subEl.textContent = 'Collecting data...';
+    return;
+  }
+
+  const r = analysis.overall_readiness || 0;
+  const pct = (r * 100).toFixed(0);
+  valEl.textContent = pct + '%';
+  valEl.className = `readiness-value ${confClass(r)}`;
+
+  const n = analysis.sample_size || 0;
+  if (r >= 0.6) subEl.textContent = `Strategy ready · ${n} samples`;
+  else if (r >= 0.3) subEl.textContent = `Emerging patterns · ${n} samples`;
+  else subEl.textContent = `Collecting data · ${n} samples`;
+}
+
+function updateStats(obs, fills) {
+  document.getElementById('statObs').textContent = obs?.length || 0;
+  document.getElementById('statFills').textContent = fills?.length || 0;
+  const traded = obs ? obs.filter(o => o.target_traded).length : 0;
+  document.getElementById('statTraded').textContent = traded;
+}
+
+// ============================================
+// DATA FETCH
+// ============================================
+
+async function fetchAll() {
+  try {
+    const [obsRes, analysisRes, histRes, fillsRes] = await Promise.all([
+      sb.from('oat_observations').select('*').order('window_start', { ascending: false }).limit(500),
+      sb.from('oat_analysis').select('*').order('run_timestamp', { ascending: false }).limit(1),
+      sb.from('oat_analysis').select('run_timestamp,overall_readiness,sample_size').order('run_timestamp', { ascending: false }).limit(50),
+      sb.from('oat_fills').select('*').order('timestamp', { ascending: false }).limit(100),
+    ]);
+
+    const obs = obsRes.data || [];
+    const latestAnalysis = analysisRes.data?.[0] || null;
+    const analysisHist = histRes.data || [];
+    const fills = fillsRes.data || [];
+
+    updateHeader(obs, latestAnalysis);
+    updateReadinessHero(latestAnalysis);
+    updateStats(obs, fills);
+    renderDimCards(latestAnalysis);
+    renderActivityFeed(fills);
+    renderReadinessHistory(analysisHist);
+
+  } catch (err) {
+    console.error('Fetch error:', err);
+  }
+}
+
+// ============================================
+// INIT
+// ============================================
+
+fetchAll();
+setInterval(fetchAll, 60000); // refresh every 60s
+</script>
+</body>
+</html>
