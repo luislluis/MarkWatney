@@ -2581,7 +2581,8 @@
 
       const resolved90c = trades.filter(t => t.status !== 'PENDING');
       const totalCost90c = resolved90c.reduce((s, t) => s + (t.cost_basis ?? 0), 0);
-      const roiPct = totalCost90c > 0 ? Math.round(totalPnl / totalCost90c * 1000) / 10 : 0;
+      const avgTradeCost = resolved90c.length > 0 ? totalCost90c / resolved90c.length : 0;
+      const roiPct = avgTradeCost > 0 ? Math.round(totalPnl / avgTradeCost * 1000) / 10 : 0;
       const roiEl = document.getElementById('test90cRoi');
       roiEl.textContent = trades.length > 0 ? (roiPct > 0 ? '+' : '') + roiPct + '% ROI' : '';
       roiEl.className = 'stat-roi ' + (roiPct >= 0 ? 'positive' : 'negative');
@@ -2673,7 +2674,8 @@
         const resolved = dayTrades.filter(t => t.status !== 'PENDING');
         const pnl = resolved.reduce((s, t) => s + t.profit_loss, 0);
         const cost = resolved.reduce((s, t) => s + (t.cost_basis ?? 0), 0);
-        const roi = cost > 0 ? Math.round(pnl / cost * 1000) / 10 : 0;
+        const avgCost = resolved.length > 0 ? cost / resolved.length : 0;
+        const roi = avgCost > 0 ? Math.round(pnl / avgCost * 1000) / 10 : 0;
         const total = wins + losses + exits;
         const wr = total > 0 ? Math.round(wins / total * 100) : 0;
 
