@@ -334,7 +334,7 @@ Build the analysis engine that computes the 6 strategy dimensions.
 
 #### Phase 4: Strategy Generator (Report + Ruleset)
 
-- [ ] Create `oat_strategy.py` — strategy report generator
+- [x] Create `oat_strategy.py` — strategy report generator
   - Reads latest `analysis_results` from DB
   - Produces markdown report: human-readable summary of all 6 dimensions with data backing
   - Produces JSON ruleset: machine-readable rules for a trading bot
@@ -381,8 +381,8 @@ Build the analysis engine that computes the 6 strategy dimensions.
   }
   ```
 
-- [ ] Add CLI: `python3 oat_strategy.py` generates report + ruleset
-- [ ] Add Telegram notification when readiness crosses 0.6 threshold
+- [x] Add CLI: `python3 oat_strategy.py` generates report + ruleset
+- [x] Add Telegram notification when readiness crosses 0.6 threshold
 - [ ] Add strategy report section to dashboard (shown when readiness > 0.6)
 
 **Success criteria**: Running `python3 oat_strategy.py` produces a meaningful strategy report and JSON ruleset that could be fed to a trading bot.
