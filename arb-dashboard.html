@@ -168,7 +168,7 @@
     .trade-status.loss { background: var(--red-glow); color: var(--red-primary); }
     .trade-status.pending { background: rgba(251, 191, 36, 0.1); color: var(--yellow-primary); }
     .trade-status.arb {
-      background: var(--gold-glow); color: var(--gold-accent);
+      background: var(--green-glow); color: var(--green-primary);
     }
     .trade-status.arb-loss {
       background: var(--red-glow); color: var(--red-primary);
@@ -193,7 +193,7 @@
     .trade-pnl.positive { color: var(--green-primary); }
     .trade-pnl.negative { color: var(--red-primary); }
     .trade-pnl.pending { color: var(--yellow-primary); font-size: 11px; }
-    .trade-pnl.gold { color: var(--gold-accent); }
+    .trade-pnl.gold { color: var(--green-primary); }
 
     /* Arb badge */
     .arb-badge {
@@ -320,7 +320,10 @@
       refreshInterval: 30000,
       // Arb bot buys both sides at cheap prices (< 0.55 typical)
       // 95c bot buys at >= 0.95. We use 0.90 as the divider to be safe.
-      arbMaxPrice: 0.90
+      arbMaxPrice: 0.90,
+      // First arb trade: March 2, 2026 3:45PM ET (epoch seconds)
+      // Only show trades from this point onward
+      startAfter: new Date('2026-03-02T15:45:00-05:00').getTime() / 1000
     };
 
     // ── Utilities ──
@@ -365,7 +368,9 @@
     }
 
     function processArbTrades(allActivity) {
-      const trades = allActivity.filter(a => a.type === 'TRADE');
+      // Filter to trades after our start date (arb bot first trade)
+      const cutoff = CONFIG.startAfter;
+      const trades = allActivity.filter(a => a.type === 'TRADE' && a.timestamp >= cutoff);
       const redeemEvents = allActivity.filter(a => a.type === 'REDEEM');
 
       // Track which outcomes were redeemed per slug
