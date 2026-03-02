@@ -278,7 +278,7 @@
         <div class="stat-value neutral" id="todayPnl">--</div>
       </div>
       <div class="card stat-card">
-        <div class="stat-label">Arb Win Rate</div>
+        <div class="stat-label">Win Rate</div>
         <div class="stat-value neutral" id="winRate">--</div>
         <div class="stat-detail" id="record">--</div>
       </div>
@@ -565,10 +565,15 @@
 
       // Stats
       const arbWindows = windows.filter(w => w.type === 'arb');
+      const soloWindows = windows.filter(w => w.type === 'standalone' && !w.pending);
       const todayWindows = windows.filter(w => isToday(w.timestamp));
       const todayPnl = todayWindows.reduce((s, w) => s + (w.profit || 0), 0);
       const arbWins = arbWindows.filter(w => w.locked && w.profit > 0).length;
       const arbTotal = arbWindows.length;
+      const soloWins = soloWindows.filter(w => w.won).length;
+      const soloLosses = soloWindows.filter(w => !w.won).length;
+      const totalWins = arbWins + soloWins;
+      const totalResolved = arbTotal + soloWindows.length;
       const totalLockedProfit = arbWindows
         .filter(w => w.locked && w.profit > 0)
         .reduce((s, w) => s + w.profit, 0);
@@ -577,11 +582,13 @@
       el.todayPnl.textContent = todayWindows.length === 0 ? '--' : fmtPnl(todayPnl);
       el.todayPnl.className = 'stat-value ' + (todayWindows.length === 0 ? 'neutral' : (todayPnl >= 0 ? 'positive' : 'negative'));
 
-      // Win Rate
-      const rate = arbTotal > 0 ? Math.round((arbWins / arbTotal) * 100) : 0;
-      el.winRate.textContent = arbTotal > 0 ? rate + '%' : '--';
-      el.winRate.className = 'stat-value ' + (arbTotal === 0 ? 'neutral' : (rate >= 50 ? 'positive' : 'negative'));
-      el.record.textContent = arbTotal > 0 ? `${arbWins}W-${arbTotal - arbWins}L` : '--';
+      // Win Rate (arb + solo combined)
+      const rate = totalResolved > 0 ? Math.round((totalWins / totalResolved) * 100) : 0;
+      el.winRate.textContent = totalResolved > 0 ? rate + '%' : '--';
+      el.winRate.className = 'stat-value ' + (totalResolved === 0 ? 'neutral' : (rate >= 50 ? 'positive' : 'negative'));
+      el.record.textContent = totalResolved > 0
+        ? `${arbWins} arb · ${soloWins}W-${soloLosses}L solo`
+        : '--';
 
       // Total Locked
       el.totalLocked.textContent = totalLockedProfit > 0 ? fmtPnl(totalLockedProfit) : '--';
@@ -686,12 +693,15 @@
       const byDate = {};
       for (const w of windows) {
         const dk = dateKey(w.timestamp);
-        if (!byDate[dk]) byDate[dk] = { arbs: 0, arbWins: 0, pnl: 0, cost: 0, date: w.timestamp };
+        if (!byDate[dk]) byDate[dk] = { arbs: 0, arbWins: 0, soloWins: 0, soloLosses: 0, pnl: 0, cost: 0, date: w.timestamp };
         byDate[dk].pnl += w.profit || 0;
         byDate[dk].cost += w.cost || 0;
         if (w.type === 'arb') {
           byDate[dk].arbs++;
           if (w.locked && w.profit > 0) byDate[dk].arbWins++;
+        } else if (w.type === 'standalone' && !w.pending) {
+          if (w.won) byDate[dk].soloWins++;
+          else byDate[dk].soloLosses++;
         }
       }
 
@@ -715,7 +725,7 @@
         return `
           <div class="history-item">
             <div class="history-date">${dateStr}</div>
-            <div class="history-record">${d.arbWins}W-${d.arbs - d.arbWins}L</div>
+            <div class="history-record">${d.arbWins} arb · ${d.soloWins}W-${d.soloLosses}L</div>
             <div class="history-roi ${roiClass}">${d.pnl >= 0 ? '+' : ''}${roiPct}%</div>
             <div class="history-pnl ${pnlClass}">${fmtPnl(d.pnl)}</div>
           </div>
