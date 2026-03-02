@@ -495,8 +495,8 @@
           });
         }
 
-        // Standalone UP shares
-        if (standaloneUpShares > 0.01) {
+        // Standalone UP shares (skip tiny remainders from arb rounding)
+        if (standaloneUpShares > 0.5) {
           const cost = standaloneUpShares * avgUpPrice;
           const isPending = !slugRedeemed && !isOld;
           const sideWon = upWon;
@@ -515,8 +515,8 @@
           });
         }
 
-        // Standalone DOWN shares
-        if (standaloneDnShares > 0.01) {
+        // Standalone DOWN shares (skip tiny remainders from arb rounding)
+        if (standaloneDnShares > 0.5) {
           const cost = standaloneDnShares * avgDnPrice;
           const isPending = !slugRedeemed && !isOld;
           const sideWon = dnWon;
