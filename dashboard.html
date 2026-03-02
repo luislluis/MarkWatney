@@ -885,7 +885,7 @@
       <div class="main-grid">
         <div>
           <div class="section-header">
-            <span class="section-title">Today's Trades</span>
+            <span class="section-title">All Trades</span>
           </div>
           <div id="test90cTrades" class="card trades-card animate-in">
             <p class="empty-state">Loading 90c test trades...</p>
@@ -2449,16 +2449,11 @@
         if (!resp.ok) throw new Error('Activity API error');
         const allActivity = await resp.json();
 
-        // Only show today's trades (EST) and forward
-        const nowEST = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-        const todayCutoff = new Date(nowEST + 'T00:00:00-05:00').getTime() / 1000;
-        const todayActivity = allActivity.filter(a => a.timestamp >= todayCutoff);
-
-        // 90c bot: any buy below 95c is 90c bot (95c bot never fills under 95c)
+        // Process ALL activity (not just today) for daily history
         const is90cBuy = (a) => a.type === 'TRADE' && a.side === 'BUY' && parseFloat(a.price) < 0.95;
-        const buys = todayActivity.filter(is90cBuy);
-        const sells = todayActivity.filter(a => a.type === 'TRADE' && a.side === 'SELL');
-        const redeems = todayActivity.filter(a => a.type === 'REDEEM');
+        const buys = allActivity.filter(is90cBuy);
+        const sells = allActivity.filter(a => a.type === 'TRADE' && a.side === 'SELL');
+        const redeems = allActivity.filter(a => a.type === 'REDEEM');
         // Match redeems by conditionId only (redeems use outcomeIndex=999, not 0/1)
         const redeemSet = new Set(redeems.map(r => r.conditionId || ''));
 
