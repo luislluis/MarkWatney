@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Polybot ARB</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0a0a0b;
+      --bg-secondary: #111113;
+      --bg-card: rgba(17, 17, 19, 0.8);
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-glow: rgba(52, 211, 153, 0.3);
+      --text-primary: #f4f4f5;
+      --text-secondary: #71717a;
+      --text-muted: #52525b;
+      --green-primary: #34d399;
+      --green-glow: rgba(52, 211, 153, 0.15);
+      --green-dark: #059669;
+      --red-primary: #f87171;
+      --red-glow: rgba(248, 113, 113, 0.15);
+      --yellow-primary: #fbbf24;
+      --gold-accent: #d4af37;
+      --gold-glow: rgba(212, 175, 55, 0.15);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Outfit', -apple-system, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    .bg-mesh {
+      position: fixed; inset: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 20% -20%, rgba(52, 211, 153, 0.08), transparent),
+        radial-gradient(ellipse 60% 40% at 80% 100%, rgba(52, 211, 153, 0.05), transparent),
+        var(--bg-primary);
+      z-index: -1;
+    }
+
+    .noise {
+      position: fixed; inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+      opacity: 0.02; pointer-events: none; z-index: -1;
+    }
+
+    .container {
+      max-width: 420px;
+      margin: 0 auto;
+      padding: 20px 16px 32px;
+      position: relative;
+    }
+
+    /* Header */
+    .header { margin-bottom: 24px; }
+    .logo { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+    .logo-icon {
+      width: 32px; height: 32px;
+      background: linear-gradient(135deg, var(--green-primary), var(--green-dark));
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px;
+      box-shadow: 0 4px 12px rgba(52, 211, 153, 0.3);
+    }
+    .logo-text {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 20px; font-weight: 700; letter-spacing: -0.5px;
+      background: linear-gradient(135deg, var(--text-primary) 0%, var(--text-secondary) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .date {
+      font-size: 13px; color: var(--text-muted); font-weight: 400; padding-left: 42px;
+    }
+    .status-dot {
+      display: inline-block; width: 6px; height: 6px;
+      background: var(--green-primary); border-radius: 50%; margin-right: 6px;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.4); }
+      50% { opacity: 0.8; box-shadow: 0 0 0 4px rgba(52, 211, 153, 0); }
+    }
+
+    /* Cards */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      overflow: hidden; position: relative;
+    }
+    .card::before {
+      content: ''; position: absolute; inset: 0; border-radius: 16px; padding: 1px;
+      background: linear-gradient(135deg, rgba(255,255,255,0.1), rgba(255,255,255,0));
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none;
+    }
+
+    /* Summary Grid */
+    .summary-grid {
+      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 20px;
+    }
+    .stat-card { padding: 20px 12px; text-align: center; }
+    .stat-card.primary {
+      background: linear-gradient(135deg, rgba(52, 211, 153, 0.08), rgba(52, 211, 153, 0.02));
+      border-color: var(--border-glow);
+    }
+    .stat-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 26px; font-weight: 700; letter-spacing: -1px; line-height: 1; margin-bottom: 6px;
+    }
+    .stat-value.positive { color: var(--green-primary); }
+    .stat-value.negative { color: var(--red-primary); }
+    .stat-value.neutral { color: var(--text-muted); }
+    .stat-label {
+      font-size: 10px; font-weight: 500; text-transform: uppercase;
+      letter-spacing: 1px; color: var(--text-muted); margin-bottom: 4px;
+    }
+    .stat-detail {
+      font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-secondary);
+    }
+
+    /* Section Headers */
+    .section-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 12px; padding: 0 4px;
+    }
+    .section-title {
+      font-size: 12px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 1.5px; color: var(--text-secondary);
+    }
+    .section-badge {
+      font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 500;
+      color: var(--text-muted); background: rgba(255,255,255,0.05);
+      padding: 3px 8px; border-radius: 4px;
+    }
+
+    /* Trade List */
+    .trades-card { padding: 4px; margin-bottom: 20px; }
+    .date-separator {
+      font-size: 11px; color: var(--text-muted); text-transform: uppercase;
+      letter-spacing: 0.5px; padding: 12px 12px 6px; margin-top: 8px;
+      border-top: 1px solid rgba(255,255,255,0.06);
+    }
+    .date-separator:first-child { border-top: none; margin-top: 0; padding-top: 6px; }
+
+    .trade-item {
+      display: flex; align-items: center; padding: 12px; border-radius: 10px;
+      transition: background 0.2s ease;
+    }
+    .trade-item:hover { background: rgba(255,255,255,0.02); }
+
+    .trade-status {
+      width: 28px; height: 28px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; margin-right: 12px; flex-shrink: 0;
+    }
+    .trade-status.win { background: var(--green-glow); color: var(--green-primary); }
+    .trade-status.loss { background: var(--red-glow); color: var(--red-primary); }
+    .trade-status.pending { background: rgba(251, 191, 36, 0.1); color: var(--yellow-primary); }
+    .trade-status.arb {
+      background: var(--gold-glow); color: var(--gold-accent);
+    }
+    .trade-status.arb-loss {
+      background: var(--red-glow); color: var(--red-primary);
+    }
+
+    .trade-info { flex: 1; min-width: 0; }
+    .trade-pair {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px;
+    }
+    .trade-detail {
+      font-size: 11px; color: var(--text-muted); margin-bottom: 1px;
+    }
+    .trade-detail .roi { font-weight: 500; }
+    .trade-detail .roi.positive { color: var(--green-primary); }
+    .trade-detail .roi.negative { color: var(--red-primary); }
+    .trade-meta { font-size: 11px; color: var(--text-muted); }
+    .trade-pnl {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px; font-weight: 600; text-align: right; margin-left: 12px;
+    }
+    .trade-pnl.positive { color: var(--green-primary); }
+    .trade-pnl.negative { color: var(--red-primary); }
+    .trade-pnl.pending { color: var(--yellow-primary); font-size: 11px; }
+    .trade-pnl.gold { color: var(--gold-accent); }
+
+    /* Arb badge */
+    .arb-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 9px; font-weight: 700; letter-spacing: 0.5px;
+      padding: 2px 6px; border-radius: 4px; margin-left: 6px;
+      background: var(--gold-glow); color: var(--gold-accent);
+      vertical-align: middle;
+    }
+
+    /* History */
+    .history-card { padding: 4px; }
+    .history-item {
+      display: grid; grid-template-columns: 1fr auto auto auto;
+      gap: 12px; align-items: center; padding: 14px 12px;
+      border-radius: 10px; transition: background 0.2s ease;
+    }
+    .history-item:hover { background: rgba(255,255,255,0.02); }
+    .history-date { font-size: 13px; font-weight: 500; color: var(--text-primary); }
+    .history-pnl {
+      font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600;
+    }
+    .history-pnl.positive { color: var(--green-primary); }
+    .history-pnl.negative { color: var(--red-primary); }
+    .history-record {
+      font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-secondary);
+    }
+    .history-roi {
+      font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    }
+    .history-roi.positive { color: var(--green-primary); }
+    .history-roi.negative { color: var(--red-primary); }
+
+    /* Error banner */
+    .error-banner {
+      background: var(--red-glow); border: 1px solid rgba(248,113,113,0.3);
+      border-radius: 12px; padding: 12px 16px; margin-bottom: 16px;
+      font-size: 13px; color: var(--red-primary); display: none;
+    }
+
+    /* Loading */
+    .loading { text-align: center; padding: 32px; color: var(--text-muted); font-size: 13px; }
+
+    /* Animations */
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-in { animation: fadeInUp 0.5s ease-out forwards; }
+    .delay-1 { animation-delay: 0.1s; opacity: 0; }
+    .delay-2 { animation-delay: 0.2s; opacity: 0; }
+    .delay-3 { animation-delay: 0.3s; opacity: 0; }
+
+    /* Desktop two-column */
+    @media (min-width: 768px) {
+      .container { max-width: 960px; }
+      .main-grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 20px; align-items: start; }
+      .main-grid > * { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="bg-mesh"></div>
+  <div class="noise"></div>
+
+  <div class="container">
+    <header class="header animate-in">
+      <div class="logo">
+        <div class="logo-icon">&harr;</div>
+        <span class="logo-text">POLYBOT ARB</span>
+      </div>
+      <p class="date" id="date"><span class="status-dot"></span>Loading...</p>
+      <p class="date" id="clock" style="font-size:12px; opacity:0.7;"></p>
+    </header>
+
+    <div class="error-banner" id="error"><span id="errorMsg">Error loading data</span></div>
+
+    <!-- Summary Cards -->
+    <div class="summary-grid animate-in delay-1">
+      <div class="card stat-card primary">
+        <div class="stat-label">Today P&L</div>
+        <div class="stat-value neutral" id="todayPnl">--</div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-label">Arb Win Rate</div>
+        <div class="stat-value neutral" id="winRate">--</div>
+        <div class="stat-detail" id="record">--</div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-label">Total Locked</div>
+        <div class="stat-value neutral" id="totalLocked">--</div>
+      </div>
+    </div>
+
+    <div class="main-grid">
+      <!-- Trades Column -->
+      <div class="animate-in delay-2">
+        <div class="section-header">
+          <span class="section-title">Arb Trades</span>
+          <span class="section-badge" id="tradeCount">0 windows</span>
+        </div>
+        <div class="card trades-card" id="trades">
+          <p class="loading">Loading trades...</p>
+        </div>
+      </div>
+
+      <!-- History Column -->
+      <div>
+        <div class="animate-in delay-3">
+          <div class="section-header">
+            <span class="section-title">Daily History</span>
+          </div>
+          <div class="card history-card" id="history">
+            <p class="loading">Loading history...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const CONFIG = {
+      walletAddress: '0x636796704404959f5Ae9BEfEb2B3880eadf6960a',
+      refreshInterval: 30000,
+      // Arb bot buys both sides at cheap prices (< 0.55 typical)
+      // 95c bot buys at >= 0.95. We use 0.90 as the divider to be safe.
+      arbMaxPrice: 0.90
+    };
+
+    // ── Utilities ──
+
+    function escapeHtml(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    function fmtPnl(v) {
+      if (v == null) return '--';
+      const s = v >= 0 ? '+' : '';
+      return `${s}$${v.toFixed(2)}`;
+    }
+
+    function fmtPrice(p) {
+      if (p == null) return '--';
+      return (p * 100).toFixed(0) + 'c';
+    }
+
+    function toEST(ts) {
+      return new Date(ts).toLocaleString('en-US', { timeZone: 'America/New_York' });
+    }
+
+    function dateKey(ts) {
+      return new Date(ts).toLocaleDateString('en-US', { timeZone: 'America/New_York' });
+    }
+
+    function isToday(ts) {
+      const now = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' });
+      return dateKey(ts) === now;
+    }
+
+    // ── Data Fetching & Arb Detection ──
+
+    async function fetchActivity() {
+      const url = `https://data-api.polymarket.com/activity?user=${CONFIG.walletAddress}&limit=1000`;
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error('Activity API: ' + resp.status);
+      return resp.json();
+    }
+
+    function processArbTrades(allActivity) {
+      const trades = allActivity.filter(a => a.type === 'TRADE');
+      const redeemEvents = allActivity.filter(a => a.type === 'REDEEM');
+
+      // Track which outcomes were redeemed per slug
+      // redeemed outcome tells us which side won
+      const redeemedOutcomes = {}; // slug -> Set of redeemed outcomes ('UP', 'DOWN', etc.)
+      const redeemed = new Set();
+      for (const r of redeemEvents) {
+        if (r.slug) {
+          redeemed.add(r.slug);
+          if (!redeemedOutcomes[r.slug]) redeemedOutcomes[r.slug] = new Set();
+          const outcome = (r.outcome || '').toUpperCase();
+          if (outcome) redeemedOutcomes[r.slug].add(outcome);
+        }
+      }
+
+      // Group trades by slug
+      const grouped = {};
+      for (const t of trades) {
+        const slug = t.slug || '';
+        if (!grouped[slug]) grouped[slug] = { buys: [], sells: [], title: '', conditionId: '' };
+        if (t.title) grouped[slug].title = t.title;
+        if (t.conditionId) grouped[slug].conditionId = t.conditionId;
+
+        const entry = {
+          timestamp: t.timestamp,  // Unix seconds
+          size: parseFloat(t.size) || 0,
+          price: parseFloat(t.price) || 0,
+          outcome: (t.outcome || '').toUpperCase(),
+          side: (t.side || '').toUpperCase(),
+          slug: slug
+        };
+
+        if (entry.side === 'SELL') {
+          grouped[slug].sells.push(entry);
+        } else {
+          grouped[slug].buys.push(entry);
+        }
+      }
+
+      // Process each slug into arb windows
+      const windows = [];
+      const nowSec = Date.now() / 1000;
+
+      for (const [slug, group] of Object.entries(grouped)) {
+        // Filter to arb bot buys only (price < arbMaxPrice)
+        const arbBuys = group.buys.filter(b => b.price < CONFIG.arbMaxPrice);
+        if (arbBuys.length === 0) continue;
+
+        // Separate UP and DOWN buys
+        const upBuys = arbBuys.filter(b => b.outcome === 'UP' || b.outcome === 'YES');
+        const dnBuys = arbBuys.filter(b => b.outcome === 'DOWN' || b.outcome === 'NO');
+
+        // Calculate totals
+        const upShares = upBuys.reduce((s, b) => s + b.size, 0);
+        const dnShares = dnBuys.reduce((s, b) => s + b.size, 0);
+        const upCost = upBuys.reduce((s, b) => s + b.size * b.price, 0);
+        const dnCost = dnBuys.reduce((s, b) => s + b.size * b.price, 0);
+        const avgUpPrice = upShares > 0 ? upCost / upShares : 0;
+        const avgDnPrice = dnShares > 0 ? dnCost / dnShares : 0;
+
+        // Arb pair = min(UP, DOWN) shares
+        const arbShares = Math.min(upShares, dnShares);
+        const hasArb = arbShares > 0.01;
+
+        // Standalone shares
+        const standaloneUpShares = upShares - arbShares;
+        const standaloneDnShares = dnShares - arbShares;
+
+        // Timestamps for sorting (Unix seconds — multiply by 1000 for JS Date)
+        const allBuys = [...upBuys, ...dnBuys];
+        allBuys.sort((a, b) => a.timestamp - b.timestamp);
+        const firstTs = allBuys.length > 0 ? allBuys[0].timestamp * 1000 : 0;
+
+        // Determine outcomes
+        const slugRedeemed = redeemed.has(slug);
+        const redOutcomes = redeemedOutcomes[slug] || new Set();
+        const upWon = redOutcomes.has('UP') || redOutcomes.has('YES');
+        const dnWon = redOutcomes.has('DOWN') || redOutcomes.has('NO');
+
+        // Age check: if > 30 min old and not redeemed, assume LOSS
+        const age = nowSec - (allBuys.length > 0 ? allBuys[0].timestamp : nowSec);
+        const isOld = age > 1800;
+
+        const title = group.title || slug;
+
+        // Arb pair
+        if (hasArb) {
+          const combinedPerShare = avgUpPrice + avgDnPrice;
+          const arbProfit = (1.00 - combinedPerShare) * arbShares;
+          const arbCost = combinedPerShare * arbShares;
+          const arbRoi = arbCost > 0 ? (arbProfit / arbCost) * 100 : 0;
+          const isPending = !slugRedeemed && !isOld;
+
+          // Arb profit is guaranteed if combined < $1, even while pending
+          windows.push({
+            type: 'arb',
+            slug, title,
+            timestamp: firstTs,
+            arbShares,
+            upPrice: avgUpPrice,
+            dnPrice: avgDnPrice,
+            combined: combinedPerShare,
+            profit: arbProfit,
+            roi: arbRoi,
+            cost: arbCost,
+            locked: combinedPerShare < 1.00,
+            won: slugRedeemed,
+            pending: isPending
+          });
+        }
+
+        // Standalone UP shares
+        if (standaloneUpShares > 0.01) {
+          const cost = standaloneUpShares * avgUpPrice;
+          const isPending = !slugRedeemed && !isOld;
+          const sideWon = upWon;
+          const pnl = isPending ? 0 : (sideWon ? standaloneUpShares - cost : -cost);
+          windows.push({
+            type: 'standalone',
+            slug, title,
+            timestamp: firstTs + 1,
+            side: 'UP',
+            shares: standaloneUpShares,
+            price: avgUpPrice,
+            cost,
+            profit: pnl,
+            won: sideWon,
+            pending: isPending
+          });
+        }
+
+        // Standalone DOWN shares
+        if (standaloneDnShares > 0.01) {
+          const cost = standaloneDnShares * avgDnPrice;
+          const isPending = !slugRedeemed && !isOld;
+          const sideWon = dnWon;
+          const pnl = isPending ? 0 : (sideWon ? standaloneDnShares - cost : -cost);
+          windows.push({
+            type: 'standalone',
+            slug, title,
+            timestamp: firstTs + 2,
+            side: 'DOWN',
+            shares: standaloneDnShares,
+            price: avgDnPrice,
+            cost,
+            profit: pnl,
+            won: sideWon,
+            pending: isPending
+          });
+        }
+      }
+
+      // Sort by timestamp descending (most recent first)
+      windows.sort((a, b) => b.timestamp - a.timestamp);
+      return windows;
+    }
+
+    // ── Rendering ──
+
+    function renderDashboard(windows) {
+      const el = {
+        todayPnl: document.getElementById('todayPnl'),
+        winRate: document.getElementById('winRate'),
+        record: document.getElementById('record'),
+        totalLocked: document.getElementById('totalLocked'),
+        trades: document.getElementById('trades'),
+        history: document.getElementById('history'),
+        tradeCount: document.getElementById('tradeCount'),
+        date: document.getElementById('date'),
+      };
+
+      // Update date
+      const now = new Date();
+      const estDate = now.toLocaleDateString('en-US', {
+        weekday: 'long', month: 'long', day: 'numeric',
+        timeZone: 'America/New_York'
+      });
+      el.date.innerHTML = `<span class="status-dot"></span>${estDate}`;
+
+      // Stats
+      const arbWindows = windows.filter(w => w.type === 'arb');
+      const todayWindows = windows.filter(w => isToday(w.timestamp));
+      const todayPnl = todayWindows.reduce((s, w) => s + (w.profit || 0), 0);
+      const arbWins = arbWindows.filter(w => w.locked && w.profit > 0).length;
+      const arbTotal = arbWindows.length;
+      const totalLockedProfit = arbWindows
+        .filter(w => w.locked && w.profit > 0)
+        .reduce((s, w) => s + w.profit, 0);
+
+      // Today's P&L
+      el.todayPnl.textContent = todayWindows.length === 0 ? '--' : fmtPnl(todayPnl);
+      el.todayPnl.className = 'stat-value ' + (todayWindows.length === 0 ? 'neutral' : (todayPnl >= 0 ? 'positive' : 'negative'));
+
+      // Win Rate
+      const rate = arbTotal > 0 ? Math.round((arbWins / arbTotal) * 100) : 0;
+      el.winRate.textContent = arbTotal > 0 ? rate + '%' : '--';
+      el.winRate.className = 'stat-value ' + (arbTotal === 0 ? 'neutral' : (rate >= 50 ? 'positive' : 'negative'));
+      el.record.textContent = arbTotal > 0 ? `${arbWins}W-${arbTotal - arbWins}L` : '--';
+
+      // Total Locked
+      el.totalLocked.textContent = totalLockedProfit > 0 ? fmtPnl(totalLockedProfit) : '--';
+      el.totalLocked.className = 'stat-value ' + (totalLockedProfit > 0 ? 'positive' : 'neutral');
+
+      // Trade count
+      el.tradeCount.textContent = `${arbWindows.length} arbs`;
+
+      // Render trades
+      if (windows.length === 0) {
+        el.trades.innerHTML = '<p class="loading">No arb trades found</p>';
+      } else {
+        let lastDate = null;
+        const tradesHtml = windows.map(w => {
+          let separator = '';
+          const dStr = dateKey(w.timestamp);
+          if (dStr !== lastDate) {
+            const d = new Date(w.timestamp);
+            const displayDate = d.toLocaleDateString('en-US', {
+              weekday: 'short', month: 'short', day: 'numeric',
+              timeZone: 'America/New_York'
+            });
+            separator = `<div class="date-separator">${displayDate}</div>`;
+            lastDate = dStr;
+          }
+
+          if (w.type === 'arb') {
+            return separator + renderArbRow(w);
+          } else {
+            return separator + renderStandaloneRow(w);
+          }
+        }).join('');
+
+        el.trades.innerHTML = tradesHtml;
+      }
+
+      // Render daily history
+      renderHistory(windows, el.history);
+    }
+
+    function renderArbRow(w) {
+      const sharesStr = w.arbShares % 1 < 0.01 ? Math.round(w.arbShares) : w.arbShares.toFixed(1);
+      const statusClass = w.locked && w.profit > 0 ? 'arb' : (w.profit < 0 ? 'arb-loss' : 'pending');
+      const statusIcon = w.locked && w.profit > 0 ? '💰' : (w.profit < 0 ? '✗' : '◷');
+      const pnlClass = w.pending ? 'pending' : (w.profit >= 0 ? 'gold' : 'negative');
+      const pnlText = w.pending ? 'pending' : fmtPnl(w.profit);
+      const roiPct = w.roi !== null ? w.roi.toFixed(1) : null;
+      const roiText = roiPct !== null && !w.pending ? `<span class="roi ${w.roi >= 0 ? 'positive' : 'negative'}">${w.roi > 0 ? '+' : ''}${roiPct}%</span>` : '';
+
+      // Time from window title
+      const time = extractTime(w.title, w.timestamp);
+
+      return `
+        <div class="trade-item">
+          <div class="trade-status ${statusClass}">${statusIcon}</div>
+          <div class="trade-info">
+            <div class="trade-pair">ARB ${sharesStr}+${sharesStr} UP@${fmtPrice(w.upPrice)} DN@${fmtPrice(w.dnPrice)}<span class="arb-badge">${fmtPrice(w.combined)}</span></div>
+            <div class="trade-detail">$${w.cost.toFixed(2)} · ${roiText || '--'}</div>
+            <div class="trade-meta">${time}</div>
+          </div>
+          <div class="trade-pnl ${pnlClass}">${pnlText}</div>
+        </div>
+      `;
+    }
+
+    function renderStandaloneRow(w) {
+      const sharesStr = w.shares % 1 < 0.01 ? Math.round(w.shares) : w.shares.toFixed(1);
+      const isPending = w.pending;
+      const isWin = w.won;
+      const statusClass = isPending ? 'pending' : (isWin ? 'win' : 'loss');
+      const statusIcon = isPending ? '◷' : (isWin ? '✓' : '✗');
+      const pnlClass = isPending ? 'pending' : (w.profit >= 0 ? 'positive' : 'negative');
+      const pnlText = isPending ? 'pending' : fmtPnl(w.profit);
+      const roiPct = w.cost > 0 && !isPending ? (w.profit / w.cost * 100).toFixed(1) : null;
+      const roiText = roiPct !== null ? `<span class="roi ${w.profit >= 0 ? 'positive' : 'negative'}">${w.profit > 0 ? '+' : ''}${roiPct}%</span>` : '';
+
+      const time = extractTime(w.title, w.timestamp);
+
+      return `
+        <div class="trade-item">
+          <div class="trade-status ${statusClass}">${statusIcon}</div>
+          <div class="trade-info">
+            <div class="trade-pair">${escapeHtml(w.side)} ${sharesStr}@${fmtPrice(w.price)} <span style="font-size:10px;color:var(--text-muted)">(unmatched)</span></div>
+            <div class="trade-detail">$${w.cost.toFixed(2)} · ${roiText || '--'}</div>
+            <div class="trade-meta">${time}</div>
+          </div>
+          <div class="trade-pnl ${pnlClass}">${pnlText}</div>
+        </div>
+      `;
+    }
+
+    function extractTime(title, timestamp) {
+      const m = (title || '').match(/(\d{1,2}:\d{2}[AP]M-\d{1,2}:\d{2}[AP]M\s*ET)/);
+      if (m) return m[1];
+      return new Date(timestamp).toLocaleTimeString('en-US', {
+        hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York'
+      });
+    }
+
+    function renderHistory(windows, el) {
+      // Group by date
+      const byDate = {};
+      for (const w of windows) {
+        const dk = dateKey(w.timestamp);
+        if (!byDate[dk]) byDate[dk] = { arbs: 0, arbWins: 0, pnl: 0, cost: 0, date: w.timestamp };
+        byDate[dk].pnl += w.profit || 0;
+        byDate[dk].cost += w.cost || 0;
+        if (w.type === 'arb') {
+          byDate[dk].arbs++;
+          if (w.locked && w.profit > 0) byDate[dk].arbWins++;
+        }
+      }
+
+      const days = Object.entries(byDate)
+        .sort((a, b) => b[1].date - a[1].date);
+
+      if (days.length === 0) {
+        el.innerHTML = '<p class="loading">No history</p>';
+        return;
+      }
+
+      el.innerHTML = days.map(([dk, d]) => {
+        const dateStr = new Date(d.date).toLocaleDateString('en-US', {
+          weekday: 'short', month: 'short', day: 'numeric',
+          timeZone: 'America/New_York'
+        });
+        const pnlClass = d.pnl >= 0 ? 'positive' : 'negative';
+        const roiPct = d.cost > 0 ? (d.pnl / d.cost * 100).toFixed(1) : '0.0';
+        const roiClass = d.pnl >= 0 ? 'positive' : 'negative';
+
+        return `
+          <div class="history-item">
+            <div class="history-date">${dateStr}</div>
+            <div class="history-record">${d.arbWins}W-${d.arbs - d.arbWins}L</div>
+            <div class="history-roi ${roiClass}">${d.pnl >= 0 ? '+' : ''}${roiPct}%</div>
+            <div class="history-pnl ${pnlClass}">${fmtPnl(d.pnl)}</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // ── Clock ──
+    function updateClock() {
+      const now = new Date();
+      document.getElementById('clock').textContent = now.toLocaleTimeString('en-US', {
+        hour: 'numeric', minute: '2-digit', second: '2-digit',
+        hour12: true, timeZone: 'America/New_York'
+      }) + ' ET';
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // ── Main ──
+    async function loadData() {
+      try {
+        const activity = await fetchActivity();
+        const windows = processArbTrades(activity);
+        renderDashboard(windows);
+        document.getElementById('error').style.display = 'none';
+      } catch (e) {
+        console.error('[ARB] Load error:', e);
+        document.getElementById('errorMsg').textContent = e.message;
+        document.getElementById('error').style.display = 'block';
+      }
+    }
+
+    loadData();
+    setInterval(loadData, CONFIG.refreshInterval);
+  </script>
+</body>
+</html>
