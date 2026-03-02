@@ -2551,12 +2551,15 @@
     }
 
     function render90cTestDashboard(trades) {
-      const resolved = trades.filter(t => t.status !== 'PENDING');
-      const winTrades = trades.filter(t => t.status === 'WIN');
-      const cashedTrades = trades.filter(t => t.status === 'CASHED');
-      const lossTrades = trades.filter(t => t.status === 'LOSS');
-      const exitTrades = trades.filter(t => t.status === 'EXIT');
-      const totalPnl = trades.reduce((s, t) => s + t.profit_loss, 0);
+      // Top stats use TODAY's trades only
+      const todayEST = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      const todayTrades = trades.filter(t => new Date(t.timestamp).toLocaleDateString('en-CA', { timeZone: 'America/New_York' }) === todayEST);
+
+      const winTrades = todayTrades.filter(t => t.status === 'WIN');
+      const cashedTrades = todayTrades.filter(t => t.status === 'CASHED');
+      const lossTrades = todayTrades.filter(t => t.status === 'LOSS');
+      const exitTrades = todayTrades.filter(t => t.status === 'EXIT');
+      const totalPnl = todayTrades.reduce((s, t) => s + t.profit_loss, 0);
 
       const pnlEl = document.getElementById('test90cPnl');
       pnlEl.textContent = fmtPnl(totalPnl);
@@ -2566,23 +2569,23 @@
       const totalWins = winTrades.length + cashedTrades.length;
       const resolvedCount = totalWins + lossTrades.length + exitTrades.length;
       const winPct = resolvedCount > 0 ? Math.round(totalWins / resolvedCount * 100) : 0;
-      wrEl.textContent = trades.length > 0 ? winPct + '%' : '--';
+      wrEl.textContent = todayTrades.length > 0 ? winPct + '%' : '--';
       wrEl.className = 'stat-value ' + (winPct >= 50 ? 'positive' : 'neutral');
 
       let recordText = winTrades.length + 'W';
       if (cashedTrades.length > 0) recordText += ' / ' + cashedTrades.length + 'C';
       recordText += ' / ' + lossTrades.length + 'L';
       if (exitTrades.length > 0) recordText += ' / ' + exitTrades.length + 'E';
-      const pendingCount = trades.filter(t => t.status === 'PENDING').length;
+      const pendingCount = todayTrades.filter(t => t.status === 'PENDING').length;
       if (pendingCount > 0) recordText += ' (' + pendingCount + ' pending)';
-      document.getElementById('test90cRecord').textContent = trades.length > 0 ? recordText : 'No trades yet';
+      document.getElementById('test90cRecord').textContent = todayTrades.length > 0 ? recordText : 'No trades yet';
 
-      const resolved90c = trades.filter(t => t.status !== 'PENDING');
+      const resolved90c = todayTrades.filter(t => t.status !== 'PENDING');
       const totalCost90c = resolved90c.reduce((s, t) => s + (t.cost_basis ?? 0), 0);
       const avgTradeCost = resolved90c.length > 0 ? totalCost90c / resolved90c.length : 0;
       const roiPct = avgTradeCost > 0 ? Math.round(totalPnl / avgTradeCost * 1000) / 10 : 0;
       const roiEl = document.getElementById('test90cRoi');
-      roiEl.textContent = trades.length > 0 ? (roiPct > 0 ? '+' : '') + roiPct + '% ROI' : '';
+      roiEl.textContent = todayTrades.length > 0 ? (roiPct > 0 ? '+' : '') + roiPct + '% ROI' : '';
       roiEl.className = 'stat-roi ' + (roiPct >= 0 ? 'positive' : 'negative');
 
       // ── Trade list ──
