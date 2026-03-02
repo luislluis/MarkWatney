@@ -351,7 +351,7 @@ FIXED_TRADE_SHARES = 8             # Fixed trade size (FOK market buy)
 SKIP_API_POSITION_SYNC = True      # 90c bot: don't sync from wallet API (shared wallet shows 95c bot's positions)
 CAPTURE_99C_BID_PRICE = 0.90       # Place bid at 90c (90c test bot)
 CAPTURE_99C_MIN_TIME = 10          # Need at least 10 seconds to settle order
-CAPTURE_99C_MIN_CONFIDENCE = 0.90  # Only bet when 90%+ confident (lower for 90c entry)
+CAPTURE_99C_MIN_CONFIDENCE = 0.85  # Only bet when 85%+ confident (lower for 90c entry)
 CAPTURE_99C_PRICE_WEIGHT = 0.5    # Dampen ask price effect on confidence (0.5 = 90c ask → 95% base)
 CAPTURE_99C_MAX_ASK = 1.01         # Allow placing bids even when ask is at 99-100c (if doesn't fill, no harm)
 
@@ -374,7 +374,7 @@ CAPTURE_99C_HEDGE_THRESHOLD = 0.85      # (Legacy) Hedge if confidence drops bel
 
 # 99c Entry Filters (v1.24 - based on tick data analysis)
 # These filters prevent entering on volatile/spiking markets that lead to losses
-ENTRY_FILTER_ENABLED = True             # Enable smart entry filtering
+ENTRY_FILTER_ENABLED = False            # DISABLED: filters designed for 95c bot, not 90c
 ENTRY_FILTER_STABLE_TICKS = 3           # Last N ticks must all be >= 97c for "stable" entry
 ENTRY_FILTER_STABLE_THRESHOLD = 0.97    # Price threshold for stability check
 ENTRY_FILTER_MAX_JUMP = 0.08            # Max allowed tick-to-tick jump in past 10 ticks
@@ -4032,8 +4032,8 @@ def get_roi_from_activity_api() -> dict:
             slug = group["slug"]
             if not group["buys"]:
                 continue
-            # Only count 90c bot trades (buys 5-8 shares) — ignore 95c bot
-            all_90c = all(5 < b["size"] < 8 for b in group["buys"])
+            # Only count 90c bot trades: any buy below 95c (95c bot never fills under 95c)
+            all_90c = all(b["price"] < 0.95 for b in group["buys"])
             if not all_90c:
                 continue
             won = slug in redeemed
