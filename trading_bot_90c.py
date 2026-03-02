@@ -329,12 +329,12 @@ PRICE_STOP_FLOOR = 0.50            # (legacy) Never sell below 50c
 # Guaranteed emergency exit using Fill-or-Kill market orders.
 # Triggers on BEST BID (not ask) to ensure real liquidity exists.
 # Will sell at any price to avoid riding to $0.
-HARD_STOP_ENABLED = True           # Enable 65¢ hard stop
-HARD_STOP_TRIGGER = 0.65           # Exit when best bid <= 65¢ (raised from 45¢ in v1.61 — fills at 55-65c vs 10-23c)
+HARD_STOP_ENABLED = True           # Enable 40¢ hard stop
+HARD_STOP_TRIGGER = 0.40           # Exit when best bid <= 40¢
 HARD_STOP_FLOOR = 0.01             # Effectively no floor (1¢ minimum)
 HARD_STOP_USE_FOK = True           # Use Fill-or-Kill market orders
 HARD_STOP_CONSECUTIVE_REQUIRED = 2 # Require 2 consecutive ticks below trigger before firing
-WINDOW_END_SAFETY_PRICE = 0.80     # Safety exit below 80c in final 10 seconds (don't wait for 45c)
+WINDOW_END_SAFETY_PRICE = 0.80     # DISABLED: safety exit removed, hard stop only
 
 # ===========================================
 # ENTRY RESTRICTIONS
@@ -347,11 +347,12 @@ MIN_TIME_FOR_ENTRY = 300           # Never enter with <5 minutes (300s) remainin
 CAPTURE_99C_ENABLED = True         # Enable/disable 99c capture strategy
 CAPTURE_99C_MAX_SPEND = 6.00       # Fallback max spend if portfolio balance unavailable
 TRADE_SIZE_PCT = 0.21              # 21% of portfolio per trade (half — shares wallet with 95c bot)
-FIXED_TRADE_SHARES = 6             # Fixed trade size (FOK market buy)
+FIXED_TRADE_SHARES = 8             # Fixed trade size (FOK market buy)
 SKIP_API_POSITION_SYNC = True      # 90c bot: don't sync from wallet API (shared wallet shows 95c bot's positions)
 CAPTURE_99C_BID_PRICE = 0.90       # Place bid at 90c (90c test bot)
 CAPTURE_99C_MIN_TIME = 10          # Need at least 10 seconds to settle order
 CAPTURE_99C_MIN_CONFIDENCE = 0.90  # Only bet when 90%+ confident (lower for 90c entry)
+CAPTURE_99C_PRICE_WEIGHT = 0.5    # Dampen ask price effect on confidence (0.5 = 90c ask → 95% base)
 CAPTURE_99C_MAX_ASK = 1.01         # Allow placing bids even when ask is at 99-100c (if doesn't fill, no harm)
 
 # Time penalties: (max_time_remaining, penalty)
@@ -380,6 +381,14 @@ ENTRY_FILTER_MAX_JUMP = 0.08            # Max allowed tick-to-tick jump in past 
 ENTRY_FILTER_MAX_OPP_RECENT = 0.15      # Skip if opposing side was > this in past 30 ticks
 ENTRY_FILTER_HISTORY_SIZE = 30          # Number of ticks to keep for filtering
 
+# ===========================================
+# TREND GUARD — Multi-window BTC trend filter
+# ===========================================
+# Prevents entering positions that fight a strong multi-window BTC trend.
+# Compares BTC price at start of current window vs 2 windows ago.
+TREND_THRESHOLD = 250                   # BTC $ change over 2 windows that blocks entry
+TREND_LOOKBACK_WINDOWS = 2              # Number of prior windows to measure trend
+
 # Danger Scoring Configuration (for smart hedge)
 DANGER_THRESHOLD = 0.40              # Hedge triggers when danger >= this
 DANGER_WEIGHT_CONFIDENCE = 3.0       # Weight for confidence drop from peak
@@ -394,7 +403,7 @@ DANGER_WEIGHT_TIME = 0.3             # Weight for time decay in final 60s
 # Exit when danger score is high AND opponent ask confirms real uncertainty.
 # Opponent ask > 15c = market disagrees with our bet. Combined with high danger = GET OUT.
 # On wins, opponent ask is always ≤8c. 15c threshold provides 7c margin.
-DANGER_EXIT_ENABLED = True          # Re-enabled v1.61: catches reversals at 80-90c (opponent_ask>15c + danger>0.40)
+DANGER_EXIT_ENABLED = False         # DISABLED: exit strategy is hard stop only
 DANGER_EXIT_THRESHOLD = 0.40          # Exit when danger score >= this
 DANGER_EXIT_OPPONENT_ASK_MIN = 0.15   # Only exit if opponent ask > 15c (real uncertainty)
 DANGER_EXIT_CONSECUTIVE_REQUIRED = 2  # Require 2 consecutive ticks (prevent single-tick noise)
@@ -428,6 +437,7 @@ btc_price_history = deque(maxlen=VELOCITY_WINDOW_SECONDS)
 # Rolling window for market price history (entry filter - v1.24)
 # Stores (timestamp, up_ask, down_ask) tuples
 market_price_history = deque(maxlen=ENTRY_FILTER_HISTORY_SIZE)
+recent_window_btc = []  # Rolling list of window-start BTC prices for trend guard
 error_count = 0
 
 # HTTP session
@@ -1517,11 +1527,7 @@ def execute_hard_stop(side: str, books: dict) -> tuple:
     token = window_state.get(f'{side.lower()}_token')
     entry_price = window_state.get('capture_99c_fill_price', 0.99)
 
-    remaining_shares = shares
     total_pnl = 0.0
-    attempts = 0
-    max_attempts = 15  # Safety limit (more attempts since we chunk now)
-    balance_errors = 0  # Track consecutive balance errors
 
     print()
     print("=" * 50)
@@ -1531,77 +1537,31 @@ def execute_hard_stop(side: str, books: dict) -> tuple:
     print(f"Entry Price: {entry_price*100:.0f}c")
     print("=" * 50)
 
-    while remaining_shares > 0 and attempts < max_attempts:
-        attempts += 1
-
-        # Get current best bid
-        bids_key = f'{side.lower()}_bids'
-        bids = books.get(bids_key, [])
-
-        if not bids or len(bids) == 0:
-            print(f"[{ts()}] HARD_STOP: No bids available, waiting 1s (attempt {attempts})")
-            time.sleep(1)
-            # Refresh order books
-            if window_state.get('cached_market'):
-                books = get_order_books(window_state['cached_market'])
-            continue
-
-        best_bid = float(bids[0]['price'])
-        best_bid_size = float(bids[0].get('size', 0))
-
-        if best_bid_size <= 0:
-            print(f"[{ts()}] HARD_STOP: No bid size at {best_bid*100:.0f}c, waiting 1s")
-            time.sleep(1)
-            continue
-
-        # Log if below floor (but still sell)
-        if best_bid < HARD_STOP_FLOOR:
-            print(f"[{ts()}] HARD_STOP: Best bid {best_bid*100:.0f}c below floor {HARD_STOP_FLOOR*100:.0f}c, selling anyway")
-
-        # v1.55: Chunk FOK sells to order book depth (don't try to sell more than book can absorb)
-        total_bid_depth = sum(float(b.get('size', 0)) for b in bids)
-        chunk_size = min(remaining_shares, max(total_bid_depth * 0.9, 1))  # 90% of depth, min 1 share
-        print(f"[{ts()}] HARD_STOP: Book depth={total_bid_depth:.0f}, selling chunk={chunk_size:.1f} of {remaining_shares:.0f} remaining")
-
-        # Place FOK market sell for chunk (not full position)
-        success, order_id, filled, is_balance_error = place_fok_market_sell(token, chunk_size)
+    # Simple FOK: fire full position at market, retry up to 5 times
+    best_bid = 0.0
+    for attempt in range(1, 6):
+        print(f"[{ts()}] HARD_STOP: FOK sell {shares:.0f} shares (attempt {attempt})")
+        success, order_id, filled, is_balance_error = place_fok_market_sell(token, shares)
 
         if success and filled > 0:
-            # Calculate P&L for this fill
-            fill_pnl = (best_bid - entry_price) * filled
-            total_pnl += fill_pnl
-            remaining_shares -= filled
-            balance_errors = 0  # Reset on success
-
-            print(f"[{ts()}] HARD_STOP: Filled {filled:.0f} @ ~{best_bid*100:.0f}c, P&L: ${fill_pnl:.2f}, remaining: {remaining_shares:.0f}")
+            bids_key = f'{side.lower()}_bids'
+            bids = books.get(bids_key, [])
+            best_bid = float(bids[0]['price']) if bids else 0.01
+            total_pnl = (best_bid - entry_price) * filled
+            print(f"[{ts()}] HARD_STOP: Filled {filled:.0f} @ ~{best_bid*100:.0f}c, P&L: ${total_pnl:.2f}")
+            break
         elif is_balance_error:
-            balance_errors += 1
-            print(f"[{ts()}] HARD_STOP: Balance error #{balance_errors} - shares may already be sold")
-            if balance_errors >= 3:
-                print(f"[{ts()}] HARD_STOP: 3 consecutive balance errors - shares already sold, stopping")
-                remaining_shares = 0  # Assume sold
-                break
-            # Halve the chunk and retry
-            remaining_shares = remaining_shares / 2
-            if remaining_shares < 1:
-                print(f"[{ts()}] HARD_STOP: Chunk too small after halving, stopping")
-                remaining_shares = 0
-                break
-            time.sleep(0.5)
+            print(f"[{ts()}] HARD_STOP: Balance error - shares may already be sold")
+            break
         else:
-            print(f"[{ts()}] HARD_STOP: FOK rejected, refreshing book (attempt {attempts})")
-            time.sleep(0.5)
-            # Refresh order books for next attempt
+            print(f"[{ts()}] HARD_STOP: FOK rejected, retrying in 1s")
+            time.sleep(1)
             if window_state.get('cached_market'):
                 books = get_order_books(window_state['cached_market'])
-
-    if remaining_shares > 0:
-        print(f"[{ts()}] HARD_STOP_ERROR: Failed to fully liquidate! {remaining_shares:.0f} shares stuck")
-        # Still update state with partial exit
-        window_state[f'capture_99c_filled_{side.lower()}'] = remaining_shares
+    else:
+        print(f"[{ts()}] HARD_STOP_ERROR: Failed to sell after 5 attempts")
         return False, total_pnl
 
-    # Full liquidation successful
     print()
     print("=" * 50)
     print(f"{'='*15} HARD STOP COMPLETE {'='*15}")
@@ -2658,7 +2618,7 @@ def calculate_99c_confidence(ask_price, time_remaining):
 
     Returns (confidence, time_penalty)
     """
-    base_confidence = ask_price
+    base_confidence = (ask_price * CAPTURE_99C_PRICE_WEIGHT) + (1 - CAPTURE_99C_PRICE_WEIGHT)
 
     # Get time penalty (default to highest for safety)
     time_penalty = 0.15
@@ -2736,6 +2696,25 @@ def check_99c_entry_filter(side: str) -> tuple[bool, str]:
     return False, "|".join(reasons)
 
 
+def trend_allows_entry(side: str) -> tuple:
+    """
+    Returns (allowed: bool, reason: str).
+    Blocks entry if BTC trend over last N windows opposes the bet side.
+    """
+    if len(recent_window_btc) < TREND_LOOKBACK_WINDOWS + 1:
+        return True, "insufficient_history"
+
+    current_open = recent_window_btc[-1]['btc_open']
+    lookback_open = recent_window_btc[-(TREND_LOOKBACK_WINDOWS + 1)]['btc_open']
+    btc_trend = current_open - lookback_open
+
+    if side == "UP" and btc_trend < -TREND_THRESHOLD:
+        return False, f"BTC trend {btc_trend:+.0f} over {TREND_LOOKBACK_WINDOWS} windows (threshold: -{TREND_THRESHOLD})"
+    if side == "DOWN" and btc_trend > TREND_THRESHOLD:
+        return False, f"BTC trend {btc_trend:+.0f} over {TREND_LOOKBACK_WINDOWS} windows (threshold: +{TREND_THRESHOLD})"
+    return True, f"BTC trend {btc_trend:+.0f} within threshold"
+
+
 def check_99c_capture_opportunity(ask_up, ask_down, ttc):
     """
     Check if we should try to capture a 99c winner using confidence score.
@@ -2811,7 +2790,7 @@ def execute_99c_capture(side, current_ask, confidence, penalty, ttc):
         return False
     window_state['fok_buy_attempts'] = attempts + 1
 
-    shares = FIXED_TRADE_SHARES  # Always 6 shares
+    shares = FIXED_TRADE_SHARES  # Always 8 shares
     token = window_state['up_token'] if side == 'UP' else window_state['down_token']
 
     print()
@@ -4413,6 +4392,18 @@ def main():
                     print(f"[{ts()}] NEW WINDOW: {slug}")
                     print(f"[{ts()}] Session: {session_stats['windows']} windows | {session_stats['paired']} paired | PnL: ${session_stats['pnl']:.2f}")
 
+                    # Track BTC price at window start for trend guard
+                    _trend_btc = locals().get('btc_price')
+                    if _trend_btc:
+                        recent_window_btc.append({"window_id": slug, "btc_open": _trend_btc})
+                        if len(recent_window_btc) > 5:
+                            recent_window_btc.pop(0)
+                        if len(recent_window_btc) >= TREND_LOOKBACK_WINDOWS + 1:
+                            trend_val = recent_window_btc[-1]['btc_open'] - recent_window_btc[-(TREND_LOOKBACK_WINDOWS + 1)]['btc_open']
+                            print(f"[{ts()}] TREND_GUARD: BTC opens = {[f'${r['btc_open']:,.0f}' for r in recent_window_btc[-3:]]} | trend: {trend_val:+.0f}")
+                        else:
+                            print(f"[{ts()}] TREND_GUARD: Collecting history ({len(recent_window_btc)}/{TREND_LOOKBACK_WINDOWS + 1} windows)")
+
                     # Resolve any pending 99c outcomes from previous windows
                     if pending_99c_resolutions:
                         resolved = []
@@ -4563,13 +4554,30 @@ def main():
                     ask_down = float(books['down_asks'][0]['price']) if books.get('down_asks') else 0.50
                     capture = check_99c_capture_opportunity(ask_up, ask_down, remaining_secs)
                     if capture:
-                        execute_99c_capture(
-                            capture['side'],
-                            capture['ask'],
-                            capture['confidence'],
-                            capture['penalty'],
-                            remaining_secs
-                        )
+                        trend_ok, trend_reason = trend_allows_entry(capture['side'])
+                        if not trend_ok:
+                            btc_now = recent_window_btc[-1]['btc_open'] if recent_window_btc else 0
+                            btc_prev = recent_window_btc[-(TREND_LOOKBACK_WINDOWS + 1)]['btc_open'] if len(recent_window_btc) >= TREND_LOOKBACK_WINDOWS + 1 else 0
+                            trend_val = btc_now - btc_prev
+                            print(f"[{ts()}] TREND_GUARD: Blocking {capture['side']} entry — {trend_reason}")
+                            print(f"[{ts()}] TREND_GUARD: Current window BTC: ${btc_now:,.0f} | {TREND_LOOKBACK_WINDOWS} windows ago: ${btc_prev:,.0f}")
+                            log_event("TREND_GUARD_BLOCK", slug,
+                                side=capture['side'], details=json.dumps({
+                                    "trend_usd": trend_val, "threshold": TREND_THRESHOLD,
+                                    "btc_current": btc_now, "btc_lookback": btc_prev,
+                                    "confidence": capture['confidence']
+                                }))
+                            window_state['capture_99c_used'] = True  # Skip this window
+                        else:
+                            if trend_reason != "insufficient_history":
+                                print(f"[{ts()}] TREND_GUARD: Allowing {capture['side']} entry — {trend_reason}")
+                            execute_99c_capture(
+                                capture['side'],
+                                capture['ask'],
+                                capture['confidence'],
+                                capture['penalty'],
+                                remaining_secs
+                            )
 
                 # Check if 99c capture order filled
                 if window_state.get('capture_99c_order') and not window_state.get('capture_99c_fill_notified'):
@@ -4864,29 +4872,11 @@ def main():
                     # Existing hedge check (will use danger_score in Phase 3)
                     check_99c_capture_hedge(books, remaining_secs)
 
-                # === WINDOW END SAFETY EXIT (v1.60) ===
-                # In final 10 seconds, exit if price below 80c — don't wait for 45c hard stop
-                if (window_state.get('capture_99c_fill_notified') and
-                    not window_state.get('capture_99c_exited') and
-                    remaining_secs <= 10):
-
-                    capture_side = window_state.get('capture_99c_side')
-                    if capture_side == "UP":
-                        safety_bids = books.get('up_bids', [])
-                    else:
-                        safety_bids = books.get('down_bids', [])
-                    safety_best_bid = float(safety_bids[0]['price']) if safety_bids else 0
-
-                    if safety_best_bid < WINDOW_END_SAFETY_PRICE:
-                        print(f"[{ts()}] 🚨 SAFETY_EXIT: T-{remaining_secs:.0f}s, {capture_side} best bid {safety_best_bid*100:.0f}c < {WINDOW_END_SAFETY_PRICE*100:.0f}c — exiting to protect position")
-                        log_activity("SAFETY_EXIT", {
-                            "side": capture_side, "best_bid": safety_best_bid,
-                            "remaining_secs": remaining_secs,
-                            "trigger": f"bid<{WINDOW_END_SAFETY_PRICE*100:.0f}c at T-{remaining_secs:.0f}s"
-                        })
-                        # Safety exit is always T-10s — always use fast-path FOK
-                        print(f"[{ts()}] FAST_PATH: T-{remaining_secs:.0f}s — direct FOK (no OB walk)")
-                        execute_hard_stop(capture_side, books)
+                # === WINDOW END SAFETY EXIT (v1.60) === DISABLED — hard stop only
+                # if (window_state.get('capture_99c_fill_notified') and
+                #     not window_state.get('capture_99c_exited') and
+                #     remaining_secs <= 10):
+                #     ... safety exit removed, relying on hard stop at 55c
 
                 # === FINAL_SECONDS LOGGING (v1.60) ===
                 # Log every tick in last 15 seconds when holding a position — proof of monitoring
