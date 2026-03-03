@@ -247,6 +247,100 @@
     .delay-2 { animation-delay: 0.2s; opacity: 0; }
     .delay-3 { animation-delay: 0.3s; opacity: 0; }
 
+    /* Tab Bar */
+    .tab-bar {
+      display: flex; gap: 8px; margin-bottom: 16px;
+    }
+    .tab {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 1px; padding: 6px 16px; border-radius: 8px;
+      border: 1px solid var(--border-subtle); background: transparent;
+      color: var(--text-muted); cursor: pointer; transition: all 0.2s;
+    }
+    .tab:hover { color: var(--text-secondary); border-color: rgba(255,255,255,0.15); }
+    .tab.active {
+      color: var(--green-primary); border-color: var(--green-primary);
+      background: var(--green-glow);
+    }
+
+    /* Watchdog Styles */
+    .issue-bar-container { margin-bottom: 20px; }
+    .issue-bar {
+      display: flex; height: 8px; border-radius: 4px; overflow: hidden;
+      background: rgba(255,255,255,0.05); margin-bottom: 8px;
+    }
+    .issue-bar-segment { height: 100%; transition: width 0.5s ease; min-width: 2px; }
+    .issue-bar-segment.ok { background: var(--green-primary); }
+    .issue-bar-segment.critical { background: var(--red-primary); }
+    .issue-bar-segment.high { background: #f97316; }
+    .issue-bar-segment.medium { background: var(--yellow-primary); }
+
+    .issue-legend {
+      display: flex; flex-wrap: wrap; gap: 12px;
+      font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    }
+    .issue-legend-item { display: flex; align-items: center; gap: 4px; color: var(--text-secondary); }
+    .issue-legend-dot {
+      width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0;
+    }
+    .issue-legend-dot.ok { background: var(--green-primary); }
+    .issue-legend-dot.critical { background: var(--red-primary); }
+    .issue-legend-dot.high { background: #f97316; }
+    .issue-legend-dot.medium { background: var(--yellow-primary); }
+
+    .audit-item {
+      display: flex; align-items: flex-start; padding: 12px; border-radius: 10px;
+      transition: background 0.2s ease; gap: 12px;
+    }
+    .audit-item:hover { background: rgba(255,255,255,0.02); }
+    .audit-icon {
+      width: 28px; height: 28px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; flex-shrink: 0;
+    }
+    .audit-icon.ok { background: var(--green-glow); color: var(--green-primary); }
+    .audit-icon.critical { background: var(--red-glow); color: var(--red-primary); }
+    .audit-icon.high { background: rgba(249,115,22,0.1); color: #f97316; }
+    .audit-icon.medium { background: rgba(251,191,36,0.1); color: var(--yellow-primary); }
+    .audit-info { flex: 1; min-width: 0; }
+    .audit-class {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px;
+    }
+    .audit-class .badge {
+      font-size: 9px; font-weight: 700; letter-spacing: 0.5px;
+      padding: 2px 6px; border-radius: 4px; margin-left: 6px;
+      vertical-align: middle;
+    }
+    .badge.ok { background: var(--green-glow); color: var(--green-primary); }
+    .badge.critical { background: var(--red-glow); color: var(--red-primary); }
+    .badge.high { background: rgba(249,115,22,0.1); color: #f97316; }
+    .badge.medium { background: rgba(251,191,36,0.1); color: var(--yellow-primary); }
+    .audit-meta { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
+    .audit-diag {
+      font-size: 11px; color: var(--text-secondary); line-height: 1.4;
+      padding: 6px 8px; background: rgba(255,255,255,0.02);
+      border-radius: 6px; margin-top: 4px; border-left: 2px solid rgba(255,255,255,0.1);
+    }
+    .audit-rec {
+      font-size: 11px; color: var(--yellow-primary); margin-top: 4px;
+      font-style: italic;
+    }
+    .audit-pnl {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px; font-weight: 600; text-align: right; flex-shrink: 0;
+    }
+    .audit-pnl.positive { color: var(--green-primary); }
+    .audit-pnl.negative { color: var(--red-primary); }
+    .audit-pnl.neutral { color: var(--text-muted); }
+
+    .idle-row {
+      display: flex; align-items: center; padding: 6px 12px; gap: 8px;
+      font-size: 11px; color: var(--text-muted); opacity: 0.6;
+    }
+    .idle-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,0.1); }
+
     /* Desktop two-column */
     @media (min-width: 768px) {
       .container { max-width: 960px; }
@@ -270,6 +364,15 @@
     </header>
 
     <div class="error-banner" id="error"><span id="errorMsg">Error loading data</span></div>
+
+    <!-- Tab Bar -->
+    <div class="tab-bar animate-in">
+      <button class="tab active" data-tab="trades">Trades</button>
+      <button class="tab" data-tab="watchdog">Watchdog</button>
+    </div>
+
+    <!-- ═══════ TRADES VIEW ═══════ -->
+    <div id="trades-view">
 
     <!-- Summary Cards -->
     <div class="summary-grid animate-in delay-1">
@@ -312,7 +415,52 @@
         </div>
       </div>
     </div>
-  </div>
+    </div><!-- /trades-view -->
+
+    <!-- ═══════ WATCHDOG VIEW ═══════ -->
+    <div id="watchdog-view" style="display:none">
+
+      <!-- Watchdog Scorecard -->
+      <div class="summary-grid animate-in delay-1">
+        <div class="card stat-card primary">
+          <div class="stat-label">Win Rate</div>
+          <div class="stat-value neutral" id="wdWinRate">--</div>
+          <div class="stat-detail" id="wdWinDetail">--</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-label">Verified P&L</div>
+          <div class="stat-value neutral" id="wdPnl">--</div>
+          <div class="stat-detail" id="wdPnlDiff">--</div>
+        </div>
+        <div class="card stat-card">
+          <div class="stat-label">Issues</div>
+          <div class="stat-value neutral" id="wdIssues">--</div>
+          <div class="stat-detail" id="wdIssueSummary">--</div>
+        </div>
+      </div>
+
+      <!-- Issue Breakdown Bar -->
+      <div class="issue-bar-container animate-in delay-2">
+        <div class="issue-bar" id="wdIssueBar"></div>
+        <div class="issue-legend" id="wdIssueLegend"></div>
+      </div>
+
+      <!-- Audit Timeline -->
+      <div class="animate-in delay-3">
+        <div class="section-header">
+          <span class="section-title">Window Audits</span>
+          <span class="section-badge" id="wdAuditCount">0 audits</span>
+        </div>
+        <div class="card trades-card" id="wdTimeline">
+          <p class="loading">Loading audits...</p>
+        </div>
+      </div>
+    </div><!-- /watchdog-view -->
+
+  </div><!-- /container -->
+
+  <!-- Supabase JS client for Watchdog tab -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
   <script>
     const CONFIG = {
@@ -762,6 +910,257 @@
 
     loadData();
     setInterval(loadData, CONFIG.refreshInterval);
+
+    // ═══════════════════════════════════════
+    // TAB SWITCHING
+    // ═══════════════════════════════════════
+    let activeTab = 'trades';
+    let watchdogLoaded = false;
+
+    function switchTab(tab) {
+      activeTab = tab;
+      document.getElementById('trades-view').style.display = tab === 'trades' ? '' : 'none';
+      document.getElementById('watchdog-view').style.display = tab === 'watchdog' ? '' : 'none';
+      document.querySelectorAll('.tab').forEach(t => {
+        t.classList.toggle('active', t.dataset.tab === tab);
+      });
+      if (tab === 'watchdog' && !watchdogLoaded) {
+        loadWatchdogData();
+        watchdogLoaded = true;
+      }
+    }
+
+    document.querySelectorAll('.tab').forEach(btn => {
+      btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+    });
+
+    // ═══════════════════════════════════════
+    // WATCHDOG — Supabase Client
+    // ═══════════════════════════════════════
+    const SUPABASE_URL = 'https://qszosdrmnoglrkttdevz.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFzem9zZHJtbm9nbHJrdHRkZXZ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxOTg1NTYsImV4cCI6MjA4NDc3NDU1Nn0.-Ebe2icoMqIiL8NlVX93IJGVBCAmpfxk9S7U8ABsStA';
+
+    let db = null;
+    try {
+      db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    } catch (e) {
+      console.error('[WATCHDOG] Supabase init failed:', e);
+    }
+
+    // ═══════════════════════════════════════
+    // WATCHDOG — Data Loading
+    // ═══════════════════════════════════════
+    async function loadWatchdogData() {
+      if (!db) {
+        document.getElementById('wdTimeline').innerHTML = '<p class="loading">Supabase not available</p>';
+        return;
+      }
+
+      try {
+        // Get today's midnight in EST
+        const now = new Date();
+        const estNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+        const todayMidnight = new Date(estNow);
+        todayMidnight.setHours(0, 0, 0, 0);
+        // Convert back to UTC ISO
+        const offsetMs = now.getTime() - estNow.getTime();
+        const todayUTC = new Date(todayMidnight.getTime() + offsetMs).toISOString();
+
+        // Fetch today's audits
+        const { data: audits, error: auditErr } = await db
+          .from('Supervisor - Window Audits')
+          .select('*')
+          .gte('window_start', todayUTC)
+          .order('window_start', { ascending: false });
+
+        if (auditErr) throw new Error(auditErr.message);
+
+        // Fetch daily summaries (last 7 days)
+        const { data: summaries, error: sumErr } = await db
+          .from('Supervisor - Daily Summary')
+          .select('*')
+          .order('date', { ascending: false })
+          .limit(7);
+
+        renderWatchdog(audits || [], summaries || []);
+      } catch (e) {
+        console.error('[WATCHDOG] Load error:', e);
+        document.getElementById('wdTimeline').innerHTML =
+          `<p class="loading" style="color:var(--red-primary)">Error: ${escapeHtml(e.message)}</p>`;
+      }
+    }
+
+    // ═══════════════════════════════════════
+    // WATCHDOG — Rendering
+    // ═══════════════════════════════════════
+    const SEVERITY_ORDER = { critical: 0, high: 1, medium: 2, ok: 3 };
+    const SEVERITY_COLORS = { ok: 'ok', critical: 'critical', high: 'high', medium: 'medium' };
+    const SEVERITY_ICONS = { ok: '✓', critical: '✗', high: '▲', medium: '●' };
+
+    function renderWatchdog(audits, summaries) {
+      const traded = audits.filter(a => !['IDLE', 'TREND_BLOCKED', 'ROI_HALTED'].includes(a.classification));
+      const issues = audits.filter(a => a.severity !== 'ok' && !['IDLE', 'TREND_BLOCKED', 'ROI_HALTED'].includes(a.classification));
+
+      // ── Scorecard ──
+      const winTypes = ['ARB_PAIRED_WIN', 'SNIPE_WIN', 'SNIPE_PROFIT_LOCK'];
+      const wins = traded.filter(a => winTypes.includes(a.classification)).length;
+      const winRate = traded.length > 0 ? Math.round((wins / traded.length) * 100) : 0;
+
+      const elWinRate = document.getElementById('wdWinRate');
+      elWinRate.textContent = traded.length > 0 ? winRate + '%' : '--';
+      elWinRate.className = 'stat-value ' + (traded.length === 0 ? 'neutral' : (winRate >= 50 ? 'positive' : 'negative'));
+      document.getElementById('wdWinDetail').textContent = traded.length > 0
+        ? `${wins}W / ${traded.length} traded` : '--';
+
+      const pnlVerified = audits.reduce((s, a) => s + (parseFloat(a.pnl_verified) || 0), 0);
+      const pnlBot = audits.reduce((s, a) => s + (parseFloat(a.pnl_bot) || 0), 0);
+      const pnlDiff = pnlVerified - pnlBot;
+
+      const elPnl = document.getElementById('wdPnl');
+      elPnl.textContent = traded.length > 0 ? fmtPnl(pnlVerified) : '--';
+      elPnl.className = 'stat-value ' + (traded.length === 0 ? 'neutral' : (pnlVerified >= 0 ? 'positive' : 'negative'));
+      document.getElementById('wdPnlDiff').textContent = traded.length > 0 && Math.abs(pnlDiff) > 0.005
+        ? `${pnlDiff >= 0 ? '+' : ''}$${pnlDiff.toFixed(2)} vs bot` : '--';
+
+      const critical = issues.filter(a => a.severity === 'critical').length;
+      const high = issues.filter(a => a.severity === 'high').length;
+      const medium = issues.filter(a => a.severity === 'medium').length;
+      const issueTotal = critical + high + medium;
+
+      const elIssues = document.getElementById('wdIssues');
+      elIssues.textContent = issueTotal > 0 ? issueTotal : traded.length > 0 ? '0' : '--';
+      elIssues.className = 'stat-value ' + (issueTotal === 0 ? (traded.length > 0 ? 'positive' : 'neutral') : 'negative');
+      document.getElementById('wdIssueSummary').textContent = issueTotal > 0
+        ? [critical > 0 ? `${critical} crit` : '', high > 0 ? `${high} high` : '', medium > 0 ? `${medium} med` : ''].filter(Boolean).join(' · ')
+        : traded.length > 0 ? 'all clean' : '--';
+
+      // ── Issue Breakdown Bar ──
+      renderIssueBar(audits);
+
+      // ── Audit Timeline ──
+      renderAuditTimeline(audits);
+
+      // Update count
+      document.getElementById('wdAuditCount').textContent = `${audits.length} audits`;
+    }
+
+    function renderIssueBar(audits) {
+      const traded = audits.filter(a => !['IDLE', 'TREND_BLOCKED', 'ROI_HALTED'].includes(a.classification));
+      if (traded.length === 0) {
+        document.getElementById('wdIssueBar').innerHTML = '';
+        document.getElementById('wdIssueLegend').innerHTML = '<span style="color:var(--text-muted);font-size:11px">No traded windows yet</span>';
+        return;
+      }
+
+      // Count by classification
+      const counts = {};
+      for (const a of traded) {
+        const cls = a.classification;
+        if (!counts[cls]) counts[cls] = { count: 0, severity: a.severity };
+        counts[cls].count++;
+      }
+
+      // Sort by severity (critical first), then count
+      const sorted = Object.entries(counts).sort((a, b) => {
+        const sA = SEVERITY_ORDER[a[1].severity] ?? 3;
+        const sB = SEVERITY_ORDER[b[1].severity] ?? 3;
+        return sA - sB || b[1].count - a[1].count;
+      });
+
+      // Render bar segments
+      const total = traded.length;
+      const barEl = document.getElementById('wdIssueBar');
+      barEl.innerHTML = sorted.map(([cls, { count, severity }]) => {
+        const pct = (count / total) * 100;
+        return `<div class="issue-bar-segment ${severity}" style="width:${pct}%" title="${cls}: ${count} (${pct.toFixed(0)}%)"></div>`;
+      }).join('');
+
+      // Render legend
+      const legendEl = document.getElementById('wdIssueLegend');
+      legendEl.innerHTML = sorted.map(([cls, { count, severity }]) => {
+        const pct = ((count / total) * 100).toFixed(0);
+        const label = cls.replace(/_/g, ' ');
+        return `<span class="issue-legend-item"><span class="issue-legend-dot ${severity}"></span>${label}: ${count} (${pct}%)</span>`;
+      }).join('');
+    }
+
+    function renderAuditTimeline(audits) {
+      const el = document.getElementById('wdTimeline');
+
+      if (audits.length === 0) {
+        el.innerHTML = '<p class="loading">No audits yet — supervisor may not be running</p>';
+        return;
+      }
+
+      let lastDate = null;
+      const html = audits.map(a => {
+        const isIdle = ['IDLE', 'TREND_BLOCKED', 'ROI_HALTED'].includes(a.classification);
+
+        // Date separator
+        let separator = '';
+        const ts = new Date(a.window_start).getTime();
+        const dStr = dateKey(ts);
+        if (dStr !== lastDate) {
+          const displayDate = new Date(ts).toLocaleDateString('en-US', {
+            weekday: 'short', month: 'short', day: 'numeric',
+            timeZone: 'America/New_York'
+          });
+          separator = `<div class="date-separator">${displayDate}</div>`;
+          lastDate = dStr;
+        }
+
+        // Idle windows — minimal row
+        if (isIdle) {
+          const timeStr = new Date(a.window_start).toLocaleTimeString('en-US', {
+            hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York'
+          });
+          const label = a.classification === 'ROI_HALTED' ? 'halted' : a.classification === 'TREND_BLOCKED' ? 'trend blocked' : 'idle';
+          return separator + `<div class="idle-row"><span class="idle-dot"></span>${timeStr} · ${label}</div>`;
+        }
+
+        // Full audit card
+        const sev = a.severity || 'ok';
+        const icon = SEVERITY_ICONS[sev] || '?';
+        const pnl = parseFloat(a.pnl_verified) || 0;
+        const pnlClass = pnl >= 0 ? 'positive' : 'negative';
+        const label = (a.classification || '').replace(/_/g, ' ');
+
+        const timeStr = new Date(a.window_start).toLocaleTimeString('en-US', {
+          hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York'
+        });
+        const mode = a.strategy_mode === 'arb' ? 'ARB' : '99c';
+
+        let diagHtml = '';
+        if (a.diagnosis && sev !== 'ok') {
+          diagHtml = `<div class="audit-diag">${escapeHtml(a.diagnosis)}</div>`;
+        }
+        let recHtml = '';
+        if (a.recommendation && sev !== 'ok') {
+          recHtml = `<div class="audit-rec">${escapeHtml(a.recommendation)}</div>`;
+        }
+
+        return separator + `
+          <div class="audit-item">
+            <div class="audit-icon ${sev}">${icon}</div>
+            <div class="audit-info">
+              <div class="audit-class">${label}<span class="badge ${sev}">${sev.toUpperCase()}</span></div>
+              <div class="audit-meta">${timeStr} · ${mode} · pos ${a.bot_up_shares || 0}/${a.bot_down_shares || 0}</div>
+              ${diagHtml}
+              ${recHtml}
+            </div>
+            <div class="audit-pnl ${pnlClass}">${fmtPnl(pnl)}</div>
+          </div>
+        `;
+      }).join('');
+
+      el.innerHTML = html;
+    }
+
+    // Refresh watchdog on interval (only if active)
+    setInterval(() => {
+      if (activeTab === 'watchdog') loadWatchdogData();
+    }, CONFIG.refreshInterval);
+
   </script>
 </body>
 </html>
