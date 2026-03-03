@@ -13,10 +13,10 @@ This bot OBSERVES only — it does NOT place any trades.
 # BOT VERSION
 # ===========================================
 BOT_VERSION = {
-    "version": "v0.2",
-    "codename": "Sharp Eye",
+    "version": "v0.3",
+    "codename": "True Ledger",
     "date": "2026-03-03",
-    "changes": "Retarget to maker_arb_bot — new log format, wallet, multi-pair tracking"
+    "changes": "Fix PAIR regex for negative profits, correct win/loss classification"
 }
 
 import os
@@ -159,8 +159,9 @@ RE_MARKET_FOUND = re.compile(r'Market found:\s+(btc-updown-15m-\d+)')
 RE_FILL = re.compile(r'FILL:\s+(\w+)\s+([\d.]+)\s+shares?\s*@\s*([\d.]+)')
 
 # Pair complete: 💰 PAIR#X PAIRED! UP@X.XX + DN@X.XX = X.XX | Profit: $X.XX (Xc/share, X.X%)
+# Note: profit can be negative (e.g. $-0.30, -5c/share) when combined > $1.00
 RE_PAIR_COMPLETE = re.compile(
-    r'PAIR#(\d+)\s+PAIRED!\s+UP@([\d.]+)\s+\+\s+DN@([\d.]+)\s+=\s+([\d.]+)\s+\|\s+Profit:\s+\$([\d.]+)\s+\((\d+)c/share'
+    r'PAIR#(\d+)\s+PAIRED!\s+UP@([\d.]+)\s+\+\s+DN@([\d.]+)\s+=\s+([\d.]+)\s+\|\s+Profit:\s+\$(-?[\d.]+)\s+\((-?\d+)c/share'
 )
 
 # Order placement: 🎯 P#X placing: UP@X.XX + DN@X.XX = X.XX, size=X.X
@@ -458,21 +459,31 @@ def classify_window(ws, api_up, api_down, api_trades, market_outcome):
 def _classify_maker_arb(ws, api_up, api_down, outcome, pos_mismatch, price_mismatch, api_price):
     """Classify a maker ARB bot window."""
 
-    # All pairs completed successfully
+    # All pairs completed (check profit to distinguish win vs loss)
     if ws.pairs_completed > 0 and ws.bot_imbalance == 0 and not ws.saw_rescue:
-        total_profit = sum(ws.pair_profits)
+        total_profit = sum(ws.pair_profits) if ws.pair_profits else 0.0
+        has_loss = any(d[2] > 1.0 for d in ws.pair_details) if ws.pair_details else False
         detail_str = ", ".join(
             f"P#{i}: {d[0]:.2f}+{d[1]:.2f}={d[2]:.2f} (${d[3]:.2f})"
             for i, d in enumerate(ws.pair_details)
         )
+        if has_loss or total_profit < 0:
+            diag = f"{ws.pairs_completed} pair(s) completed but at a loss. {detail_str}. Total: ${total_profit:.2f}."
+            return "ARB_PAIRED_LOSS", "medium", "settlement", diag, "Entry threshold may be too loose — combined cost exceeded $1.00."
         diag = f"{ws.pairs_completed} pair(s) completed cleanly. {detail_str}. Total profit: ${total_profit:.2f}."
         return "ARB_PAIRED_WIN", "ok", "settlement", diag, None
 
     # Rescue was needed (one leg filled first, had to chase second)
     if ws.saw_rescue and ws.pairs_completed > 0 and ws.bot_imbalance == 0:
-        total_profit = sum(ws.pair_profits)
-        diag = (f"{ws.pairs_completed} pair(s) completed but rescue was needed. "
-                f"One leg filled first, chased second. Total profit: ${total_profit:.2f}.")
+        total_profit = sum(ws.pair_profits) if ws.pair_profits else 0.0
+        has_loss = any(d[2] > 1.0 for d in ws.pair_details) if ws.pair_details else False
+        rescue_note = "One leg filled first, chased second."
+        if has_loss or total_profit < 0:
+            diag = (f"{ws.pairs_completed} pair(s) completed via rescue but at a loss. "
+                    f"{rescue_note} Total: ${total_profit:.2f}.")
+            return "ARB_PAIRED_LOSS", "medium", "settlement", diag, "Rescue chase drove combined cost above $1.00. Consider tighter chase price limits."
+        diag = (f"{ws.pairs_completed} pair(s) completed via rescue. "
+                f"{rescue_note} Total profit: ${total_profit:.2f}.")
         return "ARB_PAIRED_WIN", "ok", "settlement", diag, "Rescue chase succeeded. Monitor chase frequency — frequent rescues suggest order book is thin."
 
     # Rescue ongoing / imbalance at window end
