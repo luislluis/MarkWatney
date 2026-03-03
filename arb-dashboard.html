@@ -107,7 +107,7 @@
 
     /* Summary Grid */
     .summary-grid {
-      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 20px;
+      display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px;
     }
     .stat-card { padding: 20px 12px; text-align: center; }
     .stat-card.primary {
@@ -344,6 +344,7 @@
     /* Desktop two-column */
     @media (min-width: 768px) {
       .container { max-width: 960px; }
+      .summary-grid { grid-template-columns: 1fr 1fr 1fr 1fr; }
       .main-grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 20px; align-items: start; }
       .main-grid > * { min-width: 0; }
     }
@@ -386,7 +387,12 @@
         <div class="stat-detail" id="record">--</div>
       </div>
       <div class="card stat-card">
-        <div class="stat-label">Total Locked</div>
+        <div class="stat-label">Arb Pair %</div>
+        <div class="stat-value neutral" id="arbPairPct">--</div>
+        <div class="stat-detail" id="arbPairDetail">--</div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-label">Locked Today</div>
         <div class="stat-value neutral" id="totalLocked">--</div>
       </div>
     </div>
@@ -697,6 +703,8 @@
         winRate: document.getElementById('winRate'),
         record: document.getElementById('record'),
         totalLocked: document.getElementById('totalLocked'),
+        arbPairPct: document.getElementById('arbPairPct'),
+        arbPairDetail: document.getElementById('arbPairDetail'),
         trades: document.getElementById('trades'),
         history: document.getElementById('history'),
         tradeCount: document.getElementById('tradeCount'),
@@ -711,36 +719,45 @@
       });
       el.date.innerHTML = `<span class="status-dot"></span>${estDate}`;
 
-      // Stats
-      const arbWindows = windows.filter(w => w.type === 'arb');
-      const soloWindows = windows.filter(w => w.type === 'standalone' && !w.pending);
+      // Stats — all scoped to today
       const todayWindows = windows.filter(w => isToday(w.timestamp));
       const todayPnl = todayWindows.reduce((s, w) => s + (w.profit || 0), 0);
-      const arbWins = arbWindows.filter(w => w.locked && w.profit > 0).length;
-      const arbTotal = arbWindows.length;
-      const soloWins = soloWindows.filter(w => w.won).length;
-      const soloLosses = soloWindows.filter(w => !w.won).length;
-      const totalWins = arbWins + soloWins;
-      const totalResolved = arbTotal + soloWindows.length;
-      const totalLockedProfit = arbWindows
+      const todayArbWindows = todayWindows.filter(w => w.type === 'arb');
+      const todaySoloWindows = todayWindows.filter(w => w.type === 'standalone' && !w.pending);
+      const todayArbWins = todayArbWindows.filter(w => w.locked && w.profit > 0).length;
+      const todaySoloWins = todaySoloWindows.filter(w => w.won).length;
+      const todaySoloLosses = todaySoloWindows.filter(w => !w.won).length;
+      const todayTotalWins = todayArbWins + todaySoloWins;
+      const todayTotalResolved = todayArbWindows.length + todaySoloWindows.length;
+      const todayLockedProfit = todayArbWindows
         .filter(w => w.locked && w.profit > 0)
         .reduce((s, w) => s + w.profit, 0);
+      const todayArbCount = todayArbWindows.length;
+      const todayTotalTrades = todayWindows.length;
+      const arbPairPct = todayTotalTrades > 0 ? Math.round((todayArbCount / todayTotalTrades) * 100) : 0;
+      // All-time arb count for trade list badge
+      const arbWindows = windows.filter(w => w.type === 'arb');
 
       // Today's P&L
       el.todayPnl.textContent = todayWindows.length === 0 ? '--' : fmtPnl(todayPnl);
       el.todayPnl.className = 'stat-value ' + (todayWindows.length === 0 ? 'neutral' : (todayPnl >= 0 ? 'positive' : 'negative'));
 
-      // Win Rate (arb + solo combined)
-      const rate = totalResolved > 0 ? Math.round((totalWins / totalResolved) * 100) : 0;
-      el.winRate.textContent = totalResolved > 0 ? rate + '%' : '--';
-      el.winRate.className = 'stat-value ' + (totalResolved === 0 ? 'neutral' : (rate >= 50 ? 'positive' : 'negative'));
-      el.record.textContent = totalResolved > 0
-        ? `${arbWins} arb · ${soloWins}W-${soloLosses}L solo`
+      // Win Rate (today only)
+      const rate = todayTotalResolved > 0 ? Math.round((todayTotalWins / todayTotalResolved) * 100) : 0;
+      el.winRate.textContent = todayTotalResolved > 0 ? rate + '%' : '--';
+      el.winRate.className = 'stat-value ' + (todayTotalResolved === 0 ? 'neutral' : (rate >= 50 ? 'positive' : 'negative'));
+      el.record.textContent = todayTotalResolved > 0
+        ? `${todayArbWins} arb · ${todaySoloWins}W-${todaySoloLosses}L`
         : '--';
 
-      // Total Locked
-      el.totalLocked.textContent = totalLockedProfit > 0 ? fmtPnl(totalLockedProfit) : '--';
-      el.totalLocked.className = 'stat-value ' + (totalLockedProfit > 0 ? 'positive' : 'neutral');
+      // Arb Pair %
+      el.arbPairPct.textContent = todayTotalTrades > 0 ? arbPairPct + '%' : '--';
+      el.arbPairPct.className = 'stat-value ' + (todayTotalTrades === 0 ? 'neutral' : 'positive');
+      el.arbPairDetail.textContent = todayTotalTrades > 0 ? `${todayArbCount}/${todayTotalTrades}` : '--';
+
+      // Locked Today
+      el.totalLocked.textContent = todayLockedProfit > 0 ? fmtPnl(todayLockedProfit) : '--';
+      el.totalLocked.className = 'stat-value ' + (todayLockedProfit > 0 ? 'positive' : 'neutral');
 
       // Trade count
       el.tradeCount.textContent = `${arbWindows.length} arbs`;
